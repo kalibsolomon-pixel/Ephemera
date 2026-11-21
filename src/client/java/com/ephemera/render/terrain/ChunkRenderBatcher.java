@@ -55,7 +55,6 @@ import java.util.function.BiConsumer;
  * vanilla's use within a single frame.
  */
 public final class ChunkRenderBatcher {
-	private static final ChunkRenderBatcher INSTANCE = new ChunkRenderBatcher();
 	private static final ChunkSectionLayer[] LAYERS = ChunkSectionLayer.values();
 	private static final int LAYER_COUNT = LAYERS.length;
 	private static final int TRANSLUCENT = ChunkSectionLayer.TRANSLUCENT.ordinal();
@@ -63,6 +62,7 @@ public final class ChunkRenderBatcher {
 	private static final int MAX_GROUPS_BEFORE_RESET = 64;
 	/** Block models may extend one block outside their cell. */
 	private static final double FOG_PADDING = 1.0;
+	private static final ChunkRenderBatcher INSTANCE = new ChunkRenderBatcher();
 
 	private final EnumMap<ChunkSectionLayer, Int2ObjectOpenHashMap<List<RenderPass.Draw<GpuBufferSlice[]>>>> drawGroups =
 		new EnumMap<>(ChunkSectionLayer.class);

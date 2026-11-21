@@ -16,11 +16,11 @@ import java.lang.invoke.MethodType;
  * owns fog, dithering, lighting, and the core shaders outright.
  */
 public final class IrisCompatService implements EphemeraShaderHooks {
-	public static final IrisCompatService INSTANCE = new IrisCompatService();
-
 	private static final String[] MOD_IDS = {"iris", "oculus"};
 	private static final String API_CLASS = "net.irisshaders.iris.api.v0.IrisApi";
 	private static final long POLL_INTERVAL_NS = 250_000_000L;
+
+	public static final IrisCompatService INSTANCE = new IrisCompatService();
 
 	private static volatile boolean registered;
 
