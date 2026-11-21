@@ -3,6 +3,7 @@ package com.ephemera.visuals;
 import com.ephemera.api.EphemeraApi;
 import com.ephemera.api.EphemeraVisibilityProvider;
 import com.ephemera.core.diagnostics.FrameMetrics;
+import com.ephemera.render.backend.VulkanModernCapabilities;
 import com.mojang.blaze3d.systems.GpuDevice;
 import com.mojang.blaze3d.systems.RenderSystem;
 
@@ -63,6 +64,9 @@ public final class VisualsDiagnostics {
 			} else {
 				return EphemeraApi.get().map(s -> s.capabilities().graphicsBackend()).orElse("UNKNOWN");
 			}
+		}
+		if (VulkanModernCapabilities.isMeshEngineActive() && "Vulkan".equals(backend)) {
+			return VulkanModernCapabilities.get().taskShaderEnabled() ? "Vulkan • Task+Mesh" : "Vulkan • Mesh";
 		}
 		return backend;
 	}

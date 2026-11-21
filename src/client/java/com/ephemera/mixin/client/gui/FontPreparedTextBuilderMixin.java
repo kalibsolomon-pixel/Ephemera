@@ -24,8 +24,9 @@ abstract class FontPreparedTextBuilderMixin {
 
 	@Shadow private List<TextRenderable> effects;
 
-	@Unique private final TextDecorationRunMerger ephemera$strikethrough = new TextDecorationRunMerger();
-	@Unique private final TextDecorationRunMerger ephemera$underline = new TextDecorationRunMerger();
+	// created on the first decorated glyph: most text lines (HUD lines, tooltips) have no decoration at all
+	@Unique private TextDecorationRunMerger ephemera$strikethrough;
+	@Unique private TextDecorationRunMerger ephemera$underline;
 	@Unique private TextRenderable ephemera$lastStrikethrough;
 	@Unique private TextRenderable ephemera$lastUnderline;
 
@@ -34,7 +35,14 @@ abstract class FontPreparedTextBuilderMixin {
 		EffectGlyph glyph, float minX, float minY, float maxX, float maxY, float depth,
 		int color, int shadowColor, float shadowOffset, Operation<TextRenderable> original
 	) {
-		TextRenderable effect = ephemera$decorate(ephemera$strikethrough, ephemera$lastStrikethrough, glyph,
+		if (!GuiFeatures.get().mergeTextDecorations) {
+			return original.call(glyph, minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset);
+		}
+		TextDecorationRunMerger merger = ephemera$strikethrough;
+		if (merger == null) {
+			merger = ephemera$strikethrough = new TextDecorationRunMerger();
+		}
+		TextRenderable effect = ephemera$decorate(merger, ephemera$lastStrikethrough, glyph,
 			minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset, original);
 		ephemera$lastStrikethrough = effect;
 		return effect;
@@ -45,7 +53,14 @@ abstract class FontPreparedTextBuilderMixin {
 		EffectGlyph glyph, float minX, float minY, float maxX, float maxY, float depth,
 		int color, int shadowColor, float shadowOffset, Operation<TextRenderable> original
 	) {
-		TextRenderable effect = ephemera$decorate(ephemera$underline, ephemera$lastUnderline, glyph,
+		if (!GuiFeatures.get().mergeTextDecorations) {
+			return original.call(glyph, minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset);
+		}
+		TextDecorationRunMerger merger = ephemera$underline;
+		if (merger == null) {
+			merger = ephemera$underline = new TextDecorationRunMerger();
+		}
+		TextRenderable effect = ephemera$decorate(merger, ephemera$lastUnderline, glyph,
 			minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset, original);
 		ephemera$lastUnderline = effect;
 		return effect;
@@ -57,9 +72,6 @@ abstract class FontPreparedTextBuilderMixin {
 		float minX, float minY, float maxX, float maxY, float depth,
 		int color, int shadowColor, float shadowOffset, Operation<TextRenderable> original
 	) {
-		if (!GuiFeatures.get().mergeTextDecorations) {
-			return original.call(glyph, minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset);
-		}
 		if (merger.extendOrStart(minX, minY, maxX, maxY, depth, color, shadowColor, shadowOffset)) {
 			int index = ephemera$indexOfIdentity(previous);
 			if (index >= 0) {

@@ -8,6 +8,10 @@ import com.mojang.blaze3d.buffers.GpuBufferSlice;
 public final class DispatchSettings {
 	private DispatchSettings() {}
 
+	public interface GlUniformState {
+		boolean ephemera$hasDirtyUniforms();
+	}
+
 	public static boolean glDispatch() {
 		return EphemeraCommon.config().backendGlDispatchCache && !externalShaderPack();
 	}

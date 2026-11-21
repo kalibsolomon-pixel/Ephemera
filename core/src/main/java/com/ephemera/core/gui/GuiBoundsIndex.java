@@ -11,7 +11,9 @@ import java.util.Arrays;
  * ({@code left < otherRight && right > otherLeft && top < otherBottom && bottom > otherTop}),
  * where {@code right}/{@code bottom} are {@code x + width}/{@code y + height} computed in int math.
  * A query that misses the union box cannot hit any member, so most layered-GUI queries are O(1)
- * and the rest are a tight primitive loop. No allocation happens per query.
+ * and the rest are a tight primitive loop. No allocation happens per query. With a single member the
+ * union box <em>is</em> that member, so a query that passes the box test is already an exact hit.
+ * {@link #clear()} keeps the backing array, so an index can be reused across frames.
  */
 public final class GuiBoundsIndex {
 	private static final int STRIDE = 4;
@@ -67,6 +69,9 @@ public final class GuiBoundsIndex {
 			|| unionLeft >= right || unionRight <= left
 			|| unionTop >= bottom || unionBottom <= top) {
 			return false;
+		}
+		if (size == 1) {
+			return true;
 		}
 		int[] rects = this.rects;
 		for (int i = 0, end = size * STRIDE; i < end; i += STRIDE) {

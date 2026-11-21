@@ -4,8 +4,8 @@ import java.util.Arrays;
 
 /** Exact primitive keys; hash collisions can only evict a result, never reuse another key. */
 public final class DirectMappedSweepCache {
-    public static final int ENTITY_SLOTS = 1024, BLOCK_ENTITY_SLOTS = 512;
-    public static final long TTL_NANOS = 250_000_000L;
+    public static final int ENTITY_SLOTS = 2048, BLOCK_ENTITY_SLOTS = 2048;
+    public static final long TTL_NANOS = 2_000_000_000L;
     public static final int MISS = -1, VISIBLE = 0, OCCLUDED = 1;
     private final long[] ids, stamps, times;
     private final int[][] coordinates;
@@ -20,7 +20,13 @@ public final class DirectMappedSweepCache {
         clear();
     }
     public void clear() { Arrays.fill(results, (byte) MISS); }
-    private int slot(long id) { return (int) (id ^ (id >>> 32) ^ (id >>> 17)) & mask; }
+    private int slot(long id) {
+        // Full 64-bit avalanche so packed BlockPos.asLong (x<<38 | z<<12 | y) spreads cleanly across all slots.
+        long h = id ^ (id >>> 33);
+        h *= 0xff51afd7ed558ccdL;
+        h ^= h >>> 33;
+        return (int) h & mask;
+    }
     public int lookup(long id, long stamp, long now, int cx, int cy, int cz,
                       int x0, int y0, int z0, int x1, int y1, int z1) {
         int s = slot(id);

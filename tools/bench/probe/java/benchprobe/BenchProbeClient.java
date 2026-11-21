@@ -39,6 +39,8 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static final String BACKEND = System.getProperty("ephemera.bench.backend", "OPENGL").toLowerCase();
 	private static final boolean JFR_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.jfr", "true"));
 	private static final int DURATION_SEC = Integer.parseInt(System.getProperty("ephemera.bench.durationSec", "6"));
+	private static final int VISTA_RD = Integer.parseInt(System.getProperty("ephemera.bench.rd", "20"));
+	private static final String SCENE1_NAME = "terrain_vista_rd" + VISTA_RD;
 
 	private enum Phase {
 		WAIT_FOR_WORLD,
@@ -144,7 +146,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 					mc.options.enableVsync().set(false);
 					mc.options.framerateLimit().set(260);
 					mc.options.guiScale().set(3);
-					mc.options.renderDistance().set(20);
+					mc.options.renderDistance().set(VISTA_RD);
 					mc.gui.setScreen(null);
 					send(mc, "gamemode creative");
 					send(mc, "difficulty peaceful");
@@ -160,16 +162,17 @@ public final class BenchProbeClient implements ClientModInitializer {
 				}
 			}
 			case WARMUP -> {
-				// Wait for initial chunk compilation + JIT warmup (at least 4s, up to 14s)
+				// Wait for initial chunk compilation + JIT warmup (at least 4s, up to 12s or 24s at high RD)
 				double elapsed = (now - phaseStartNs) / 1e9;
+				double maxWait = VISTA_RD > 20 ? 24.0 : 12.0;
 				boolean chunksReady = mc.levelRenderer != null && mc.levelRenderer.hasRenderedAllSections();
-				if (elapsed >= 12.0 || (elapsed >= 4.0 && chunksReady)) {
+				if (elapsed >= maxWait || (elapsed >= 4.0 && chunksReady)) {
 					enter(Phase.SCENE1_SETUP, now);
 				}
 			}
 			case SCENE1_SETUP -> {
 				mc.gui.setScreen(null);
-				mc.options.renderDistance().set(20);
+				mc.options.renderDistance().set(VISTA_RD);
 				if (mc.player != null) {
 					mc.player.absSnapTo(0.5, 128.0, 0.5, 0.0f, 16.0f);
 				}
@@ -182,21 +185,27 @@ public final class BenchProbeClient implements ClientModInitializer {
 				if (phaseTicks >= 30) {
 					sweepingCamera = true;
 					sweepStartNs = now;
-					beginMeasure("terrain_vista_rd20", now);
+					beginMeasure(SCENE1_NAME, now);
 					enter(Phase.SCENE1_MEASURE, now);
 				}
 			}
 			case SCENE1_MEASURE -> {
 				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
 					sweepingCamera = false;
-					endMeasure("terrain_vista_rd20", now, null);
+					endMeasure(SCENE1_NAME, now, null);
 					enter(Phase.SCENE2_SETUP, now);
 				}
 			}
 			case SCENE2_SETUP -> {
-				mc.gui.setScreen(null);
-				mc.options.renderDistance().set(16);
-				// Build deterministic arena: stone occlusion wall + visible & occluded mobs + chests + enchanted loadout
+				if (phaseTicks == 1) {
+					mc.gui.setScreen(null);
+					mc.options.renderDistance().set(16);
+					return;
+				}
+				if (phaseTicks < 6) {
+					return;
+				}
+				// Build deterministic arena after view-distance change settles so allChanged() never races /fill.
 				send(mc, "kill @e[type=!player]");
 				send(mc, "tp @s 0.5 130.0 0.5 0 12");
 				// Platform & occlusion wall at z=+10 (40 entities behind wall at z=+14, 40 visible at z=+5)
@@ -253,8 +262,8 @@ public final class BenchProbeClient implements ClientModInitializer {
 				}
 			}
 			case SCENE3_SETUP -> {
-				// Chunk streaming / meshing burst: jump 384 blocks away at RD=20 and measure full chunk build + 1% lows!
-				mc.options.renderDistance().set(20);
+				// Chunk streaming / meshing burst: jump 384 blocks away at VISTA_RD and measure full chunk build + 1% lows!
+				mc.options.renderDistance().set(VISTA_RD);
 				send(mc, "kill @e[type=!player]");
 				send(mc, "tp @s 384.5 135.0 384.5 45 20");
 				chunkBurstStartNs = now;

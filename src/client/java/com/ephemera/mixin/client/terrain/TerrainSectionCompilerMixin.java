@@ -1,6 +1,7 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.render.terrain.FastSectionCompiler;
+import com.ephemera.render.terrain.RegionVertexBaking;
 import com.ephemera.render.terrain.TerrainFeatures;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.sugar.Local;
@@ -31,7 +32,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>each block's {@code getRenderShape()} result is reported as {@code INVISIBLE} when the
  *   block is buried and would emit no quads, which skips both vanilla and Fabric tesselation
  *   while leaving visibility, block entities and fluids untouched;</li>
- *   <li>on return, the section's animated sprite ids are attached to the results.</li>
+ *   <li>on return, the section's animated sprite ids are attached to the results and its
+ *   vertices are rebased / bucketed by {@link RegionVertexBaking}.</li>
  * </ul>
  */
 @Mixin(SectionCompiler.class)
@@ -81,6 +83,10 @@ public abstract class TerrainSectionCompilerMixin {
 		if (p != null) {
 			pass.set(null);
 			p.finish(cir.getReturnValue());
+		}
+		SectionCompiler.Results results = cir.getReturnValue();
+		if (results != null) {
+			RegionVertexBaking.bake(sectionPos, results);
 		}
 	}
 }

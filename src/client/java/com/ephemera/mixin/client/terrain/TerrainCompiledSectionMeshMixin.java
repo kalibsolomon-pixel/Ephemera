@@ -1,7 +1,13 @@
 package com.ephemera.mixin.client.terrain;
 
+import com.ephemera.render.terrain.CompileResultsLayout;
 import com.ephemera.render.terrain.CompileResultsSprites;
+import com.ephemera.render.terrain.SectionDrawState;
+import com.ephemera.render.terrain.SectionLayout;
 import com.ephemera.render.terrain.SectionMeshRenderCache;
+import com.ephemera.render.terrain.TerrainTopology;
+import com.ephemera.render.terrain.vulkan.VulkanMeshSectionHandle;
+import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.vertex.TlsfAllocator;
@@ -24,8 +30,10 @@ import java.util.Map;
 
 /**
  * Gives every compiled section mesh direct, ordinal-indexed fields for its draws and GPU
- * allocations so the chunk batcher never touches {@code EnumMap}/{@code HashMap} lookups.
- * Arrays are created lazily so meshes without geometry stay as small as vanilla's.
+ * allocations so the chunk batcher never touches {@code EnumMap}/{@code HashMap} lookups,
+ * plus a {@link SectionDrawState} recomputed on every mirrored allocation change, so the
+ * regional batcher reads ready-made draw parameters. Arrays are created lazily so meshes
+ * without geometry stay as small as vanilla's.
  */
 @Mixin(CompiledSectionMesh.class)
 public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRenderCache {
@@ -45,6 +53,8 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	@Unique
 	private int ephemera$epoch;
 	@Unique
+	private @Nullable SectionDrawState ephemera$drawState;
+	@Unique
 	private RenderPass.Draw<GpuBufferSlice[]> @Nullable [] ephemera$drawCache;
 	@Unique
 	private int @Nullable [] ephemera$drawCacheUbo;
@@ -58,6 +68,10 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	private int ephemera$spriteGeneration = -1;
 	@Unique
 	private boolean ephemera$untrackedSprites;
+	@Unique
+	private @Nullable SectionLayout ephemera$layout;
+	@Unique
+	private @Nullable VulkanMeshSectionHandle ephemera$meshHandle;
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$captureDraws(TranslucencyPointOfView translucencyPointOfView, SectionCompiler.Results results, CallbackInfo ci) {
@@ -73,15 +87,46 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 			ephemera$spriteGeneration = sprites.ephemera$spriteGeneration();
 			ephemera$untrackedSprites = sprites.ephemera$untrackedSprites();
 		}
+		if ((Object) results instanceof CompileResultsLayout layout) {
+			ephemera$layout = layout.ephemera$layout();
+		}
+	}
+
+	@Override
+	public @Nullable SectionLayout ephemera$layout() {
+		return ephemera$layout;
+	}
+
+	@Override
+	public @Nullable VulkanMeshSectionHandle ephemera$meshHandle() {
+		return ephemera$meshHandle;
+	}
+
+	@Override
+	public void ephemera$setMeshHandle(@Nullable VulkanMeshSectionHandle handle) {
+		this.ephemera$meshHandle = handle;
 	}
 
 	@Inject(method = "close", at = @At("HEAD"))
 	private void ephemera$dropDraws(CallbackInfo ci) {
+		boolean drawable = ephemera$draws != null;
+		VulkanMeshSectionHandle meshHandle = ephemera$meshHandle;
+		if (meshHandle != null) {
+			ephemera$meshHandle = null;
+			VulkanMeshTerrainEngine.get().releaseSection(meshHandle);
+		}
 		ephemera$draws = null;
+		SectionDrawState state = ephemera$drawState;
+		if (state != null) {
+			state.clear();
+		}
 		ephemera$drawCache = null;
 		ephemera$drawCacheUbo = null;
 		ephemera$drawCacheAlloc = null;
 		ephemera$info = null;
+		if (drawable) {
+			TerrainTopology.bumpTopology();
+		}
 	}
 
 	@Override
@@ -100,8 +145,19 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 			allocations = new TlsfAllocator.Allocation[SLOT_COUNT];
 			ephemera$allocations = allocations;
 			ephemera$epoch = epoch;
+			ephemera$drawState = new SectionDrawState(epoch);
 		}
 		allocations[slot] = allocation;
+		int layer = slot >> 1;
+		ephemera$drawState.refresh(layer, ephemera$draw(layer), ephemera$layout,
+			allocations[SectionMeshRenderCache.vertexSlot(layer)], allocations[SectionMeshRenderCache.indexSlot(layer)]);
+		TerrainTopology.bumpTopology();
+	}
+
+	@Override
+	public @Nullable SectionDrawState ephemera$drawState(int epoch) {
+		SectionDrawState state = ephemera$drawState;
+		return state != null && state.epoch == epoch ? state : null;
 	}
 
 	@Override

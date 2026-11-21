@@ -2,7 +2,12 @@ package com.ephemera.render.terrain;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
+import com.mojang.blaze3d.systems.DeviceFeatures;
+import com.mojang.blaze3d.systems.GpuDevice;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.UberGpuBuffer;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
 import net.minecraft.client.renderer.chunk.CompiledSectionMesh;
 import net.minecraft.client.renderer.chunk.SectionCompiler;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
@@ -10,6 +15,7 @@ import net.minecraft.client.renderer.feature.BlockModelFeatureRenderer;
 import net.minecraft.client.renderer.feature.ItemFeatureRenderer;
 import net.minecraft.client.renderer.feature.MovingBlockFeatureRenderer;
 import net.minecraft.client.renderer.texture.SpriteContents;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,8 +33,23 @@ public final class TerrainFeatures {
 	private static volatile boolean sortFailed;
 	private static volatile boolean spritesFailed;
 
+	private static volatile boolean multiDrawFailed;
+	private static volatile boolean bakingFailed;
+
 	private static volatile Boolean batcherSupported;
 	private static volatile Boolean spritesSupported;
+	private static volatile Boolean bakingSupported;
+	private static volatile Boolean multiDrawHookSupported;
+	private static volatile @Nullable GpuDevice checkedDevice;
+	private static volatile boolean deviceMultiDraw;
+	private static volatile boolean deviceDirectMultiDraw;
+	/** {@code -Dephemera.terrain.forceDirect=true} selects client-memory multiDrawIndexed even when hardware indirect multi-draw is available. */
+	private static final boolean FORCE_DIRECT = Boolean.getBoolean("ephemera.terrain.forceDirect");
+	/** {@code -Dephemera.terrain.forceIndirect=true} keeps the indirect-buffer path even if forceDirect is set. */
+	private static final boolean FORCE_INDIRECT = Boolean.getBoolean("ephemera.terrain.forceIndirect");
+	/** {@code -Dephemera.terrain.planReuse=false} rebuilds the regional plan every frame. */
+	private static final boolean PLAN_REUSE = !"false".equals(System.getProperty("ephemera.terrain.planReuse"));
+	private static volatile Boolean planReuseSupported;
 
 	private TerrainFeatures() {}
 
@@ -58,6 +79,71 @@ public final class TerrainFeatures {
 	public static boolean animateOnlyVisible() {
 		EphemeraConfig c = cfg();
 		return !spritesFailed && c.terrainEngineEnabled && c.terrainAnimateOnlyVisibleTextures && spritesSupported();
+	}
+
+	/**
+	 * Regional multi-draw: needs the batcher, the {@code ChunkSectionsToRender} render hook,
+	 * and a device with either {@code multiDrawDirectSeparate} (OpenGL
+	 * {@code glMultiDrawElementsBaseVertex}) or {@code drawIndirect} plus {@code multiDrawIndirect}.
+	 */
+	public static boolean multiDraw() {
+		return !multiDrawFailed && cfg().terrainMultiDraw && batcher() && multiDrawHookSupported() && deviceSupportsMultiDraw();
+	}
+
+	/**
+	 * Render thread, after {@link #multiDraw()}: true when batches execute as direct
+	 * {@code multiDrawIndexed} calls from client memory (no indirect buffer upload).
+	 */
+	public static boolean directMultiDraw() {
+		return deviceDirectMultiDraw;
+	}
+
+	/**
+	 * Reusing last frame's regional plan when nothing changed needs the mesh-swap hook on
+	 * {@code RenderSection} (the other invalidation hooks live in mixins the batcher already requires).
+	 */
+	public static boolean planReuse() {
+		Boolean b = planReuseSupported;
+		if (b == null) {
+			b = SectionMeshSwapHook.class.isAssignableFrom(SectionRenderDispatcher.RenderSection.class);
+			if (!b) {
+				LOGGER.warn("Ephemera terrain frame-plan reuse unavailable: RenderSection mesh-swap hook was not applied");
+			}
+			planReuseSupported = b;
+		}
+		return PLAN_REUSE && b;
+	}
+
+	/** Skip back-facing directional buckets of meshes that were compiled with them. */
+	public static boolean directionalCulling() {
+		EphemeraConfig c = cfg();
+		return c.terrainEngineEnabled && c.terrainDirectionalFaceCulling;
+	}
+
+	/** Compile-time: rebase vertices onto their region origin (read on chunk-builder threads). */
+	public static boolean bakeRegionRelative() {
+		EphemeraConfig c = cfg();
+		return !bakingFailed && c.terrainEngineEnabled && c.terrainMultiDraw && bakingSupported();
+	}
+
+	/** Compile-time: reorder opaque quads into directional buckets. */
+	public static boolean bakeDirectionalBuckets() {
+		EphemeraConfig c = cfg();
+		return !bakingFailed && c.terrainEngineEnabled && c.terrainDirectionalFaceCulling && bakingSupported();
+	}
+
+	public static void disableMultiDraw(Throwable t) {
+		if (!multiDrawFailed) {
+			multiDrawFailed = true;
+			LOGGER.error("Ephemera regional multi-draw failed; falling back to per-section terrain draws", t);
+		}
+	}
+
+	public static void disableBaking(Throwable t) {
+		if (!bakingFailed) {
+			bakingFailed = true;
+			LOGGER.error("Ephemera section vertex baking failed; new sections compile with vanilla vertex layout", t);
+		}
 	}
 
 	public static void disableBatcher(Throwable t) {
@@ -101,6 +187,60 @@ public final class TerrainFeatures {
 			batcherSupported = b;
 		}
 		return b;
+	}
+
+	/**
+	 * Baked meshes must always be drawn at their baked origin, so baking needs the mesh duck
+	 * that carries the layout, the results duck, and the vanilla {@code prepareChunkRenders}
+	 * origin fix in case the batcher is ever bypassed.
+	 */
+	static boolean bakingSupported() {
+		Boolean b = bakingSupported;
+		if (b == null) {
+			b = CompileResultsLayout.class.isAssignableFrom(SectionCompiler.Results.class)
+				&& BakedOriginAware.class.isAssignableFrom(LevelRenderer.class)
+				&& batcherSupported();
+			if (!b) {
+				LOGGER.warn("Ephemera section vertex baking unavailable: required mixins were not applied");
+			}
+			bakingSupported = b;
+		}
+		return b;
+	}
+
+	static boolean multiDrawHookSupported() {
+		Boolean b = multiDrawHookSupported;
+		if (b == null) {
+			b = RegionalRenderHook.class.isAssignableFrom(ChunkSectionsToRender.class);
+			if (!b) {
+				LOGGER.warn("Ephemera regional multi-draw unavailable: ChunkSectionsToRender hook was not applied");
+			}
+			multiDrawHookSupported = b;
+		}
+		return b;
+	}
+
+	/** Render thread only. Re-evaluated when the device changes (e.g. a backend switch). */
+	static boolean deviceSupportsMultiDraw() {
+		GpuDevice device = RenderSystem.getDevice();
+		if (device != checkedDevice) {
+			DeviceFeatures features = device.getDeviceInfo().features();
+			boolean indirect = features.drawIndirect() && features.multiDrawIndirect();
+			boolean direct = features.multiDrawDirectSeparate();
+			// Prefer hardware multi-draw indirect on both OpenGL and Vulkan: AMD OpenGL emulates
+			// glMultiDrawElementsBaseVertex on CPU whereas ARB_multi_draw_indirect runs in hardware.
+			deviceDirectMultiDraw = direct && (!indirect || (FORCE_DIRECT && !FORCE_INDIRECT));
+			deviceMultiDraw = indirect || direct;
+			checkedDevice = device;
+			if (!deviceMultiDraw) {
+				LOGGER.info("Ephemera regional multi-draw unavailable on {}: multiDrawDirectSeparate={}, drawIndirect={}, multiDrawIndirect={}",
+					device.getDeviceInfo().backendName(), direct, features.drawIndirect(), features.multiDrawIndirect());
+			} else {
+				LOGGER.info("Ephemera regional multi-draw on {}: {}", device.getDeviceInfo().backendName(),
+					deviceDirectMultiDraw ? "direct multiDrawIndexed" : "indirect drawIndexedIndirect");
+			}
+		}
+		return deviceMultiDraw;
 	}
 
 	/**

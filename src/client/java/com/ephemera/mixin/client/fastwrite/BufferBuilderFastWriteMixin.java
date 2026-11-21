@@ -41,4 +41,11 @@ abstract class BufferBuilderFastWriteMixin implements VertexConsumer, FastBuffer
 			VertexConsumer.super.putBakedQuad(pose, quad, instance);
 		}
 	}
+
+	@Override
+	public void putBlockBakedQuad(float x, float y, float z, BakedQuad quad, QuadInstance instance) {
+		if (!FastQuadWriter.writeBlock(this, x, y, z, quad, instance)) {
+			VertexConsumer.super.putBlockBakedQuad(x, y, z, quad, instance);
+		}
+	}
 }

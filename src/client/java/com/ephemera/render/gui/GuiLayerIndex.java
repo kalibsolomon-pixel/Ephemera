@@ -1,6 +1,7 @@
 package com.ephemera.render.gui;
 
 import com.ephemera.core.gui.GuiBoundsIndex;
+import com.ephemera.core.gui.IndexedRectList;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.renderer.state.gui.ScreenArea;
 
@@ -8,12 +9,24 @@ import java.util.IdentityHashMap;
 import java.util.List;
 
 /**
- * Per-frame spatial index over the append-only element lists of a {@code GuiRenderState} layer node.
- * Each list gets a {@link GuiBoundsIndex} that is extended lazily as the list grows, so repeated
+ * Spatial index over the append-only element lists of a {@code GuiRenderState} layer node, so repeated
  * "does anything in this layer overlap this rectangle" queries stop walking the list and re-reading
  * {@code ScreenRectangle} records. Answers are identical to the vanilla linear scan.
+ * <p>
+ * Node lists are normally created as {@link IndexedRectList}s (see {@code GuiRenderStateNodeMixin}), which
+ * carry their own index and are queried directly via {@link #intersects}. Any other list (a node created
+ * before the node mixin applied, or one swapped by another mod) falls back to a per-frame side table
+ * with a {@link GuiBoundsIndex} per list that is extended lazily as the list grows.
  */
 public final class GuiLayerIndex {
+	/** Feeds a list member's bounds into an {@link IndexedRectList}; members without bounds are skipped. */
+	public static final IndexedRectList.BoundsSink<ScreenArea> AREA_BOUNDS = (area, index) -> {
+		ScreenRectangle bounds = area.bounds();
+		if (bounds != null) {
+			index.add(bounds.left(), bounds.top(), bounds.right(), bounds.bottom());
+		}
+	};
+
 	private static final int MIN_INDEXED_SIZE = 8;
 
 	private final IdentityHashMap<List<?>, Entry> lists = new IdentityHashMap<>();
@@ -30,6 +43,9 @@ public final class GuiLayerIndex {
 		int top = query.top();
 		int right = query.right();
 		int bottom = query.bottom();
+		if (areas instanceof IndexedRectList<?> indexed) {
+			return indexed.intersectsAny(left, top, right, bottom);
+		}
 		int size = areas.size();
 		if (size < MIN_INDEXED_SIZE) {
 			for (int i = 0; i < size; i++) {

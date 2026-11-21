@@ -12,12 +12,14 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
 			"TerrainBlockModelFeatureSpriteUseMixin",
+			"TerrainChunkSectionsToRenderMixin",
 			"TerrainCompiledSectionMeshMixin",
 			"TerrainFluidStateModelSetAccessor",
 			"TerrainFogRendererAccessor",
 			"TerrainItemFeatureSpriteUseMixin",
 			"TerrainLevelRendererChunkBatchMixin",
 			"TerrainMovingBlockFeatureSpriteUseMixin",
+			"TerrainRenderSectionFadeAccessor",
 			"TerrainRenderSectionVertexSortingMixin",
 			"TerrainSectionCompilerMixin",
 			"TerrainSectionCompilerResultsMixin",
@@ -43,18 +45,22 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("MinecraftGlDebugOptionsMixin", "iris", "oculus", "vulkanmod");
 		registerYield("WindowGlNoErrorMixin", "iris", "oculus", "vulkanmod");
 		for (String m : new String[] {
-			"VulkanRenderPassMixin", "VulkanTextureBindingAccess",
-			"VulkanBufferViewMixin", "VulkanDirectBufferMixin"
+			"CommandEncoderBackendAccessor", "RenderPassBackendAccessor",
+			"VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
+			"VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin", "VulkanRenderPassMixin",
+			"VulkanTextureBindingAccess", "VulkanBufferViewMixin", "VulkanDirectBufferMixin"
 		}) {
 			registerYield(m, "vulkanmod");
 		}
 		for (String m : new String[] {
 			"BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-			"ModelPartCubeFastWriteMixin", "QuadParticleFastWriteMixin",
-			"BakedSheetGlyphAccess", "GlyphEffectAccess", "BakedSheetGlyphFastWriteMixin"
+			"ModelPartCubeFastWriteMixin", "PoseStackPoseAccess", "QuadParticleFastWriteMixin",
+			"SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
+			"BakedSheetGlyphAccess", "GlyphEffectAccess"
 		}) {
 			registerYield(m, "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
 		}
+		registerYield("BakedSheetGlyphFastWriteMixin", "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast", "aurora");
 
 		// Culling, shadows, particles & MoreCulling block states
 		registerYield("EntityRendererCacheMixin", "badoptimizations");
@@ -73,24 +79,28 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("SingleQuadParticleRotationMixin", "particle_core", "badoptimizations");
 		registerYield("ParticleLightmapMixin", "particle_core", "badoptimizations");
 
-		// GUI, text & animated item baking
+		// GUI, text & animated item baking (yields font/item-atlas mixins to Aurora Client's SDF font & atlas pipeline)
 		registerYield("GuiRenderStateMixin", "immediatelyfast", "modernui", "gnetum");
+		registerYield("GuiRenderStateNodeMixin", "immediatelyfast", "modernui", "gnetum");
 		registerYield("GuiRendererMixin", "immediatelyfast", "modernui");
 		registerYield("FormattedBidiReorderMixin", "modernui", "caxton");
-		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast");
-		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast");
-		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone");
-		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone");
-		registerYield("GuiGraphicsExtractorMixin", "immediatelyfast", "gnetum", "polytone");
+		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast", "aurora");
+		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast", "aurora");
+		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone", "aurora");
+		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone", "aurora");
+		registerYield("DynamicAtlasAllocatorMixin", "immediatelyfast", "polytone", "aurora");
+		registerYield("TrackingItemStackRenderStateMixin", "immediatelyfast", "polytone", "aurora");
+		registerYield("GuiGraphicsExtractorMixin", "immediatelyfast", "gnetum", "polytone", "aurora");
+		registerYield("PatchedDataComponentMapMixin", "immediatelyfast", "gnetum", "polytone", "aurora");
 		registerYield("FramerateLimitTrackerMixin", "dynamic_fps");
 
 		// Client memory, lightmap, micro-optimizations & loading
-		registerYield("SpriteContentsMixin", "ferritecore");
-		registerYield("TextureAtlasMipMixin", "ferritecore");
+		registerYield("SpriteContentsMixin", "ferritecore", "aurora");
+		registerYield("TextureAtlasMipMixin", "ferritecore", "aurora");
 		registerYield("LightmapMixin", "badoptimizations");
 		registerYield("LightmapShaderReloadMixin", "badoptimizations");
-		registerYield("DebugEntryMixin", "badoptimizations");
-		registerYield("SoundListenerMixin", "badoptimizations");
+		registerYield("DebugEntryMixin", "badoptimizations", "aurora");
+		registerYield("SoundListenerMixin", "badoptimizations", "aurora");
 		registerYield("ToastIdleMixin", "badoptimizations");
 		registerYield("TutorialIdleMixin", "badoptimizations");
 		registerYield("DebugRendererIdleMixin", "badoptimizations");
@@ -111,10 +121,15 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			case "GlCommandEncoderMixin", "GlRenderPassMixin", "GlTextureBindingAccess",
 				 "GlTextureMixin", "FrameBufferCacheMixin", "SeparateVertexArrayCacheMixin" -> cfg.backendGlDispatchCache;
 			case "MinecraftGlDebugOptionsMixin", "WindowGlNoErrorMixin" -> cfg.backendGlNoErrorContext;
-			case "VulkanRenderPassMixin", "VulkanTextureBindingAccess" -> cfg.backendVulkanDispatchCache;
+			case "VulkanRenderPassMixin", "VulkanTextureBindingAccess" -> cfg.backendVulkanDispatchCache || cfg.terrainVulkanMeshShaders;
+			case "VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
+				 "VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
+				 "CommandEncoderBackendAccessor", "RenderPassBackendAccessor" ->
+				cfg.backendVulkanModernGpu || cfg.terrainVulkanMeshShaders;
 			case "VulkanBufferViewMixin", "VulkanDirectBufferMixin" -> cfg.backendVulkanBufferViewCache;
 			case "BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-				 "ModelPartCubeFastWriteMixin", "QuadParticleFastWriteMixin",
+				 "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess", "QuadParticleFastWriteMixin",
+				 "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
 				 "BakedSheetGlyphAccess", "GlyphEffectAccess", "BakedSheetGlyphFastWriteMixin" ->
 				cfg.backendGlDispatchCache || cfg.backendVulkanDispatchCache;
 

@@ -1,5 +1,6 @@
 package com.ephemera.mixin.client.culling;
 
+import com.ephemera.EphemeraCommon;
 import com.ephemera.render.culling.EntityOcclusionManager;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -15,7 +16,11 @@ public abstract class LevelExtractorCullingMixin {
     @Inject(method = "extract", at = @At("HEAD"))
     private void ephemera$begin(DeltaTracker tracker, Camera camera, float partialTick, CallbackInfo ci) { EntityOcclusionManager.beginFrame(camera); }
     @Inject(method = "extract", at = @At("RETURN"))
-    private void ephemera$end(CallbackInfo ci) { EntityOcclusionManager.endFrame(((LevelExtractor) (Object) this).countRenderedSections()); }
+    private void ephemera$end(CallbackInfo ci) {
+        int sections = EphemeraCommon.config().diagnosticsHudOverlay
+            ? ((LevelExtractor) (Object) this).countRenderedSections() : 0;
+        EntityOcclusionManager.endFrame(sections);
+    }
     @Inject(method = "setLevel", at = @At("HEAD"))
     private void ephemera$world(ClientLevel level, CallbackInfo ci) { EntityOcclusionManager.reset(level); }
 }

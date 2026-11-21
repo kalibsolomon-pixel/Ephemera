@@ -7,12 +7,14 @@ import com.mojang.blaze3d.vertex.VertexFormatElement;
 
 /** Explicit byte offsets for the supported 26.2 default formats. */
 public enum FastVertexLayout {
-	BLOCK(DefaultVertexFormat.BLOCK, 28, 12, 16, -1, 24, -1),
-	ENTITY(DefaultVertexFormat.ENTITY, 36, 12, 16, 24, 28, 32),
-	PARTICLE(DefaultVertexFormat.PARTICLE, 28, 20, 12, -1, 24, -1),
-	UI_TEXT(DefaultVertexFormat.POSITION_TEX_COLOR, 24, 20, 12, -1, -1, -1),
-	WORLD_TEXT(DefaultVertexFormat.POSITION_TEX_LIGHTMAP_COLOR, 28, 24, 12, -1, 20, -1),
-	COLOR_FIRST_TEXT(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, 28, 12, 16, -1, 24, -1);
+	BLOCK(DefaultVertexFormat.BLOCK, 28, 12, 16, -1, 24, -1, true),
+	ENTITY(DefaultVertexFormat.ENTITY, 36, 12, 16, 24, 28, 32, true),
+	POSITION_TEX_COLOR_NORMAL(DefaultVertexFormat.POSITION_TEX_COLOR_NORMAL, 28, 20, 12, -1, -1, 24, true),
+	POSITION_TEX(DefaultVertexFormat.POSITION_TEX, 20, -1, 12, -1, -1, -1, true),
+	PARTICLE(DefaultVertexFormat.PARTICLE, 28, 20, 12, -1, 24, -1, false),
+	UI_TEXT(DefaultVertexFormat.POSITION_TEX_COLOR, 24, 20, 12, -1, -1, -1, false),
+	WORLD_TEXT(DefaultVertexFormat.POSITION_TEX_LIGHTMAP_COLOR, 28, 24, 12, -1, 20, -1, false),
+	COLOR_FIRST_TEXT(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, 28, 12, 16, -1, 24, -1, false);
 
 	private static final FastVertexLayout[] LAYOUTS = values();
 
@@ -22,11 +24,12 @@ public enum FastVertexLayout {
 	final int overlay;
 	final int light;
 	final int normal;
+	final boolean model;
 	private final VertexFormat format;
 	private final boolean validated;
 	private final int mask;
 
-	FastVertexLayout(VertexFormat format, int stride, int color, int uv, int overlay, int light, int normal) {
+	FastVertexLayout(VertexFormat format, int stride, int color, int uv, int overlay, int light, int normal, boolean model) {
 		this.format = format;
 		this.stride = stride;
 		this.color = color;
@@ -34,8 +37,9 @@ public enum FastVertexLayout {
 		this.overlay = overlay;
 		this.light = light;
 		this.normal = normal;
-		this.mask = 0b110 | (overlay >= 0 ? 1 << 3 : 0) | (light >= 0 ? 1 << 4 : 0)
-			| (normal >= 0 ? 1 << 5 : 0);
+		this.model = model;
+		this.mask = (color >= 0 ? 1 << 1 : 0) | (uv >= 0 ? 1 << 2 : 0) | (overlay >= 0 ? 1 << 3 : 0)
+			| (light >= 0 ? 1 << 4 : 0) | (normal >= 0 ? 1 << 5 : 0);
 		this.validated = format.getStepRate() == 0 && format.getVertexSize() == stride
 			&& format.getElements().size() == Integer.bitCount(mask) + 1
 			&& matches(format, "Position", GpuFormat.RGB32_FLOAT, 0)

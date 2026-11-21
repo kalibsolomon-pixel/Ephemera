@@ -1,6 +1,5 @@
 package com.ephemera.mixin.client.backend;
 
-import com.ephemera.EphemeraCommon;
 import com.ephemera.core.render.BufferViewCache;
 import com.ephemera.render.backend.VulkanBufferViews;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -11,7 +10,6 @@ import com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.vulkan.Destroyable;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
-import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import java.nio.LongBuffer;
 import org.lwjgl.vulkan.VkAllocationCallbacks;
@@ -30,13 +28,13 @@ abstract class VulkanBufferViewMixin {
 			LongBuffer result, Operation<Integer> original, @Local(index = 7) GpuBufferSlice slice,
 			@Share("cachedView") LocalBooleanRef cachedView) {
 		cachedView.set(false);
-		if (!EphemeraCommon.config().backendVulkanBufferViewCache
-				|| !(slice.buffer() instanceof VulkanGpuBuffer.Direct buffer)
-				|| !(buffer instanceof VulkanBufferViews owner) || buffer.isClosed()
-				|| allocator != null || info.pNext() != 0 || info.flags() != 0 || info.buffer() != buffer.vkBuffer()) {
+		if (allocator != null || info.pNext() != 0 || info.flags() != 0) {
 			return original.call(device, info, allocator, result);
 		}
-		BufferViewCache views = owner.ephemera$bufferViews();
+		BufferViewCache views = VulkanBufferViews.cacheFor(slice, info.buffer());
+		if (views == null) {
+			return original.call(device, info, allocator, result);
+		}
 		long offset = info.offset();
 		long range = info.range();
 		int format = info.format();

@@ -28,31 +28,44 @@ public final class GuiItemBakingManager {
 		return textureTicks;
 	}
 
-	@FunctionalInterface
-	public interface SlotLookup {
-		DynamicAtlasAllocator.Slot lookup(boolean discardAfterFrame);
-	}
+	/** Vanilla behavior: the slot is discarded after the frame exactly when the state is animated. */
+	public static final int PLAN_VANILLA = 0;
+	/** Animated, but this kind of animation is not paced: discard after the frame like vanilla. */
+	public static final int PLAN_DISCARD = 1;
+	/** Sprite-animated: keep the slot, redraw once per texture tick. */
+	public static final int PLAN_KEEP = 2;
+	/** Glint: keep the slot, redraw once per glint period. */
+	public static final int PLAN_KEEP_FOIL = 3;
 
-	public static DynamicAtlasAllocator.Slot resolveSlot(boolean animated, TrackingItemStackRenderState state, SlotLookup lookup) {
+	/** Decides how the slot of {@code state} is handled; see {@link #discardAfterFrame} and {@link #afterLookup}. */
+	public static int plan(boolean animated, TrackingItemStackRenderState state) {
 		GuiFeatures features = GuiFeatures.get();
 		if (!animated || !(features.animatedItemBaking || features.glintRateLimit)) {
-			return lookup.lookup(animated);
+			return PLAN_VANILLA;
 		}
-		boolean foil = hasFoil(state);
-		if (foil ? !features.glintRateLimit : !features.animatedItemBaking) {
-			return lookup.lookup(true);
+		if (hasFoil(state)) {
+			return features.glintRateLimit ? PLAN_KEEP_FOIL : PLAN_DISCARD;
 		}
-		DynamicAtlasAllocator.Slot slot = lookup.lookup(false);
-		if (slot instanceof GuiAtlasSlotState slotState) {
-			long version = contentVersion(foil, features);
-			if (slotState.ephemera$contentVersion() != version) {
-				if (slot.state() == DynamicAtlasAllocator.SlotState.READY) {
-					slotState.ephemera$markStale();
-				}
-				slotState.ephemera$setContentVersion(version);
+		return features.animatedItemBaking ? PLAN_KEEP : PLAN_DISCARD;
+	}
+
+	/** The flag to pass to {@code DynamicAtlasAllocator.getOrAllocate} for this plan. */
+	public static boolean discardAfterFrame(int plan, boolean animated) {
+		return animated && plan != PLAN_KEEP && plan != PLAN_KEEP_FOIL;
+	}
+
+	/** Marks a kept slot stale when the content version it was drawn at is out of date. */
+	public static void afterLookup(int plan, DynamicAtlasAllocator.Slot slot) {
+		if ((plan != PLAN_KEEP && plan != PLAN_KEEP_FOIL) || !(slot instanceof GuiAtlasSlotState slotState)) {
+			return;
+		}
+		long version = contentVersion(plan == PLAN_KEEP_FOIL, GuiFeatures.get());
+		if (slotState.ephemera$contentVersion() != version) {
+			if (slot.state() == DynamicAtlasAllocator.SlotState.READY) {
+				slotState.ephemera$markStale();
 			}
+			slotState.ephemera$setContentVersion(version);
 		}
-		return slot;
 	}
 
 	private static long contentVersion(boolean foil, GuiFeatures features) {

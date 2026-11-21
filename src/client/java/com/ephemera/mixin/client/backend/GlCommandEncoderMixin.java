@@ -10,7 +10,12 @@ import com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef;
 import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import com.mojang.blaze3d.opengl.GlStateManager;
 import com.mojang.blaze3d.opengl.GlTexture;
+import com.mojang.blaze3d.opengl.Uniform;
 import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+import net.minecraft.SharedConstants;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -27,6 +32,8 @@ abstract class GlCommandEncoderMixin {
 	@Unique private static boolean ephemera$previouslyEnabled;
 	@Unique private Object ephemera$drawBuffersPass;
 	@Unique private int ephemera$drawFramebuffer;
+	@Unique private Map<String, Uniform> ephemera$lastUniforms;
+	@Unique private Set<Map.Entry<String, Uniform>> ephemera$textureUniforms;
 
 	@Inject(method = "trySetup", at = @At("HEAD"))
 	private void ephemera$checkDispatch(@Coerce Object pass, Collection<String> dynamicUniforms,
@@ -52,6 +59,29 @@ abstract class GlCommandEncoderMixin {
 			ephemera$drawBuffersPass = null;
 		}
 		ephemera$previouslyEnabled = enabled;
+	}
+
+	@WrapOperation(method = "trySetup", at = @At(value = "INVOKE", ordinal = 1,
+		target = "Ljava/util/Map;entrySet()Ljava/util/Set;"))
+	private Set<Map.Entry<String, Uniform>> ephemera$skipCleanUniformBuffers(Map<String, Uniform> uniforms,
+			Operation<Set<Map.Entry<String, Uniform>>> original, @Local(index = 5) boolean programChanged,
+			@Share("pass") LocalRef<Object> currentPass, @Share("dispatch") LocalBooleanRef dispatch) {
+		if (!dispatch.get() || SharedConstants.IS_RUNNING_IN_IDE || programChanged
+				|| !(currentPass.get() instanceof DispatchSettings.GlUniformState state) || state.ephemera$hasDirtyUniforms()) {
+			return original.call(uniforms);
+		}
+		if (ephemera$lastUniforms != uniforms) {
+			// Clean UBO entries do no work. Sampler and texel-buffer entries replay texture state every draw.
+			Set<Map.Entry<String, Uniform>> textures = new LinkedHashSet<>();
+			for (Map.Entry<String, Uniform> entry : original.call(uniforms)) {
+				if (!(entry.getValue() instanceof Uniform.Ubo)) {
+					textures.add(entry);
+				}
+			}
+			ephemera$textureUniforms = textures.isEmpty() ? Set.of() : textures;
+			ephemera$lastUniforms = uniforms;
+		}
+		return ephemera$textureUniforms;
 	}
 
 	@WrapOperation(method = "trySetup", at = @At(value = "INVOKE",

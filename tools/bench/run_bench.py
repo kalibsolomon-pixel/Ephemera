@@ -62,6 +62,24 @@ MOD_SETS = {
             "rrls-5.2.8+mc.26.2.jar",
         ],
     },
+    "perfpack-vk": {
+        "disable_ephemera": True,
+        "mods": [
+            "sodium-fabric-0.9.2+mc26.2.jar",
+            "lithium-fabric-0.25.3+mc26.2.jar",
+            "ImmediatelyFast-Fabric-1.16.5+26.2.jar",
+            "entityculling-fabric-1.12.1-mc26.2.jar",
+            "moreculling-fabric-26.2-1.8.2.jar",
+            "cloth-config-26.2.155.jar",
+            "ferritecore-9.0.0-fabric.jar",
+            "BadOptimizations-2.4.1-26.2-fabric.jar",
+            "particle_core-0.3.3+fix1+26.2.jar",
+            "fzzy_config-0.7.7+26.2.jar",
+            "fabric-language-kotlin-1.14.2+kotlin.2.4.21.jar",
+            "krypton-0.3.1.jar",
+            "ScalableLux-fabric-0.3.0-alpha.0.3-all.jar",
+        ],
+    },
     "ephemera": {
         "disable_ephemera": False,
         "mods": [],
@@ -81,7 +99,7 @@ def ps(*args: str) -> str:
     ).stdout.strip()
 
 
-def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str) -> None:
+def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render_distance: int = 20) -> None:
     if run_dir.exists():
         shutil.rmtree(run_dir, ignore_errors=True)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +113,7 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str) -> Non
     # Clean standardized options.txt
     opts = [
         "version:4792",
-        "renderDistance:20",
+        f"renderDistance:{render_distance}",
         "simulationDistance:12",
         "enableVsync:false",
         "maxFps:260",
@@ -117,10 +135,10 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str) -> Non
     (run_dir / "options.txt").write_text("\n".join(opts) + "\n", encoding="utf-8")
 
 
-def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool) -> dict | None:
+def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20) -> dict | None:
     spec = MOD_SETS[target]
     run_dir = REPO / "build" / "bench" / f"game-{target}-{backend.lower()}"
-    prepare_run_dir(run_dir, spec["mods"], backend)
+    prepare_run_dir(run_dir, spec["mods"], backend, render_distance)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     result_file = out_dir / f"bench-{target}-{backend.lower()}.json"
@@ -138,8 +156,11 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         f"-Pephemera.benchDisableEphemera={'true' if spec['disable_ephemera'] else 'false'}",
         f"-Pephemera.benchJfr={'true' if jfr else 'false'}",
         f"-Pephemera.benchDurationSec={duration_sec}",
+        f"-Pephemera.benchRd={render_distance}",
         "-I", str(REPO / "tools" / "bench" / "bench.init.gradle"),
     ]
+    if extra_jvm:
+        cmd.append(f"-Pephemera.extraJvmArgs={extra_jvm}")
     gradle_log = out_dir / f"gradle-{target}-{backend.lower()}.log"
     print(f"\n=== BENCHMARK: {target} [{backend}] ===", flush=True)
     with open(gradle_log, "w", encoding="utf-8") as lf:
@@ -204,6 +225,8 @@ def main() -> None:
     ap.add_argument("--out", default=str(REPO / "build" / "bench" / "results"))
     ap.add_argument("--duration", type=int, default=6)
     ap.add_argument("--no-jfr", action="store_true")
+    ap.add_argument("--extra-jvm", default="")
+    ap.add_argument("--render-distance", type=int, default=20)
     args = ap.parse_args()
 
     out_dir = Path(args.out).resolve()
@@ -213,7 +236,7 @@ def main() -> None:
     summary = {}
     for backend in backends:
         for target in targets:
-            res = run_one(target, backend, out_dir, args.duration, not args.no_jfr)
+            res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance)
             if res:
                 summary[f"{target}_{backend.lower()}"] = res
 

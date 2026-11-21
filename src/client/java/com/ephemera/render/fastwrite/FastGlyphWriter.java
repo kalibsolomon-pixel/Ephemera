@@ -1,6 +1,7 @@
 package com.ephemera.render.fastwrite;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 
 public final class FastGlyphWriter {
@@ -38,25 +39,28 @@ public final class FastGlyphWriter {
 		FastBufferState builder = FastVertexBuffer.access(consumer);
 		FastVertexLayout layout = FastVertexBuffer.layout(builder);
 		if ((layout != FastVertexLayout.UI_TEXT && layout != FastVertexLayout.WORLD_TEXT
-				&& layout != FastVertexLayout.COLOR_FIRST_TEXT) || !FastVertexBuffer.canAppend(builder, 4)) {
+				&& layout != FastVertexLayout.COLOR_FIRST_TEXT) || matrix == null || matrix.getClass() != Matrix4f.class) {
 			return false;
 		}
-		FastVertexBuffer.Scratch scratch = FastVertexBuffer.acquire();
-		if (scratch == null) {
+		long address = FastVertexBuffer.reserve(builder, layout, 4);
+		if (address == 0) {
 			return false;
 		}
-		try {
-			matrix.transformPosition(ax, ay, z, scratch.vector);
-			scratch.vertex(0, color, u0, v0, light, 0);
-			matrix.transformPosition(bx, by, z, scratch.vector);
-			scratch.vertex(1, color, u0, v1, light, 0);
-			matrix.transformPosition(cx, cy, z, scratch.vector);
-			scratch.vertex(2, color, u1, v1, light, 0);
-			matrix.transformPosition(dx, dy, z, scratch.vector);
-			scratch.vertex(3, color, u1, v0, light, 0);
-			return scratch.append(builder, layout, 4, 0);
-		} finally {
-			scratch.release();
-		}
+		int properties = matrix.properties();
+		int packedColor = FastVertexBuffer.packColor(color);
+		int packedLight = FastVertexBuffer.packUv(light);
+		int stride = layout.stride;
+		writeVertex(address, layout, matrix, properties, ax, ay, z, u0, v0, packedColor, packedLight);
+		writeVertex(address += stride, layout, matrix, properties, bx, by, z, u0, v1, packedColor, packedLight);
+		writeVertex(address += stride, layout, matrix, properties, cx, cy, z, u1, v1, packedColor, packedLight);
+		writeVertex(address += stride, layout, matrix, properties, dx, dy, z, u1, v0, packedColor, packedLight);
+		FastVertexBuffer.finish(builder, address, 4);
+		return true;
+	}
+
+	private static void writeVertex(long address, FastVertexLayout layout, Matrix4fc matrix, int properties,
+			float x, float y, float z, float u, float v, int packedColor, int packedLight) {
+		FastVertexTransforms.position(address, matrix, properties, x, y, z);
+		FastVertexBuffer.attributes(address, layout, packedColor, u, v, packedLight, 0, 0);
 	}
 }

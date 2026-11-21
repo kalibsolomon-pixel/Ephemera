@@ -20,6 +20,8 @@ public final class EphemeraConfig {
 	public boolean terrainAnimateOnlyVisibleTextures = true;
 	public boolean terrainFastTranslucentSort = true;
 	public boolean terrainPrefixSumBiomeBlend = true;
+	public boolean terrainVulkanMeshShaders = true;
+	public boolean terrainVulkanGpuCulling = true;
 	public int chunkBuilderThreads = 0; // 0 = auto tuned to CPU topology
 	public int maxSectionUploadsPerFrameMs = 4;
 
@@ -28,6 +30,7 @@ public final class EphemeraConfig {
 	public boolean backendGlNoErrorContext = true;
 	public boolean backendVulkanDispatchCache = true;
 	public boolean backendVulkanBufferViewCache = true;
+	public boolean backendVulkanModernGpu = true;
 
 	// --- Entity, Block Entity & Block State Culling ---
 	public boolean entityOcclusionCulling = true;

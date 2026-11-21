@@ -3,6 +3,8 @@ package com.ephemera.render.culling;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.culling.DirectMappedSweepCache;
 import com.ephemera.core.culling.OpaqueLayerSweep;
+import com.ephemera.core.culling.CullingBounds;
+import com.ephemera.core.culling.ParticleCellOcclusion;
 import com.ephemera.mixin.client.culling.EntityRendererAccessor;
 import com.ephemera.mixin.client.culling.LeashDataAccessor;
 import com.ephemera.mixin.client.particle.FrustumAccessor;
@@ -15,6 +17,7 @@ import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.MobRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Leashable;
 import net.minecraft.world.entity.Mob;
@@ -27,28 +30,26 @@ import net.minecraft.world.entity.decoration.painting.Painting;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.FishingHook;
 import net.minecraft.world.level.block.entity.*;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.level.block.WallBannerBlock;
+import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.level.chunk.LevelChunkSection;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.phys.AABB;
 
 /** Render-thread owner of all occlusion proofs. Unknown or unavailable data always fails open. */
 public final class EntityOcclusionManager {
-    private static final DirectMappedSweepCache ENTITIES = new DirectMappedSweepCache(1024);
-    private static final DirectMappedSweepCache BLOCK_ENTITIES = new DirectMappedSweepCache(512);
+    private static final DirectMappedSweepCache ENTITIES = new DirectMappedSweepCache(DirectMappedSweepCache.ENTITY_SLOTS);
+    private static final DirectMappedSweepCache BLOCK_ENTITIES = new DirectMappedSweepCache(DirectMappedSweepCache.BLOCK_ENTITY_SLOTS);
     private static final DirectMappedSweepCache BOX_QUERIES = new DirectMappedSweepCache(1024);
-    private static final int SIZE = 8192;
-    private static final long[] BLOCK_KEYS = new long[SIZE], BLOCK_STAMPS = new long[SIZE], BLOCK_FRAMES = new long[SIZE];
-    private static final int[] BLOCK_YS = new int[SIZE];
-    private static final boolean[] BLOCK_SOLID = new boolean[SIZE];
-    private static final OpaqueLayerSweep SWEEP = new OpaqueLayerSweep(EntityOcclusionManager::isOpaque);
+    private static final SectionBlockCache SECTIONS = new SectionBlockCache();
+    private static final CullingBounds BOUNDS = new CullingBounds();
+    private static final OpaqueLayerSweep SWEEP = new OpaqueLayerSweep(EntityOcclusionManager::isOpaqueUnchecked);
+    private static final ParticleCellOcclusion PARTICLES = new ParticleCellOcclusion(EntityOcclusionManager::isOpaqueUnchecked);
     private static final IntOpenHashSet LEASH_HOLDERS = new IntOpenHashSet();
     private static final IntOpenHashSet PACKET_HOLDERS = new IntOpenHashSet();
     private static ClientLevel level;
-    private static LevelChunkSection lastSection;
-    private static int lastSx, lastSy, lastSz;
-    private static boolean sectionValid, frameActive, cameraValid;
+    private static boolean frameActive, cameraValid;
     private static long terrainStamp = 1, frame = 1, now;
     private static double cameraX, cameraY, cameraZ;
     private static Frustum frustum;
@@ -71,16 +72,16 @@ public final class EntityOcclusionManager {
         frameActive = true; cameraValid = current != null;
         frame++; now = System.nanoTime();
         occludedEntities = occludedBlockEntities = 0;
-        releaseSection();
+        SECTIONS.releaseSections();
     }
     public static void endFrame(int renderedSections) {
         visibleSections = renderedSections;
-        frameActive = false; frame++; releaseSection(); ParticleCullingManager.endFrame();
+        frameActive = false; frame++; SECTIONS.releaseSections(); ParticleCullingManager.endFrame();
     }
-    private static void releaseSection() { lastSection = null; sectionValid = false; }
+    private static void releaseSection() { SECTIONS.releaseSections(); }
     public static void terrainChanged() {
         terrainStamp++;
-        releaseSection();
+        SECTIONS.clear();
         // Every mutation invalidates the geometry proof, including cached visible results.
         ParticleCullingManager.invalidateLight();
     }
@@ -128,10 +129,8 @@ public final class EntityOcclusionManager {
         AABB box = ((EntityRendererAccessor) renderer).ephemera$cullingBox(entity);
         if (box.maxX - box.minX > 8 || box.maxY - box.minY > 8 || box.maxZ - box.minZ > 8) return false;
         double dx = entity.xOld - entity.getX(), dy = entity.yOld - entity.getY(), dz = entity.zOld - entity.getZ();
-        double pad = entity instanceof Mob mob ? Math.max(1, mob.getScale() * 2) : 1;
-        double x0 = box.minX + Math.min(0, dx) - pad, y0 = box.minY + Math.min(0, dy) - pad;
-        double z0 = box.minZ + Math.min(0, dz) - pad, x1 = box.maxX + Math.max(0, dx) + pad;
-        double y1 = box.maxY + Math.max(0, dy) + pad, z1 = box.maxZ + Math.max(0, dz) + pad;
+        BOUNDS.entity(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ,
+                dx, dy, dz, entity instanceof Mob mob ? mob.getScale() : 1);
         if (Minecraft.getInstance().options.entityShadows().get()) {
             // Vanilla EntityRenderer/MobRenderer contracts, inspected from 26.2 bytecode. Unknown
             // radius overrides use the engine's absolute 32-block cap instead of an estimate.
@@ -142,14 +141,11 @@ public final class EntityOcclusionManager {
                 radius = Math.min(32, radius);
             }
             if (!Float.isFinite(radius)) return false;
-            double extent = Math.max(0, radius) + 1;
-            x0 = Math.min(x0, Math.min(entity.xOld, entity.getX()) - extent);
-            y0 = Math.min(y0, Math.min(entity.yOld, entity.getY()) - extent);
-            z0 = Math.min(z0, Math.min(entity.zOld, entity.getZ()) - extent);
-            x1 = Math.max(x1, Math.max(entity.xOld, entity.getX()) + extent);
-            z1 = Math.max(z1, Math.max(entity.zOld, entity.getZ()) + extent);
+            BOUNDS.shadow(entity.xOld, entity.yOld, entity.zOld,
+                    entity.getX(), entity.getY(), entity.getZ(), Math.max(0, radius));
         }
-        boolean hidden = cached(ENTITIES, entity.getId(), x0, y0, z0, x1, y1, z1);
+        boolean hidden = cached(ENTITIES, entity.getId(), BOUNDS.x0, BOUNDS.y0, BOUNDS.z0,
+                BOUNDS.x1, BOUNDS.y1, BOUNDS.z1);
         if (hidden) occludedEntities++;
         return hidden;
     }
@@ -158,14 +154,41 @@ public final class EntityOcclusionManager {
                 || entity.getLevel() != level || entity instanceof BeaconBlockEntity
                 || level.getGloballyRenderedBlockEntities().contains(entity) || renderer == null
                 || renderer.shouldRenderOffScreen() || !renderer.getClass().getName().startsWith("net.minecraft.")) return false;
-        // These vanilla renderers fit inside this envelope, including double chest lids and sign text.
+        // Type-specific envelopes cover moving lids, attached chest halves and hanging geometry.
         if (!(entity instanceof ChestBlockEntity || entity instanceof EnderChestBlockEntity
                 || entity instanceof SignBlockEntity || entity instanceof ShulkerBoxBlockEntity
                 || entity instanceof BannerBlockEntity)
                 || !entity.getClass().getName().startsWith("net.minecraft.")) return false;
         BlockPos p = entity.getBlockPos();
-        boolean hidden = cached(BLOCK_ENTITIES, p.asLong(), p.getX() - 1, p.getY() - 1, p.getZ() - 1,
-                p.getX() + 2, p.getY() + 2, p.getZ() + 2);
+        BOUNDS.block(p.getX(), p.getY(), p.getZ());
+        BlockState state = entity.getBlockState();
+        if (entity instanceof ChestBlockEntity && state.hasProperty(ChestBlock.TYPE)
+                && state.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
+            Direction neighbor = ChestBlock.getConnectedDirection(state);
+            BOUNDS.x0 += Math.min(0, neighbor.getStepX()); BOUNDS.x1 += Math.max(0, neighbor.getStepX());
+            BOUNDS.z0 += Math.min(0, neighbor.getStepZ()); BOUNDS.z1 += Math.max(0, neighbor.getStepZ());
+        } else if (entity instanceof ShulkerBoxBlockEntity && state.hasProperty(ShulkerBoxBlock.FACING)) {
+            // A shulker can open sideways or downward; include the complete swept lid.
+            Direction facing = state.getValue(ShulkerBoxBlock.FACING);
+            BOUNDS.x0 += Math.min(0, facing.getStepX()) * .5; BOUNDS.x1 += Math.max(0, facing.getStepX()) * .5;
+            BOUNDS.y0 += Math.min(0, facing.getStepY()) * .5; BOUNDS.y1 += Math.max(0, facing.getStepY()) * .5;
+            BOUNDS.z0 += Math.min(0, facing.getStepZ()) * .5; BOUNDS.z1 += Math.max(0, facing.getStepZ()) * .5;
+            // The square lid also rotates about its facing axis while opening.
+            BOUNDS.x0 -= .15; BOUNDS.z0 -= .15; BOUNDS.x1 += .15; BOUNDS.z1 += .15;
+            if (facing.getStepY() == 0) { BOUNDS.y0 -= .25; BOUNDS.y1 += .25; }
+        } else if (entity instanceof BannerBlockEntity) {
+            BOUNDS.y1 = p.getY() + 2;
+            if (state.getBlock() instanceof WallBannerBlock) BOUNDS.y0 = p.getY() - 1;
+            BOUNDS.x0 -= .25; BOUNDS.z0 -= .25; BOUNDS.x1 += .25; BOUNDS.z1 += .25;
+        } else if (entity instanceof HangingSignBlockEntity) {
+            BOUNDS.y0 = p.getY() - 1;
+            BOUNDS.x0 -= .5; BOUNDS.z0 -= .5; BOUNDS.x1 += .5; BOUNDS.z1 += .5;
+        } else if (entity instanceof SignBlockEntity) {
+            // Diagonal standing signs and their text can cross a block-cell corner.
+            BOUNDS.x0 -= .25; BOUNDS.z0 -= .25; BOUNDS.x1 += .25; BOUNDS.z1 += .25;
+        }
+        boolean hidden = cached(BLOCK_ENTITIES, p.asLong(), BOUNDS.x0, BOUNDS.y0, BOUNDS.z0,
+                BOUNDS.x1, BOUNDS.y1, BOUNDS.z1);
         if (hidden) occludedBlockEntities++;
         return hidden;
     }
@@ -196,7 +219,7 @@ public final class EntityOcclusionManager {
     }
     public static boolean boxOccluded(double x0, double y0, double z0, double x1, double y1, double z1) {
         if (!ready() || !finite(x0, y0, z0, x1, y1, z1)) return false;
-        // Equal quantized bounds share the proof across particles, weather and API consumers.
+        // Equal quantized bounds share the proof across weather and API consumers.
         // Complete bounds remain in the key, so this hash can only cause eviction.
         long id = (long) lower(x0 - .125) * 73428767L ^ (long) lower(y0 - .125) * 912931L
                 ^ (long) lower(z0 - .125) * 438289L;
@@ -207,29 +230,31 @@ public final class EntityOcclusionManager {
         try {
             return SWEEP.isOccluded(cx * .25 - .125, cy * .25 - .125, cz * .25 - .125,
                     cx * .25 + .375, cy * .25 + .375, cz * .25 + .375, x0, y0, z0, x1, y1, z1);
-        } finally { releaseSection(); }
+        } finally { if (!frameActive) releaseSection(); }
     }
     public static boolean isOpaque(int x, int y, int z) {
-        if (!ready() || level.isOutsideBuildHeight(y)) return false;
-        long key = BlockPos.asLong(x, y, z);
-        int s = (int) (key ^ (key >>> 27) ^ (key >>> 43)) & (SIZE - 1);
-        if (BLOCK_FRAMES[s] == frame && BLOCK_STAMPS[s] == terrainStamp && BLOCK_KEYS[s] == key && BLOCK_YS[s] == y) return BLOCK_SOLID[s];
-        int sx = x >> 4, sy = y >> 4, sz = z >> 4;
-        if (!sectionValid || sx != lastSx || sy != lastSy || sz != lastSz) {
-            LevelChunk chunk = level.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false);
-            lastSection = chunk == null ? null : chunk.getSection(level.getSectionIndex(y));
-            lastSx = sx; lastSy = sy; lastSz = sz; sectionValid = true;
-        }
-        boolean solid = false;
-        if (lastSection != null && !lastSection.hasOnlyAir()) {
-            BlockState state = lastSection.getBlockState(x & 15, y & 15, z & 15);
-            // Static solid render shapes only. Glass, leaves, fluids and partial blocks never occlude.
-            solid = state.isSolidRender() && state.canOcclude() && !state.getBlock().hasDynamicShape()
-                    && !state.hasOffsetFunction();
-        }
-        BLOCK_KEYS[s] = key; BLOCK_YS[s] = y; BLOCK_STAMPS[s] = terrainStamp; BLOCK_FRAMES[s] = frame; BLOCK_SOLID[s] = solid;
-        if (!frameActive) releaseSection();
-        return solid;
+        if (!ready()) return false;
+        try { return isOpaqueUnchecked(x, y, z); }
+        finally { if (!frameActive) releaseSection(); }
+    }
+    private static boolean isOpaqueUnchecked(int x, int y, int z) {
+        return SECTIONS.isOpaque(level, x, y, z, terrainStamp, frame);
+    }
+    public static boolean particleOccluded(double x, double y, double z, double radius) {
+        if (!ready()) return false;
+        try { return PARTICLES.isOccluded(cameraX, cameraY, cameraZ, x, y, z, radius, frame, terrainStamp); }
+        finally { if (!frameActive) releaseSection(); }
+    }
+    /** Checked once at particle-extraction start so per-particle tests skip Minecraft/camera/thread checks. */
+    public static boolean isReadyForParticles(Camera camera) {
+        if (!frameActive || !ready() || camera == null) return false;
+        var pos = camera.position();
+        if (cameraX != pos.x || cameraY != pos.y || cameraZ != pos.z) return false;
+        return PARTICLES.prepareFrame(cameraX, cameraY, cameraZ, frame, terrainStamp);
+    }
+    /** Fast unchecked particle occlusion probe; caller must have verified {@link #isReadyForParticles} this frame. */
+    public static boolean particleOccludedFast(double x, double y, double z, double radius) {
+        return PARTICLES.isOccludedFast(x, y, z, radius);
     }
     public static long terrainStamp() { return terrainStamp; }
     public static boolean sectionVisible(int x, int y, int z) {

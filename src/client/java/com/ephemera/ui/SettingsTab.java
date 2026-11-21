@@ -55,7 +55,8 @@ enum SettingsTab {
 
 	private static void performance(List<SettingRow> r, EphemeraConfig c) {
 		r.add(new SettingRow.Header("ephemera.section.backend"));
-		toggles(r, c, "backendGlDispatchCache", "backendGlNoErrorContext", "backendVulkanDispatchCache", "backendVulkanBufferViewCache");
+		toggles(r, c, "backendGlDispatchCache", "backendGlNoErrorContext", "backendVulkanDispatchCache",
+			"backendVulkanBufferViewCache", "backendVulkanModernGpu");
 		r.add(new SettingRow.Header("ephemera.section.gui"));
 		toggles(r, c, "guiLayerIndexing", "guiFastLtrText", "guiMergeTextDecorations", "guiFontAtlasResizing");
 		r.add(new SettingRow.Choice<>(c, "guiFontAtlasSize", ATLAS_SIZES, v -> v + " px"));
@@ -71,7 +72,7 @@ enum SettingsTab {
 		r.add(new SettingRow.Header("ephemera.section.terrainEngine"));
 		toggles(r, c, "terrainEngineEnabled", "terrainMultiDraw", "terrainDirectionalFaceCulling", "terrainBitmaskMeshing",
 			"terrainCompactVertexFormat", "terrainFogOcclusion", "terrainAsyncGraphUpdates", "terrainAnimateOnlyVisibleTextures",
-			"terrainFastTranslucentSort", "terrainPrefixSumBiomeBlend");
+			"terrainFastTranslucentSort", "terrainPrefixSumBiomeBlend", "terrainVulkanMeshShaders", "terrainVulkanGpuCulling");
 		r.add(new SettingRow.Header("ephemera.section.chunkBuilding"));
 		r.add(new SettingRow.Slider(c, "chunkBuilderThreads", 0, 32, 1, v -> v.intValue() == 0 ? "Auto" : v.intValue() + " threads"));
 		r.add(new SettingRow.Slider(c, "maxSectionUploadsPerFrameMs", 1, 32, 1, v -> v.intValue() + " ms"));

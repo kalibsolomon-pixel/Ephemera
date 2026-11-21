@@ -8,7 +8,8 @@ public final class CullingCoreTestSuite {
     public static void main(String[] args) throws Exception {
         int count = 0;
         for (Class<?> type : new Class<?>[] {OpaqueLayerSweepTest.class, DirectMappedSweepCacheTest.class,
-                ShadowGroundCacheCoreTest.class, LeafCullingPolicyTest.class}) {
+                ShadowGroundCacheCoreTest.class, LeafCullingPolicyTest.class, CullingBoundsTest.class,
+                ParticleCellOcclusionTest.class}) {
             Object suite = type.getDeclaredConstructor().newInstance();
             for (var method : type.getDeclaredMethods()) if (method.isAnnotationPresent(Test.class)) {
                 try { method.invoke(suite); count++; }

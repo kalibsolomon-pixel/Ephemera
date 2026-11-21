@@ -31,7 +31,14 @@ public interface SectionMeshRenderCache {
 	/** Allocation in {@code slot}, or null when absent or owned by another dispatcher epoch. */
 	TlsfAllocator.@Nullable Allocation ephemera$allocation(int slot, int epoch);
 
+	/**
+	 * Mirrors an allocation change and recomputes the affected layer of
+	 * {@link #ephemera$drawState}. Also bumps {@link TerrainTopology#topology()}.
+	 */
 	void ephemera$setAllocation(int slot, int epoch, TlsfAllocator.@Nullable Allocation allocation);
+
+	/** Precomputed draw parameters for {@code epoch}, or null when nothing was uploaded for it. */
+	@Nullable SectionDrawState ephemera$drawState(int epoch);
 
 	/** Vanilla {@code getSectionDraw(layer)} without the {@code EnumMap} lookup. */
 	SectionMesh.@Nullable SectionDraw ephemera$draw(int layerOrdinal);
@@ -47,6 +54,14 @@ public interface SectionMeshRenderCache {
 	DynamicUniforms.@Nullable ChunkSectionInfo ephemera$cachedInfo();
 
 	void ephemera$cacheInfo(DynamicUniforms.ChunkSectionInfo info);
+
+	/** Vertex layout this mesh was baked with, or null for vanilla section-local layout. */
+	@Nullable SectionLayout ephemera$layout();
+
+	/** Optional GPU meshlet arena handle when rendered via Vulkan {@code VK_EXT_mesh_shader}. */
+	com.ephemera.render.terrain.vulkan.@Nullable VulkanMeshSectionHandle ephemera$meshHandle();
+
+	void ephemera$setMeshHandle(com.ephemera.render.terrain.vulkan.@Nullable VulkanMeshSectionHandle handle);
 
 	/** Animated block-atlas sprite ids referenced by this mesh's block models. */
 	int[] ephemera$animatedSprites();

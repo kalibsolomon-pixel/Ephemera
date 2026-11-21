@@ -64,4 +64,15 @@ class OpaqueLayerSweepTest {
                     8.5, ty - .1, tz - .1, 8.6, ty + .1, tz + .1), "seed case " + i);
         }
     }
+
+    @Test void thinWallProofNeedsOnlyASmallNumberOfVoxelReads() {
+        int[] reads = {0};
+        OpaqueLayerSweep sweep = new OpaqueLayerSweep((x, y, z) -> {
+            reads[0]++;
+            return y == 129 || z == 10 && x >= -10 && x <= 10 && y >= 130 && y <= 136;
+        });
+        assertTrue(sweep.isOccluded(.375, 131.375, .375, .875, 131.875, .875,
+                -.25, 129, 11.75, 1.25, 131.25, 13.25));
+        assertTrue(reads[0] <= 32, "a nearby full separating layer should not exhaust the 512-read budget");
+    }
 }

@@ -1,5 +1,6 @@
 package com.ephemera.mixin.client.terrain;
 
+import com.ephemera.render.terrain.ChunkRenderBatcher;
 import com.ephemera.render.terrain.SectionDispatcherEpoch;
 import com.ephemera.render.terrain.SectionMeshRenderCache;
 import com.ephemera.render.terrain.UberGpuBufferSlot;
@@ -48,6 +49,12 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 			index.ephemera$assignSlot(SectionMeshRenderCache.indexSlot(layer), epoch);
 		}
 		ephemera$epoch = epoch;
+	}
+
+	/** Releases the batcher's indirect command buffers and drops its frame plan with the dispatcher. */
+	@Inject(method = "dispose", at = @At("HEAD"))
+	private void ephemera$releaseBatcher(CallbackInfo ci) {
+		ChunkRenderBatcher.get().release();
 	}
 
 	@Override

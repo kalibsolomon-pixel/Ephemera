@@ -46,4 +46,24 @@ class DirectMappedSweepCacheTest {
         assertThrows(IllegalArgumentException.class, () -> new DirectMappedSweepCache(3));
         assertThrows(IllegalArgumentException.class, () -> new DirectMappedSweepCache(0));
     }
+    @Test void packedBlockPosGridHasMinimalCollisions() {
+        DirectMappedSweepCache c = new DirectMappedSweepCache(DirectMappedSweepCache.BLOCK_ENTITY_SLOTS);
+        long[] ids = new long[64];
+        int k = 0;
+        for (int z : new int[] {6, 14}) {
+            for (int y : new int[] {130, 131}) {
+                for (int x = -8; x <= 7; x++) {
+                    // Matches Minecraft BlockPos.asLong bit layout: (x<<38) | (z<<12) | y.
+                    long id = (((long) x & 0x3FFFFFFL) << 38) | (((long) z & 0x3FFFFFFL) << 12) | (y & 0xFFFL);
+                    ids[k++] = id;
+                    put(c, id, 1, 100, z == 14);
+                }
+            }
+        }
+        int hits = 0;
+        for (int i = 0; i < 64; i++) {
+            if (get(c, ids[i], 1, 101) != DirectMappedSweepCache.MISS) hits++;
+        }
+        assertTrue(hits >= 60, "expected >=60/64 block-entity hits without slot thrashing, got " + hits);
+    }
 }

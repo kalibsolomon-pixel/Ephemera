@@ -133,6 +133,40 @@ class GuiBoundsIndexTest {
 	}
 
 	@Test
+	void singleMemberIsAnExactHitAfterTheUnionTest() {
+		Random random = new Random(11);
+		for (int round = 0; round < 2000; round++) {
+			int[] member = rect(random.nextInt(200) - 100, random.nextInt(200) - 100, random.nextInt(60) - 10, random.nextInt(60) - 10);
+			GuiBoundsIndex index = new GuiBoundsIndex(1);
+			index.add(member[0], member[1], member[2], member[3]);
+			int[] q = rect(random.nextInt(260) - 130, random.nextInt(260) - 130, random.nextInt(60) - 5, random.nextInt(60) - 5);
+			assertEquals(vanillaIntersects(member, q), index.intersectsAny(q[0], q[1], q[2], q[3]),
+				"member " + java.util.Arrays.toString(member) + " query " + java.util.Arrays.toString(q));
+		}
+	}
+
+	@Test
+	void reuseAcrossManyClearCyclesStaysExact() {
+		Random random = new Random(99);
+		GuiBoundsIndex index = new GuiBoundsIndex(2);
+		for (int frame = 0; frame < 300; frame++) {
+			index.clear();
+			List<int[]> reference = new ArrayList<>();
+			int members = random.nextInt(30);
+			for (int i = 0; i < members; i++) {
+				int[] r = rect(random.nextInt(800), random.nextInt(500), random.nextInt(120), random.nextInt(60));
+				index.add(r[0], r[1], r[2], r[3]);
+				reference.add(r);
+			}
+			assertEquals(members, index.size());
+			for (int i = 0; i < 40; i++) {
+				int[] q = rect(random.nextInt(900) - 50, random.nextInt(600) - 50, random.nextInt(100), random.nextInt(100));
+				assertEquals(naive(reference, q), index.intersectsAny(q[0], q[1], q[2], q[3]));
+			}
+		}
+	}
+
+	@Test
 	void growsPastInitialCapacity() {
 		GuiBoundsIndex index = new GuiBoundsIndex(1);
 		for (int i = 0; i < 1000; i++) {

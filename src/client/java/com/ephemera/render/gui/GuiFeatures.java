@@ -35,7 +35,7 @@ public final class GuiFeatures {
 		glintRateLimit = cfg.guiGlintRateLimit;
 		glintPeriodNanos = 1_000_000_000L / Math.clamp(cfg.guiGlintFps, 1, 1000);
 		skipTextSortWork = cfg.guiSkipTextTranslucencySort;
-		itemStateCache = cfg.guiHudFrameCache;
+		itemStateCache = cfg.guiAnimatedItemBaking || cfg.guiHudFrameCache;
 		unfocusedFpsLimit = cfg.unfocusedFpsLimitEnabled;
 		unfocusedFps = Math.clamp(cfg.unfocusedFpsLimit, 1, 260);
 	}

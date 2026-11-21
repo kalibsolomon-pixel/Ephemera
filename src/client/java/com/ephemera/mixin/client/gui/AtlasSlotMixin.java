@@ -9,8 +9,10 @@ import org.spongepowered.asm.mixin.Unique;
 @Mixin(DynamicAtlasAllocator.Slot.class)
 abstract class AtlasSlotMixin implements GuiAtlasSlotState {
 	@Shadow private DynamicAtlasAllocator.SlotState externalState;
+	@Shadow private boolean discardAfterFrame;
 
 	@Unique private long ephemera$contentVersion;
+	@Unique private Object ephemera$owner;
 
 	@Override
 	public long ephemera$contentVersion() {
@@ -25,5 +27,21 @@ abstract class AtlasSlotMixin implements GuiAtlasSlotState {
 	@Override
 	public void ephemera$markStale() {
 		externalState = DynamicAtlasAllocator.SlotState.STALE;
+	}
+
+	@Override
+	public Object ephemera$owner() {
+		return ephemera$owner;
+	}
+
+	@Override
+	public void ephemera$setOwner(Object key) {
+		ephemera$owner = key;
+	}
+
+	@Override
+	public void ephemera$touch(boolean discardAfterFrame) {
+		this.discardAfterFrame |= discardAfterFrame;
+		externalState = DynamicAtlasAllocator.SlotState.READY;
 	}
 }

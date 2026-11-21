@@ -61,6 +61,9 @@
   "ephemera.option.backendGlNoErrorContext": "OpenGL No-Error Context",
   "ephemera.option.backendVulkanDispatchCache": "Vulkan Dispatch Cache",
   "ephemera.option.backendVulkanBufferViewCache": "Vulkan Buffer View Cache",
+  "ephemera.option.backendVulkanModernGpu": "Vulkan Modern GPU Sync & SPIR-V",
+  "ephemera.option.terrainVulkanMeshShaders": "Vulkan Mesh Shader Terrain (RDNA2+/RTX)",
+  "ephemera.option.terrainVulkanGpuCulling": "Vulkan GPU Compute Culling",
   "ephemera.option.guiLayerIndexing": "GUI Layer Indexing",
   "ephemera.option.guiFastLtrText": "Fast Left-to-Right Text",
   "ephemera.option.guiMergeTextDecorations": "Merge Text Decorations",
@@ -158,5 +161,8 @@
   "ephemera.tooltip.modStandDownEnabled": "Turn Ephemera features off automatically when another mod already provides them. Restart required.",
   "ephemera.tooltip.chunkBuilderThreads": "0 picks a count tuned to your CPU.",
   "ephemera.tooltip.leavesCullingMode": "How aggressively interior leaf faces are skipped.",
-  "ephemera.tooltip.unfocusedFpsLimit": "Frame rate cap while the game window is in the background."
+  "ephemera.tooltip.unfocusedFpsLimit": "Frame rate cap while the game window is in the background.",
+  "ephemera.tooltip.backendVulkanModernGpu": "Coalesced Synchronization2 barriers, -O SPIR-V shader optimization, and non-debug AMD/NVIDIA checkpoint bypass. Restart required.",
+  "ephemera.tooltip.terrainVulkanMeshShaders": "Nvidium-class VK_EXT_mesh_shader terrain engine for modern AMD (RDNA 2/3/4) and NVIDIA (RTX 20+) GPUs. Falls back automatically when unsupported.",
+  "ephemera.tooltip.terrainVulkanGpuCulling": "GPU compute frustum, fog, and directional meshlet culling feeding a single vkCmdDrawMeshTasksIndirectEXT call per terrain layer."
 }

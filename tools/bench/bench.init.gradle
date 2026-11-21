@@ -8,6 +8,7 @@ gradle.projectsEvaluated {
 	def benchDisableEphemera = (p.findProperty('ephemera.benchDisableEphemera') ?: 'false').toString().toBoolean()
 	def benchJfr = (p.findProperty('ephemera.benchJfr') ?: 'true').toString().toBoolean()
 	def benchDurationSec = (p.findProperty('ephemera.benchDurationSec') ?: '6').toString()
+	def benchRd = (p.findProperty('ephemera.benchRd') ?: '20').toString()
 
 	def probe = p.sourceSets.create('benchprobe') {
 		java.srcDir p.file('tools/bench/probe/java')
@@ -34,10 +35,15 @@ gradle.projectsEvaluated {
 		"-Dephemera.bench.label=${benchLabel}",
 		"-Dephemera.bench.backend=${benchBackend}",
 		"-Dephemera.bench.jfr=${benchJfr}",
-		"-Dephemera.bench.durationSec=${benchDurationSec}"
+		"-Dephemera.bench.durationSec=${benchDurationSec}",
+		"-Dephemera.bench.rd=${benchRd}"
 	)
 	if (benchDisableEphemera) {
 		run.jvmArgs '-Dfabric.debug.disableModIds=ephemera'
+	}
+	def extraJvm = p.findProperty('ephemera.extraJvmArgs')
+	if (extraJvm) {
+		extraJvm.toString().split(/\s+/).findAll { it }.each { run.jvmArgs it }
 	}
 	run.args '--quickPlaySingleplayer', benchWorld, '--graphicsBackend', benchBackend, '--width', '1080', '--height', '720'
 }
