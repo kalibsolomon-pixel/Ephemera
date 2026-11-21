@@ -4,7 +4,21 @@
   "package": "com.ephemera.mixin.common",
   "compatibilityLevel": "JAVA_25",
   "plugin": "com.ephemera.mixin.EphemeraCommonMixinPlugin",
-  "mixins": [],
+  "mixins": [
+    "BlockShapeMixin",
+    "BlockStateCacheMixin",
+    "BlockStateMixin",
+    "ChunkModuloMixin",
+    "CompactTrigMixin",
+    "ConnectionFlushMixin",
+    "DataLayerMixin",
+    "LevelChunkIndexMixin",
+    "LightChunkCacheMixin",
+    "LightSectionCacheMixin",
+    "LightWorkMixin",
+    "PaletteIndexAccessor",
+    "SectionStateMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

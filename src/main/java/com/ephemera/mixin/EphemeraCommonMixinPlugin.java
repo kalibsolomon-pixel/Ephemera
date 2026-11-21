@@ -44,12 +44,32 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 	}
 
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
-		return true;
+		return switch (simpleName) {
+			case "BlockStateCacheMixin", "BlockStateMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
+			case "BlockShapeMixin" -> cfg.memoryDeduplicateShapes;
+			case "CompactTrigMixin" -> cfg.engineFastMath;
+			case "ChunkModuloMixin", "LevelChunkIndexMixin", "PaletteIndexAccessor", "SectionStateMixin" -> cfg.engineFastChunkLookup;
+			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin" -> cfg.engineFastLighting;
+			case "ConnectionFlushMixin" -> cfg.networkFlushConsolidation;
+			default -> true;
+		};
 	}
 
 	@Override
 	public void onLoad(String mixinPackage) {
-		// Subclasses populate yieldRules here
+		registerYield("BlockStateCacheMixin", "ferritecore");
+		registerYield("BlockStateMixin", "ferritecore");
+		registerYield("BlockShapeMixin", "ferritecore", "lithium");
+		registerYield("CompactTrigMixin", "lithium");
+		registerYield("ChunkModuloMixin", "lithium");
+		registerYield("LevelChunkIndexMixin", "lithium");
+		registerYield("PaletteIndexAccessor", "lithium");
+		registerYield("SectionStateMixin", "lithium");
+		registerYield("LightChunkCacheMixin", "scalablelux", "lithium");
+		registerYield("LightSectionCacheMixin", "scalablelux", "lithium");
+		registerYield("LightWorkMixin", "scalablelux", "lithium");
+		registerYield("DataLayerMixin", "scalablelux", "lithium");
+		registerYield("ConnectionFlushMixin", "krypton");
 	}
 
 	@Override

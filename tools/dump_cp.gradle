@@ -1,0 +1,20 @@
+gradle.projectsEvaluated {
+	def root = gradle.rootProject
+	def coreProj = root.project(':core')
+	def dumpCore = coreProj.tasks.register('dumpCoreCp') {
+		doLast {
+			root.file('build').mkdirs()
+			def cp = coreProj.sourceSets.test.compileClasspath.asPath
+			root.file('build/core-cp.txt').text = cp
+		}
+	}
+	root.tasks.register('dumpWorkerClasspaths') {
+		dependsOn ':api:jar', ':core:jar', ':classes', dumpCore
+		doLast {
+			root.file('build').mkdirs()
+			def cp = root.sourceSets.client.compileClasspath.asPath + File.pathSeparator + root.sourceSets.main.output.asPath + File.pathSeparator + root.sourceSets.client.output.asPath
+			root.file('build/client-cp.txt').text = cp
+			println 'Dumped build/core-cp.txt and build/client-cp.txt'
+		}
+	}
+}

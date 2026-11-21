@@ -6,6 +6,10 @@ import com.ephemera.api.EphemeraShaderHooks;
 import com.ephemera.api.EphemeraVisibilityProvider;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.diagnostics.MixinHealth;
+import com.ephemera.render.culling.EphemeraVisibilityService;
+import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.visuals.IrisCompatService;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
@@ -46,7 +50,7 @@ public final class EphemeraClient implements ClientModInitializer {
 					cfg.visualSmoothFog && !shaderHooks.isExternalShaderPackActive(),
 					cfg.visualGradientDithering && !shaderHooks.isExternalShaderPackActive(),
 					cfg.visualDynamicLights && !shaderHooks.isExternalShaderPackActive(),
-					activeBackend
+					resolveBackend()
 				);
 			}
 
@@ -61,7 +65,28 @@ public final class EphemeraClient implements ClientModInitializer {
 			}
 		});
 
+		IrisCompatService.init();
+		EphemeraVisibilityService.init();
+		GuiFeatures.init();
+
 		LOGGER.info("Ephemera {} initialized ({})", version, MixinHealth.summary());
+	}
+
+	private static String resolveBackend() {
+		String cur = activeBackend;
+		if (!"UNKNOWN".equals(cur)) {
+			return cur;
+		}
+		try {
+			var dev = RenderSystem.tryGetDevice();
+			if (dev != null) {
+				String info = String.valueOf(dev.getDeviceInfo());
+				String detected = info.toUpperCase().contains("VULKAN") ? "VULKAN" : "OPENGL";
+				activeBackend = detected;
+				return detected;
+			}
+		} catch (Throwable ignored) {}
+		return cur;
 	}
 
 	public static void setVisibilityProvider(EphemeraVisibilityProvider provider) {
