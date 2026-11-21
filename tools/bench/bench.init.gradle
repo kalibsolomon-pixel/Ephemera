@@ -1,0 +1,43 @@
+// Opt-in competitor-agnostic benchmark probe injected only during benchmark runs.
+gradle.projectsEvaluated {
+	def p = gradle.rootProject
+	def benchOut = p.findProperty('ephemera.benchOut') ?: p.file('build/bench/out').absolutePath
+	def benchLabel = p.findProperty('ephemera.benchLabel') ?: 'ephemera'
+	def benchBackend = p.findProperty('ephemera.benchBackend') ?: 'OPENGL'
+	def benchWorld = p.findProperty('ephemera.benchWorld') ?: 'New World'
+	def benchDisableEphemera = (p.findProperty('ephemera.benchDisableEphemera') ?: 'false').toString().toBoolean()
+	def benchJfr = (p.findProperty('ephemera.benchJfr') ?: 'true').toString().toBoolean()
+	def benchDurationSec = (p.findProperty('ephemera.benchDurationSec') ?: '6').toString()
+
+	def probe = p.sourceSets.create('benchprobe') {
+		java.srcDir p.file('tools/bench/probe/java')
+		resources.srcDir p.file('tools/bench/probe/resources')
+		compileClasspath = p.sourceSets.client.compileClasspath
+		runtimeClasspath = output + compileClasspath
+	}
+	p.tasks.named('compileBenchprobeJava') {
+		options.release = 25
+		options.encoding = 'UTF-8'
+	}
+	def probeJar = p.tasks.register('benchProbeJar', Jar) {
+		from probe.output
+		archiveFileName = 'ephemera-bench-probe.jar'
+		destinationDirectory = p.file('build/bench/probe-jar')
+	}
+
+	def run = p.tasks.named('runClient').get()
+	run.dependsOn probeJar
+	run.classpath += p.files(probeJar)
+	run.maxHeapSize = '4096m'
+	run.jvmArgs(
+		"-Dephemera.bench.out=${benchOut}",
+		"-Dephemera.bench.label=${benchLabel}",
+		"-Dephemera.bench.backend=${benchBackend}",
+		"-Dephemera.bench.jfr=${benchJfr}",
+		"-Dephemera.bench.durationSec=${benchDurationSec}"
+	)
+	if (benchDisableEphemera) {
+		run.jvmArgs '-Dfabric.debug.disableModIds=ephemera'
+	}
+	run.args '--quickPlaySingleplayer', benchWorld, '--graphicsBackend', benchBackend, '--width', '1080', '--height', '720'
+}
