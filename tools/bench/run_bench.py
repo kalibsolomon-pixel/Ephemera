@@ -51,6 +51,7 @@ MOD_SETS = {
             "ImmediatelyFast-Fabric-1.16.5+26.2.jar",
             "entityculling-fabric-1.12.1-mc26.2.jar",
             "moreculling-fabric-26.2-1.8.2.jar",
+            "cloth-config-26.2.155.jar",
             "ferritecore-9.0.0-fabric.jar",
             "BadOptimizations-2.4.1-26.2-fabric.jar",
             "particle_core-0.3.3+fix1+26.2.jar",
@@ -145,7 +146,8 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         proc = subprocess.Popen(cmd, cwd=REPO, stdout=lf, stderr=subprocess.STDOUT)
         started = time.time()
         moved = False
-        while time.time() - started < 300:
+        latest_log = run_dir / "logs" / "latest.log"
+        while time.time() - started < 240:
             if proc.poll() is not None:
                 break
             if not moved:
@@ -156,15 +158,25 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
             if result_file.exists():
                 time.sleep(2)
                 break
+            if latest_log.exists():
+                try:
+                    txt = latest_log.read_text(encoding="utf-8", errors="ignore")
+                    if "Incompatible mods found!" in txt or "Failed to launch" in txt:
+                        print("  Detected Fabric startup failure; aborting run early.", flush=True)
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                        break
+                except OSError:
+                    pass
             time.sleep(1)
         try:
-            proc.wait(timeout=45)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             ps("-File", str(WIN_PS1), "-Action", "close")
             try:
-                proc.wait(timeout=20)
+                proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                proc.wait(timeout=10)
 
     latest_log = run_dir / "logs" / "latest.log"
     if latest_log.exists():
