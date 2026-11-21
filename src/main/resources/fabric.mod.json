@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "ephemera",
+  "version": "${version}",
+  "name": "Ephemera",
+  "description": "High-performance Minecraft rendering, culling, memory, lighting, and visual enhancement engine — built as the standalone performance baseline for Aurora Client.",
+  "authors": [
+    "Aurora Team"
+  ],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.ephemera.EphemeraCommon"
+    ],
+    "client": [
+      "com.ephemera.EphemeraClient"
+    ]
+  },
+  "mixins": [
+    "ephemera.mixins.json",
+    {
+      "config": "ephemera.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "accessWidener": "ephemera.accesswidener",
+  "depends": {
+    "fabricloader": ">=0.20.0",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}

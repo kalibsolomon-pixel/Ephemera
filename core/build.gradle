@@ -1,0 +1,61 @@
+plugins {
+	id 'java-library'
+}
+
+group = rootProject.property('maven_group')
+version = rootProject.property('mod_version')
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	api project(':api')
+	compileOnly "com.google.code.gson:gson:${rootProject.property('gson_version')}"
+	compileOnly "org.slf4j:slf4j-api:${rootProject.property('slf4j_version')}"
+	compileOnly "it.unimi.dsi:fastutil:${rootProject.property('fastutil_version')}"
+
+	testImplementation "com.google.code.gson:gson:${rootProject.property('gson_version')}"
+	testImplementation "org.slf4j:slf4j-api:${rootProject.property('slf4j_version')}"
+	testImplementation "it.unimi.dsi:fastutil:${rootProject.property('fastutil_version')}"
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
+
+tasks.register('verifyLayering') {
+	doLast {
+		def forbidden = ['net.minecraft', 'net.fabricmc', 'com.mojang.blaze3d', 'org.lwjgl', 'org.spongepowered.asm']
+		configurations.compileClasspath.resolvedConfiguration.resolvedArtifacts.each { art ->
+			def id = art.moduleVersion.id.toString()
+			if (forbidden.any { id.contains(it) }) {
+				throw new GradleException("Forbidden native dependency in :core -> ${id}")
+			}
+		}
+		fileTree('src/main/java').matching { include '**/*.java' }.each { f ->
+			def txt = f.getText('UTF-8')
+			forbidden.each { pkg ->
+				if (txt.contains("import ${pkg}.")) {
+					throw new GradleException("Forbidden import ${pkg} in :core file ${f}")
+				}
+			}
+		}
+	}
+}
+
+tasks.named('check') {
+	dependsOn 'verifyLayering'
+}

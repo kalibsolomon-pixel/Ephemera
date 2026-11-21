@@ -1,0 +1,96 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+evaluationDependsOn(':api')
+evaluationDependsOn(':core')
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = "ephemera"
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		name = 'Fabric'
+		url = 'https://maven.fabricmc.net/'
+	}
+}
+
+loom {
+	splitEnvironmentSourceSets()
+	accessWidenerPath = file('src/main/resources/ephemera.accesswidener')
+	enableTransitiveAccessWideners = true
+
+	runConfigs.configureEach {
+		runDir project.findProperty('ephemera.runDir') ?: 'run'
+		property 'fabric.skipDependencyCheck', 'true'
+		vmArg '-Dfabric.skipDependencyCheck=true'
+		property 'fabric.modVersion.minecraft', project.minecraft_version
+		vmArg "-Dfabric.modVersion.minecraft=${project.minecraft_version}"
+	}
+
+	mods {
+		'ephemera' {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	implementation project(':api')
+	implementation project(':core')
+
+	testImplementation sourceSets.client.output
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
+
+tasks.withType(ProcessResources).configureEach {
+	def version = project.version
+	def mcVersion = project.minecraft_version
+	inputs.property 'version', version
+	inputs.property 'minecraft_version', mcVersion
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+	filesMatching('fabric.mod.json') {
+		expand 'version': version, 'minecraft_version': mcVersion
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.withType(Jar).configureEach {
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+jar {
+	archiveClassifier = "mc${project.minecraft_version}"
+	from(project(':api').sourceSets.main.output)
+	from(project(':core').sourceSets.main.output)
+}
+
+tasks.named('check') {
+	dependsOn ':api:check', ':core:check'
+}

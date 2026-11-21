@@ -1,0 +1,98 @@
+package com.ephemera;
+
+import com.ephemera.api.EphemeraApi;
+import com.ephemera.api.EphemeraCapabilities;
+import com.ephemera.api.EphemeraShaderHooks;
+import com.ephemera.api.EphemeraVisibilityProvider;
+import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.core.diagnostics.MixinHealth;
+import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public final class EphemeraClient implements ClientModInitializer {
+	public static final Logger LOGGER = LoggerFactory.getLogger("EphemeraClient");
+
+	private static volatile EphemeraVisibilityProvider visibilityProvider = NoopVisibilityProvider.INSTANCE;
+	private static volatile EphemeraShaderHooks shaderHooks = DefaultShaderHooks.INSTANCE;
+	private static volatile String activeBackend = "UNKNOWN";
+
+	@Override
+	public void onInitializeClient() {
+		EphemeraConfig cfg = EphemeraCommon.config();
+		String version = FabricLoader.getInstance()
+			.getModContainer(EphemeraCommon.MOD_ID)
+			.map(c -> c.getMetadata().getVersion().getFriendlyString())
+			.orElse("0.1.0");
+
+		EphemeraApi.register(new EphemeraApi.Service() {
+			@Override
+			public String version() {
+				return version;
+			}
+
+			@Override
+			public EphemeraCapabilities capabilities() {
+				return new EphemeraCapabilities(
+					cfg.terrainEngineEnabled,
+					cfg.entityOcclusionCulling,
+					cfg.blockEntityOcclusionCulling,
+					cfg.guiLayerIndexing || cfg.guiAnimatedItemBaking,
+					cfg.guiFastLtrText || cfg.guiMergeTextDecorations,
+					cfg.particleCulling,
+					cfg.backendGlDispatchCache || cfg.backendVulkanDispatchCache,
+					cfg.engineFastLighting,
+					cfg.visualSmoothFog && !shaderHooks.isExternalShaderPackActive(),
+					cfg.visualGradientDithering && !shaderHooks.isExternalShaderPackActive(),
+					cfg.visualDynamicLights && !shaderHooks.isExternalShaderPackActive(),
+					activeBackend
+				);
+			}
+
+			@Override
+			public EphemeraVisibilityProvider visibility() {
+				return visibilityProvider;
+			}
+
+			@Override
+			public EphemeraShaderHooks shaders() {
+				return shaderHooks;
+			}
+		});
+
+		LOGGER.info("Ephemera {} initialized ({})", version, MixinHealth.summary());
+	}
+
+	public static void setVisibilityProvider(EphemeraVisibilityProvider provider) {
+		visibilityProvider = provider != null ? provider : NoopVisibilityProvider.INSTANCE;
+	}
+
+	public static void setShaderHooks(EphemeraShaderHooks hooks) {
+		shaderHooks = hooks != null ? hooks : DefaultShaderHooks.INSTANCE;
+	}
+
+	public static void setActiveBackend(String backend) {
+		activeBackend = backend != null ? backend : "UNKNOWN";
+	}
+
+	private enum NoopVisibilityProvider implements EphemeraVisibilityProvider {
+		INSTANCE;
+
+		@Override public boolean isSectionVisible(int sectionX, int sectionY, int sectionZ) { return true; }
+		@Override public boolean isBoxOccluded(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) { return false; }
+		@Override public long terrainRevisionStamp() { return 0L; }
+		@Override public int visibleSectionCount() { return 0; }
+		@Override public int occludedEntityCount() { return 0; }
+		@Override public int occludedBlockEntityCount() { return 0; }
+	}
+
+	private enum DefaultShaderHooks implements EphemeraShaderHooks {
+		INSTANCE;
+
+		@Override public boolean isExternalShaderPackActive() { return false; }
+		@Override public boolean ownsSmoothFog() { return EphemeraCommon.config().visualSmoothFog; }
+		@Override public boolean ownsGradientDithering() { return EphemeraCommon.config().visualGradientDithering; }
+		@Override public boolean ownsDynamicLighting() { return EphemeraCommon.config().visualDynamicLights; }
+	}
+}
