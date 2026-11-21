@@ -32,5 +32,9 @@ public final class EphemeraApi {
 		EphemeraVisibilityProvider visibility();
 
 		EphemeraShaderHooks shaders();
+
+		default EphemeraSettingsBridge settings() {
+			return null;
+		}
 	}
 }

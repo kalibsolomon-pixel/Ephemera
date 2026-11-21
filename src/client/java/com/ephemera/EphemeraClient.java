@@ -2,6 +2,7 @@ package com.ephemera;
 
 import com.ephemera.api.EphemeraApi;
 import com.ephemera.api.EphemeraCapabilities;
+import com.ephemera.api.EphemeraSettingsBridge;
 import com.ephemera.api.EphemeraShaderHooks;
 import com.ephemera.api.EphemeraVisibilityProvider;
 import com.ephemera.core.config.EphemeraConfig;
@@ -29,6 +30,8 @@ public final class EphemeraClient implements ClientModInitializer {
 			.getModContainer(EphemeraCommon.MOD_ID)
 			.map(c -> c.getMetadata().getVersion().getFriendlyString())
 			.orElse("0.1.0");
+
+		EphemeraSettingsBridge settingsBridge = EphemeraClientBridge.register(version, EphemeraClient::resolveBackend);
 
 		EphemeraApi.register(new EphemeraApi.Service() {
 			@Override
@@ -62,6 +65,11 @@ public final class EphemeraClient implements ClientModInitializer {
 			@Override
 			public EphemeraShaderHooks shaders() {
 				return shaderHooks;
+			}
+
+			@Override
+			public EphemeraSettingsBridge settings() {
+				return settingsBridge;
 			}
 		});
 

@@ -3,10 +3,15 @@
   "id": "ephemera",
   "version": "${version}",
   "name": "Ephemera",
-  "description": "High-performance Minecraft rendering, culling, memory, lighting, and visual enhancement engine — built as the standalone performance baseline for Aurora Client.",
+  "description": "High-performance Minecraft rendering, culling, memory, lighting, and worldgen engine for native Vulkan and OpenGL — designed as a standalone Fabric mod and the default performance engine for Aurora Launcher.",
   "authors": [
-    "Aurora Team"
+    "Kalib"
   ],
+  "contact": {
+    "homepage": "https://github.com/kalibsolomon-pixel/Ephemera",
+    "sources": "https://github.com/kalibsolomon-pixel/Ephemera",
+    "issues": "https://github.com/kalibsolomon-pixel/Ephemera/issues"
+  },
   "license": "MIT",
   "environment": "*",
   "entrypoints": {

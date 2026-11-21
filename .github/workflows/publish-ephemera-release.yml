@@ -1,0 +1,160 @@
+name: Publish Ephemera Release
+
+# Manual release publication producing immutable SHA-256 verified GitHub releases
+# discoverable by Aurora Launcher (asset naming: ephemera-<version>-mc<mc>.jar).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Ephemera version declared in gradle.properties (without v)'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+      make_latest:
+        description: 'Mark as latest release'
+        required: true
+        default: true
+        type: boolean
+      source_ref:
+        description: 'Exact commit SHA, branch, or tag to build'
+        required: true
+        type: string
+
+concurrency:
+  group: ephemera-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Verify and build candidate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      jar_name: ${{ steps.inspect.outputs.jar_name }}
+      jar_sha256: ${{ steps.inspect.outputs.jar_sha256 }}
+      jar_size: ${{ steps.inspect.outputs.jar_size }}
+      mc_version: ${{ steps.inspect.outputs.mc_version }}
+    steps:
+      - name: Require master branch workflow
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != 'refs/heads/master' ]]; then
+            echo 'Run release publication from the default master branch.' >&2
+            exit 1
+          fi
+      - name: Checkout requested source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin resolved source SHA
+        id: source
+        shell: bash
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Reject existing tag or release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          tag="v${{ inputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null || gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Tag or release ${tag} already exists." >&2
+            exit 1
+          fi
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+      - name: Build and verify tests
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon check build --console=plain
+      - name: Verify JAR identity and digest
+        id: inspect
+        shell: bash
+        run: |
+          mc="$(grep '^minecraft_version=' gradle.properties | cut -d= -f2 | tr -d '\r')"
+          mod_ver="$(grep '^mod_version=' gradle.properties | cut -d= -f2 | tr -d '\r')"
+          if [[ "$mod_ver" != "${{ inputs.version }}" ]]; then
+            echo "gradle.properties mod_version ($mod_ver) != input version (${{ inputs.version }})" >&2
+            exit 1
+          fi
+          jar="build/libs/ephemera-${mod_ver}-mc${mc}.jar"
+          if [[ ! -f "$jar" ]]; then
+            echo "Expected JAR missing: $jar" >&2
+            exit 1
+          fi
+          sha="$(sha256sum "$jar" | awk '{print $1}')"
+          size="$(stat -c%s "$jar")"
+          mkdir -p release-bundle
+          cp "$jar" "release-bundle/$(basename "$jar")"
+          echo "jar_name=$(basename "$jar")" >> "$GITHUB_OUTPUT"
+          echo "jar_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "jar_size=$size" >> "$GITHUB_OUTPUT"
+          echo "mc_version=$mc" >> "$GITHUB_OUTPUT"
+      - name: Hand off verified artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ephemera-release-candidate
+          path: release-bundle/
+          if-no-files-found: error
+
+  publish:
+    name: Publish verified GitHub release
+    needs: validate
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ephemera-release-candidate
+          path: release-bundle
+      - name: Verify handoff SHA-256 and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          jar="release-bundle/${{ needs.validate.outputs.jar_name }}"
+          actual="$(sha256sum "$jar" | awk '{print $1}')"
+          if [[ "$actual" != "${{ needs.validate.outputs.jar_sha256 }}" ]]; then
+            echo "Handoff SHA-256 mismatch!" >&2
+            exit 1
+          fi
+          tag="v${{ inputs.version }}"
+          cat > release-notes.md <<EOF
+          Ephemera ${{ inputs.version }} for Minecraft ${{ needs.validate.outputs.mc_version }}.
+
+          Source commit: \`${{ needs.validate.outputs.source_sha }}\`
+
+          Runtime JAR: \`${{ needs.validate.outputs.jar_name }}\` (${{ needs.validate.outputs.jar_size }} bytes)
+
+          SHA-256: \`${{ needs.validate.outputs.jar_sha256 }}\`
+          EOF
+          flags=(--latest="${{ inputs.make_latest }}")
+          if [[ "${{ inputs.channel }}" != "stable" ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" \
+            --draft --target "${{ needs.validate.outputs.source_sha }}" \
+            --title "Ephemera ${{ inputs.version }}" \
+            --notes-file release-notes.md "${flags[@]}"
+          gh release upload "$tag" "$jar" -R "$GITHUB_REPOSITORY"
+          gh release edit "$tag" --draft=false --latest="${{ inputs.make_latest }}" -R "$GITHUB_REPOSITORY"

@@ -1,0 +1,221 @@
+package com.ephemera;
+
+import com.ephemera.api.EphemeraOptionDescriptor;
+import com.ephemera.api.EphemeraSettingsBridge;
+import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.core.diagnostics.MixinHealth;
+import com.ephemera.render.fastwrite.FastGlyphWriter;
+import com.ephemera.render.fastwrite.FastLineWriter;
+import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
+import com.ephemera.ui.EphemeraSettingsScreen;
+import com.ephemera.visuals.VisualsRuntime;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.ObjectShare;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
+
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.BiPredicate;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+
+/**
+ * Registers zero-compile-coupling {@link ObjectShare} bridges ({@code ephemera:fast_write} and
+ * {@code ephemera:settings}) and implements {@link EphemeraSettingsBridge} so companion mods
+ * such as Aurora Client can invoke Ephemera's native fast-write paths directly and embed
+ * Ephemera's performance controls inside their own UI.
+ */
+final class EphemeraClientBridge implements EphemeraSettingsBridge {
+	static final String SHARE_FAST_WRITE = "ephemera:fast_write";
+	static final String SHARE_SETTINGS = "ephemera:settings";
+
+	private final String version;
+	private final Supplier<String> backendSupplier;
+
+	private EphemeraClientBridge(String version, Supplier<String> backendSupplier) {
+		this.version = version;
+		this.backendSupplier = backendSupplier;
+	}
+
+	static EphemeraClientBridge register(String version, Supplier<String> backendSupplier) {
+		EphemeraClientBridge bridge = new EphemeraClientBridge(version, backendSupplier);
+		ObjectShare share = FabricLoader.getInstance().getObjectShare();
+
+		Map<String, MethodHandle> fastWrite = buildFastWriteHandles();
+		if (!fastWrite.isEmpty()) {
+			share.put(SHARE_FAST_WRITE, fastWrite);
+		}
+
+		Map<String, Object> settings = new LinkedHashMap<>();
+		settings.put("version", (Supplier<String>) () -> bridge.version);
+		settings.put("backend", (Supplier<String>) bridge.backendSupplier);
+		settings.put("statusSummary", (Supplier<String>) bridge::statusSummary);
+		settings.put("mixinHealth", (Supplier<String>) bridge::mixinHealthSummary);
+		settings.put("meshShaderActive", (BooleanSupplier) bridge::isVulkanMeshShaderActive);
+		settings.put("options", (Supplier<List<Map<String, Object>>>) bridge::optionsAsMaps);
+		settings.put("get", (Predicate<String>) bridge::getBoolean);
+		settings.put("set", (BiPredicate<String, Boolean>) bridge::setBoolean);
+		settings.put("openConfigScreen", (Function<Object, Object>) parent ->
+			new EphemeraSettingsScreen(parent instanceof Screen s ? s : null));
+		share.put(SHARE_SETTINGS, Map.copyOf(settings));
+		return bridge;
+	}
+
+	private static Map<String, MethodHandle> buildFastWriteHandles() {
+		try {
+			MethodHandles.Lookup lookup = MethodHandles.publicLookup();
+			MethodHandle sdfGlyph = lookup.findStatic(FastGlyphWriter.class, "writeSdfGlyph",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4fc.class, int.class,
+					float.class, float.class, float.class, float.class, float.class, float.class,
+					float.class, float.class, int.class, int.class, boolean.class, boolean.class,
+					float.class, float.class, float.class, float.class));
+			MethodHandle sdfBox = lookup.findStatic(FastLineWriter.class, "writeSdfBox",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4f.class, Vec3.class,
+					double.class, double.class, double.class, double.class, double.class, double.class,
+					float.class, float.class, float.class, float.class, float.class));
+			MethodHandle line = lookup.findStatic(FastLineWriter.class, "writeLine",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4f.class, Vec3.class,
+					double.class, double.class, double.class, double.class, double.class, double.class,
+					float.class, float.class, float.class, float.class, float.class, boolean.class));
+			return Map.of("sdfGlyph", sdfGlyph, "sdfBox", sdfBox, "line", line);
+		} catch (Throwable t) {
+			EphemeraClient.LOGGER.warn("Could not publish Ephemera fast_write ObjectShare handles: {}", t.toString());
+			return Map.of();
+		}
+	}
+
+	@Override
+	public List<EphemeraOptionDescriptor> options() {
+		EphemeraConfig c = EphemeraCommon.config();
+		return List.of(
+			new EphemeraOptionDescriptor("terrainEngineEnabled", "Regional Terrain Engine",
+				"Batches visible terrain sections by region with multi-draw submission.", "Terrain", c.terrainEngineEnabled, false),
+			new EphemeraOptionDescriptor("terrainVulkanMeshShaders", "Vulkan Mesh Shaders",
+				"Single-pass VK_EXT_mesh_shader Task+Mesh GPU terrain pipeline on supported GPUs.", "Terrain", c.terrainVulkanMeshShaders, false),
+			new EphemeraOptionDescriptor("terrainDirectionalFaceCulling", "Directional Face Culling",
+				"Skips terrain face buckets facing away from the camera before draw submission.", "Terrain", c.terrainDirectionalFaceCulling, false),
+			new EphemeraOptionDescriptor("terrainFogOcclusion", "Fog Occlusion Culling",
+				"Skips terrain sections completely obscured by environmental or render-distance fog.", "Terrain", c.terrainFogOcclusion, false),
+			new EphemeraOptionDescriptor("terrainAnimateOnlyVisibleTextures", "Animate Visible Sprites Only",
+				"Uploads animated block-atlas textures only when visible in drawn sections or items.", "Terrain", c.terrainAnimateOnlyVisibleTextures, false),
+			new EphemeraOptionDescriptor("entityOcclusionCulling", "Entity Occlusion Culling",
+				"Skips rendering entities hidden behind solid terrain.", "Culling", c.entityOcclusionCulling, false),
+			new EphemeraOptionDescriptor("blockEntityOcclusionCulling", "Block Entity Occlusion Culling",
+				"Skips rendering chests and other block entities hidden behind solid terrain.", "Culling", c.blockEntityOcclusionCulling, false),
+			new EphemeraOptionDescriptor("particleCulling", "Particle Frustum & Occlusion Culling",
+				"Skips particles outside the view frustum or occluded behind solid blocks.", "Culling", c.particleCulling, false),
+			new EphemeraOptionDescriptor("visualEnhancedAmbientOcclusion", "Enhanced Ambient Occlusion",
+				"Refines block corner ambient occlusion contrast with negligible frame cost.", "Visuals", c.visualEnhancedAmbientOcclusion, false),
+			new EphemeraOptionDescriptor("visualDynamicLights", "Dynamic Entity Lights",
+				"Smoothly illuminates held light sources and glowing entities without shaders.", "Visuals", c.visualDynamicLights, false),
+			new EphemeraOptionDescriptor("visualSmoothChunkFade", "Smooth Chunk Fade-In",
+				"Gently fades newly loaded terrain sections into view.", "Visuals", c.visualSmoothChunkFade, false),
+			new EphemeraOptionDescriptor("diagnosticsHudOverlay", "Ephemera Diagnostics HUD",
+				"Displays compact frame-time, backend, and terrain batching diagnostics.", "Diagnostics", c.diagnosticsHudOverlay, false)
+		);
+	}
+
+	private List<Map<String, Object>> optionsAsMaps() {
+		List<EphemeraOptionDescriptor> list = options();
+		List<Map<String, Object>> out = new ArrayList<>(list.size());
+		for (EphemeraOptionDescriptor opt : list) {
+			Map<String, Object> m = new LinkedHashMap<>();
+			m.put("key", opt.key());
+			m.put("label", opt.label());
+			m.put("description", opt.description());
+			m.put("category", opt.category());
+			m.put("value", opt.value());
+			m.put("requiresRestart", opt.requiresRestart());
+			out.add(Map.copyOf(m));
+		}
+		return List.copyOf(out);
+	}
+
+	@Override
+	public boolean getBoolean(String key) {
+		EphemeraConfig c = EphemeraCommon.config();
+		return switch (key) {
+			case "terrainEngineEnabled" -> c.terrainEngineEnabled;
+			case "terrainVulkanMeshShaders" -> c.terrainVulkanMeshShaders;
+			case "terrainDirectionalFaceCulling" -> c.terrainDirectionalFaceCulling;
+			case "terrainFogOcclusion" -> c.terrainFogOcclusion;
+			case "terrainAnimateOnlyVisibleTextures" -> c.terrainAnimateOnlyVisibleTextures;
+			case "entityOcclusionCulling" -> c.entityOcclusionCulling;
+			case "blockEntityOcclusionCulling" -> c.blockEntityOcclusionCulling;
+			case "particleCulling" -> c.particleCulling;
+			case "visualEnhancedAmbientOcclusion" -> c.visualEnhancedAmbientOcclusion;
+			case "visualDynamicLights" -> c.visualDynamicLights;
+			case "visualSmoothChunkFade" -> c.visualSmoothChunkFade;
+			case "diagnosticsHudOverlay" -> c.diagnosticsHudOverlay;
+			default -> false;
+		};
+	}
+
+	@Override
+	public boolean setBoolean(String key, boolean value) {
+		EphemeraConfig c = EphemeraCommon.config();
+		boolean updated = switch (key) {
+			case "terrainEngineEnabled" -> { c.terrainEngineEnabled = value; yield true; }
+			case "terrainVulkanMeshShaders" -> { c.terrainVulkanMeshShaders = value; yield true; }
+			case "terrainDirectionalFaceCulling" -> { c.terrainDirectionalFaceCulling = value; yield true; }
+			case "terrainFogOcclusion" -> { c.terrainFogOcclusion = value; yield true; }
+			case "terrainAnimateOnlyVisibleTextures" -> { c.terrainAnimateOnlyVisibleTextures = value; yield true; }
+			case "entityOcclusionCulling" -> { c.entityOcclusionCulling = value; yield true; }
+			case "blockEntityOcclusionCulling" -> { c.blockEntityOcclusionCulling = value; yield true; }
+			case "particleCulling" -> { c.particleCulling = value; yield true; }
+			case "visualEnhancedAmbientOcclusion" -> { c.visualEnhancedAmbientOcclusion = value; VisualsRuntime.invalidate(); yield true; }
+			case "visualDynamicLights" -> { c.visualDynamicLights = value; VisualsRuntime.invalidate(); yield true; }
+			case "visualSmoothChunkFade" -> { c.visualSmoothChunkFade = value; VisualsRuntime.invalidate(); yield true; }
+			case "diagnosticsHudOverlay" -> { c.diagnosticsHudOverlay = value; yield true; }
+			default -> false;
+		};
+		if (updated) {
+			GuiFeatures.init();
+			save();
+		}
+		return updated;
+	}
+
+	@Override
+	public void save() {
+		EphemeraCommon.saveConfig();
+	}
+
+	@Override
+	public boolean isVulkanMeshShaderActive() {
+		try {
+			return VulkanMeshTerrainEngine.get().isAvailable();
+		} catch (Throwable ignored) {
+			return false;
+		}
+	}
+
+	@Override
+	public String statusSummary() {
+		String backend = backendSupplier.get();
+		String mesh = isVulkanMeshShaderActive()
+			? (VulkanMeshTerrainEngine.get().usesTaskShader() ? "VK_EXT_mesh_shader (Task+Mesh)" : "VK_EXT_mesh_shader")
+			: ("VULKAN".equals(backend) ? "Vulkan Multi-Draw Indirect" : "OpenGL Multi-Draw");
+		return "Ephemera " + version + " · " + backend + " · " + mesh;
+	}
+
+	@Override
+	public String mixinHealthSummary() {
+		return MixinHealth.summary();
+	}
+}

@@ -1,0 +1,25 @@
+name: build
+on: [pull_request, push]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: Check layering, run tests, and build JAR
+        run: ./gradlew --no-daemon check build --console=plain
+      - name: Upload built JAR
+        uses: actions/upload-artifact@v7
+        with:
+          name: ephemera-mc26.2
+          path: build/libs/ephemera-*-mc*.jar
