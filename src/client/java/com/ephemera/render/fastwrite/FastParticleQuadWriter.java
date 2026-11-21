@@ -2,8 +2,6 @@ package com.ephemera.render.fastwrite;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
-import static org.joml.Math.fma;
-
 public final class FastParticleQuadWriter {
 	private FastParticleQuadWriter() {}
 
@@ -15,38 +13,48 @@ public final class FastParticleQuadWriter {
 			return false;
 		}
 		long address = FastVertexBuffer.reserve(builder, layout, 4);
-		if (address == 0) {
+		if (address == 0L) {
 			return false;
 		}
 
-		// Match Quaternionf.transform, including its normalization of non-unit quaternions.
+		// Match Quaternionf.transform, including normalization of non-unit quaternions.
+		// cornerZ is always 0, so only the X and Y rotated basis vectors (pre-scaled by size) are needed.
 		float xx = qx * qx, yy = qy * qy, zz = qz * qz, ww = qw * qw;
 		float xy = qx * qy, xz = qx * qz, yz = qy * qz;
 		float xw = qx * qw, yw = qy * qw, zw = qz * qw;
-		float inv = 1.0f / (xx + yy + zz + ww);
-		float m00 = (xx - yy - zz + ww) * inv;
-		float m10 = 2.0f * (xy - zw) * inv;
-		float m20 = 2.0f * (xz + yw) * inv;
-		float m01 = 2.0f * (xy + zw) * inv;
-		float m11 = (yy - xx - zz + ww) * inv;
-		float m21 = 2.0f * (yz - xw) * inv;
-		float m02 = 2.0f * (xz - yw) * inv;
-		float m12 = 2.0f * (yz + xw) * inv;
-		float m22 = (zz - xx - yy + ww) * inv;
+		float s = size / (xx + yy + zz + ww);
+		float s2 = 2.0f * s;
+		float rx = (xx - yy - zz + ww) * s;
+		float ry = (xy + zw) * s2;
+		float rz = (xz - yw) * s2;
+		float ux = (xy - zw) * s2;
+		float uy = (yy - xx - zz + ww) * s;
+		float uz = (yz + xw) * s2;
+
 		int packedColor = FastVertexBuffer.packColor(color);
 		int packedLight = FastVertexBuffer.packUv(light);
 		int stride = layout.stride;
-		for (int i = 0; i < 4; i++, address += stride) {
-			float cornerX = i < 2 ? 1.0f : -1.0f;
-			float cornerY = i == 1 || i == 2 ? 1.0f : -1.0f;
-			FastVertexBuffer.position(address,
-				fma(m00, cornerX, fma(m10, cornerY, m20 * 0.0f)) * size + x,
-				fma(m01, cornerX, fma(m11, cornerY, m21 * 0.0f)) * size + y,
-				fma(m02, cornerX, fma(m12, cornerY, m22 * 0.0f)) * size + z);
-			FastVertexBuffer.attributes(address, layout, packedColor, i < 2 ? u1 : u0,
-				cornerY > 0.0f ? v0 : v1, packedLight, 0, 0);
-		}
-		FastVertexBuffer.finish(builder, address - stride, 4);
+
+		// Corner 0: (+1, -1) -> (u1, v1)
+		FastVertexBuffer.position(address, x + rx - ux, y + ry - uy, z + rz - uz);
+		FastVertexBuffer.attributesParticle(address, u1, v1, packedColor, packedLight);
+		address += stride;
+
+		// Corner 1: (+1, +1) -> (u1, v0)
+		FastVertexBuffer.position(address, x + rx + ux, y + ry + uy, z + rz + uz);
+		FastVertexBuffer.attributesParticle(address, u1, v0, packedColor, packedLight);
+		address += stride;
+
+		// Corner 2: (-1, +1) -> (u0, v0)
+		FastVertexBuffer.position(address, x - rx + ux, y - ry + uy, z - rz + uz);
+		FastVertexBuffer.attributesParticle(address, u0, v0, packedColor, packedLight);
+		address += stride;
+
+		// Corner 3: (-1, -1) -> (u0, v1)
+		FastVertexBuffer.position(address, x - rx - ux, y - ry - uy, z - rz - uz);
+		FastVertexBuffer.attributesParticle(address, u0, v1, packedColor, packedLight);
+
+		FastVertexBuffer.finish(builder, address, 4);
 		return true;
 	}
 }

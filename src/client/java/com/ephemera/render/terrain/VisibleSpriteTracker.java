@@ -103,7 +103,7 @@ public final class VisibleSpriteTracker {
 		}
 	}
 
-	static boolean trackingFrame() {
+	public static boolean trackingFrame() {
 		return trackingFrame;
 	}
 

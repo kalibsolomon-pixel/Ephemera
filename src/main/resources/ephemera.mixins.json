@@ -24,6 +24,8 @@
     "LightSectionCacheMixin",
     "LightWorkMixin",
     "LinearPaletteFastMixin",
+    "NoiseChunkFastMixin",
+    "NoiseInterpolatorAccess",
     "PaletteIndexAccessor",
     "PalettedContainerFastMixin",
     "PerlinNoiseFastMixin",

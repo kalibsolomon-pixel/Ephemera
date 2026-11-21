@@ -14,6 +14,7 @@ package com.ephemera.core.terrain;
  */
 public final class FastFrustumMath {
 	private final float[] planes = new float[24];
+	private final float[] planeL1 = new float[6];
 
 	/** Sets plane {@code i} (0..5). */
 	public void setPlane(int i, float a, float b, float c, float d) {
@@ -22,6 +23,7 @@ public final class FastFrustumMath {
 		planes[o + 1] = b;
 		planes[o + 2] = c;
 		planes[o + 3] = d;
+		planeL1[i] = Math.abs(a) + Math.abs(b) + Math.abs(c);
 	}
 
 	/**
@@ -64,6 +66,24 @@ public final class FastFrustumMath {
 			outside |= (a * x + b * y + c * z + d < 0f) ? 1 : 0;
 		}
 		return outside == 0;
+	}
+
+	/**
+	 * Single-pass cube-vs-frustum test using precomputed plane L1 norms ({@code |a|+|b|+|c|}).
+	 * Equivalent to {@code intersectsAabb(cx - r, cy - r, cz - r, cx + r, cy + r, cz + r)} for {@code r >= 0},
+	 * since {@code max_{sx,sy,sz in {-1,+1}} (a*(cx+sx*r) + b*(cy+sy*r) + c*(cz+sz*r) + d) == a*cx + b*cy + c*cz + d + r*(|a|+|b|+|c|)}.
+	 */
+	public boolean intersectsCube(float cx, float cy, float cz, float halfExtent) {
+		float[] p = planes;
+		float[] l1 = planeL1;
+		for (int i = 0; i < 6; i++) {
+			int o = i << 2;
+			float dist = Math.fma(p[o], cx, Math.fma(p[o + 1], cy, Math.fma(p[o + 2], cz, p[o + 3])));
+			if (dist + halfExtent * l1[i] < 0f) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Squared distance from the origin to the closest point of a box given relative to the origin. */

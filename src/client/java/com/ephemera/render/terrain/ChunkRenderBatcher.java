@@ -665,11 +665,15 @@ public final class ChunkRenderBatcher {
 		int meshSections = 0;
 		int activeMeshMask = 0;
 		int spriteGeneration = trackSprites ? VisibleSpriteTracker.generation().id : 0;
+		boolean useSwapHook = SWAP_HOOK;
 		dispatcher.lock();
 		try {
 			for (int i = 0; i < size; i++) {
 				SectionRenderDispatcher.RenderSection section = (SectionRenderDispatcher.RenderSection) elements[i];
-				if (!(section.getSectionMesh() instanceof SectionMeshRenderCache cache)) {
+				SectionMeshRenderCache cache = useSwapHook
+					? ((SectionMeshSwapHook) section).ephemera$compiledCache()
+					: (section.getSectionMesh() instanceof SectionMeshRenderCache c ? c : null);
+				if (cache == null) {
 					continue;
 				}
 				int mask = cache.ephemera$readyMask(epoch);
@@ -959,13 +963,17 @@ public final class ChunkRenderBatcher {
 		boolean trackSprites = VisibleSpriteTracker.trackingFrame();
 		int fogCulled = 0;
 		int largestIndexCount = 0;
+		boolean useSwapHook = SWAP_HOOK;
 		dispatcher.lock();
 		try {
 			Object[] elements = visibleSections.elements();
 			int size = visibleSections.size();
 			for (int i = 0; i < size; i++) {
 				SectionRenderDispatcher.RenderSection section = (SectionRenderDispatcher.RenderSection) elements[i];
-				if (!(section.getSectionMesh() instanceof SectionMeshRenderCache cache) || !cache.ephemera$hasDraws()) {
+				SectionMeshRenderCache cache = useSwapHook
+					? ((SectionMeshSwapHook) section).ephemera$compiledCache()
+					: (section.getSectionMesh() instanceof SectionMeshRenderCache c ? c : null);
+				if (cache == null || !cache.ephemera$hasDraws()) {
 					continue;
 				}
 				BlockPos origin = section.getRenderOrigin();

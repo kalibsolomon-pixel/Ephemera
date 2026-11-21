@@ -12,7 +12,10 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
 			"FrustumFastMixin",
+			"LevelExtractorBlockEntityFastMixin",
+			"RenderSectionRegionFastMixin",
 			"RotatingSectionStorageFastMixin",
+			"SectionCopyFastMixin",
 			"SectionOcclusionGraphExecutorMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
@@ -57,8 +60,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		}
 		for (String m : new String[] {
 			"BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-			"ModelPartCubeFastWriteMixin", "PoseStackPoseAccess", "QuadParticleFastWriteMixin",
-			"SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
+			"ItemFeatureRendererFastMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
+			"QuadParticleFastWriteMixin", "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
 			"BakedSheetGlyphAccess", "GlyphEffectAccess"
 		}) {
 			registerYield(m, "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
@@ -131,8 +134,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 				cfg.backendVulkanModernGpu || cfg.terrainVulkanMeshShaders;
 			case "VulkanBufferViewMixin", "VulkanDirectBufferMixin" -> cfg.backendVulkanBufferViewCache;
 			case "BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-				 "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess", "QuadParticleFastWriteMixin",
-				 "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
+				 "ItemFeatureRendererFastMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
+				 "QuadParticleFastWriteMixin", "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
 				 "BakedSheetGlyphAccess", "GlyphEffectAccess", "BakedSheetGlyphFastWriteMixin" ->
 				cfg.backendGlDispatchCache || cfg.backendVulkanDispatchCache;
 
@@ -146,7 +149,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			case "TitleFadeMixin" -> cfg.loadingSkipTitleFade;
 			case "LoadingFadeMixin" -> cfg.loadingNonBlockingReload;
 			case "NumericAddressMixin" -> cfg.loadingFastIpPing;
-			case "FrustumFastMixin", "RotatingSectionStorageFastMixin" -> cfg.terrainFastFrustumAndGrid;
+			case "FrustumFastMixin", "RotatingSectionStorageFastMixin", "LevelExtractorBlockEntityFastMixin",
+				 "SectionCopyFastMixin", "RenderSectionRegionFastMixin" -> cfg.terrainFastFrustumAndGrid;
 			case "SectionOcclusionGraphExecutorMixin" -> cfg.terrainAsyncGraphUpdates;
 
 			// Keep terrain, culling, gui, visuals & UI mixins live-toggleable at runtime!

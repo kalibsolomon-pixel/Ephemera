@@ -17,5 +17,6 @@ public interface FastBufferState {
 
 	interface Storage {
 		void ephemera$checkOpen();
+		long ephemera$fastReserve(int bytes);
 	}
 }

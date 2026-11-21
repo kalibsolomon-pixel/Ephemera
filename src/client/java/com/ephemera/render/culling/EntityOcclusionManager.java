@@ -1,6 +1,7 @@
 package com.ephemera.render.culling;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.visuals.VisualsRuntime;
 import com.ephemera.core.culling.DirectMappedSweepCache;
 import com.ephemera.core.culling.OpaqueLayerSweep;
 import com.ephemera.core.culling.CullingBounds;
@@ -71,6 +72,7 @@ public final class EntityOcclusionManager {
         frustum = camera.getCullFrustum();
         frameActive = true; cameraValid = current != null;
         frame++; now = System.nanoTime();
+        VisualsRuntime.tickFrame(now);
         occludedEntities = occludedBlockEntities = 0;
         SECTIONS.releaseSections();
     }

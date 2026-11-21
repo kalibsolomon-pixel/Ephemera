@@ -2,6 +2,8 @@ package com.ephemera.core.terrain;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.SplittableRandom;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class FastFrustumMathTest {
@@ -63,5 +65,51 @@ class FastFrustumMathTest {
 		assertFalse(FastFrustumMath.isFullyFogged(2, 2, 2, 20, 20, 20, 5, 160));
 		// No fog configured at all.
 		assertFalse(FastFrustumMath.isFullyFogged(1e6, 0, 0, 1e6 + 16, 16, 16, Float.MAX_VALUE, Float.MAX_VALUE));
+		// Non-positive fog ends conservatively mark boxes as fogged.
+		assertTrue(FastFrustumMath.isFullyFogged(0, 0, 0, 1, 1, 1, 0.0f, Float.MAX_VALUE));
+		assertTrue(FastFrustumMath.isFullyFogged(0, 0, 0, 1, 1, 1, Float.MAX_VALUE, -4.0f));
+	}
+
+	@Test
+	void intersectsCubeMatchesAabbAcrossRandomPlanes() {
+		SplittableRandom rng = new SplittableRandom(0xE0E4E8AL);
+		FastFrustumMath frustum = new FastFrustumMath();
+		int insideCount = 0;
+		int outsideCount = 0;
+		for (int trial = 0; trial < 200; trial++) {
+			for (int p = 0; p < 6; p++) {
+				float a = (float) (rng.nextDouble() * 2.0 - 1.0);
+				float b = (float) (rng.nextDouble() * 2.0 - 1.0);
+				float c = (float) (rng.nextDouble() * 2.0 - 1.0);
+				float len = (float) Math.sqrt(a * a + b * b + c * c);
+				if (len < 1e-4f) {
+					a = 1f; b = 0f; c = 0f; len = 1f;
+				}
+				float d = (float) (rng.nextDouble() * 40.0 + 5.0);
+				frustum.setPlane(p, a / len, b / len, c / len, d);
+			}
+			for (int sample = 0; sample < 50; sample++) {
+				float cx = (float) (rng.nextDouble() * 120.0 - 60.0);
+				float cy = (float) (rng.nextDouble() * 120.0 - 60.0);
+				float cz = (float) (rng.nextDouble() * 120.0 - 60.0);
+				float r = (float) (rng.nextDouble() * 8.0);
+				// Skip hairline floating-point boundary cases within 1e-3 of any plane.
+				boolean cube = frustum.intersectsCube(cx, cy, cz, r);
+				boolean aabbMin = frustum.intersectsAabb(cx - r + 1e-3f, cy - r + 1e-3f, cz - r + 1e-3f,
+					cx + r - 1e-3f, cy + r - 1e-3f, cz + r - 1e-3f);
+				boolean aabbMax = frustum.intersectsAabb(cx - r - 1e-3f, cy - r - 1e-3f, cz - r - 1e-3f,
+					cx + r + 1e-3f, cy + r + 1e-3f, cz + r + 1e-3f);
+				if (aabbMin == aabbMax) {
+					assertEquals(aabbMin, cube, "Mismatch at trial=" + trial + " sample=" + sample);
+					if (cube) {
+						insideCount++;
+					} else {
+						outsideCount++;
+					}
+				}
+			}
+		}
+		assertTrue(insideCount > 500 && outsideCount > 500,
+			"Expected balanced inside/outside coverage: in=" + insideCount + ", out=" + outsideCount);
 	}
 }

@@ -43,6 +43,15 @@ public final class VisualsRuntime {
 	/** Forces the next gate read to re-evaluate config and shader-pack state. */
 	public static void invalidate() {
 		gatesAtNs = 0L;
+		gates = null;
+	}
+
+	/** Refreshes cached gates at most every 100 ms; called once per frame on the render thread. */
+	public static void tickFrame(long nowNs) {
+		if (gates == null || nowNs - gatesAtNs > GATE_TTL_NS) {
+			gates = compute();
+			gatesAtNs = nowNs;
+		}
 	}
 
 	public static EphemeraConfig cfg() {
@@ -92,12 +101,13 @@ public final class VisualsRuntime {
 
 	private static Gates gates() {
 		Gates current = gates;
-		long now = System.nanoTime();
-		if (current == null || now - gatesAtNs > GATE_TTL_NS) {
-			current = compute();
-			gates = current;
-			gatesAtNs = now;
+		if (current != null) {
+			return current;
 		}
+		long now = System.nanoTime();
+		current = compute();
+		gates = current;
+		gatesAtNs = now;
 		return current;
 	}
 

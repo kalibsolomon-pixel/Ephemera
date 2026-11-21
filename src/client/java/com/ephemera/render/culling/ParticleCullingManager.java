@@ -5,6 +5,8 @@ import com.ephemera.mixin.client.particle.CameraDepthAccessor;
 import com.ephemera.mixin.client.particle.FrustumAccessor;
 import com.ephemera.mixin.client.particle.ParticleAccessor;
 import com.ephemera.mixin.client.particle.SingleQuadParticleAccessor;
+import com.ephemera.render.terrain.FrustumFastCube;
+import com.mojang.blaze3d.systems.RenderSystem;
 import java.util.Arrays;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -23,7 +25,9 @@ public final class ParticleCullingManager {
     private static final SingleQuadParticle.Layer[] SHEETS = new SingleQuadParticle.Layer[64];
     private static final int[] SHEET_COUNTS = new int[64];
     private static final BlockPos.MutableBlockPos LIGHT_POS = new BlockPos.MutableBlockPos();
+    private static final Quaternionf RENDER_ROTATION = new Quaternionf();
     private static final ThreadLocal<Quaternionf> ROTATION = ThreadLocal.withInitial(Quaternionf::new);
+    private static volatile Thread renderThread;
     private static long lightEpoch = 1;
     private static boolean extracting;
     private static boolean frameCulling;
@@ -101,8 +105,18 @@ public final class ParticleCullingManager {
         return standard;
     }
     public static Quaternionf rotation(SingleQuadParticle particle) {
-        return isCullingEnabled() && isStandardQuad(particle.getClass())
-                ? ROTATION.get().identity() : new Quaternionf();
+        if (!isCullingEnabled() || !isStandardQuad(particle.getClass())) {
+            return new Quaternionf();
+        }
+        Thread cur = Thread.currentThread();
+        if (cur == renderThread) {
+            return RENDER_ROTATION.identity();
+        }
+        if (renderThread == null && RenderSystem.isOnRenderThread()) {
+            renderThread = cur;
+            return RENDER_ROTATION.identity();
+        }
+        return ROTATION.get().identity();
     }
     public static boolean shouldExtract(SingleQuadParticle particle, Frustum frustum, Camera camera, float tick) {
         boolean fastFrame = extracting && camera == frameCamera;
@@ -129,8 +143,10 @@ public final class ParticleCullingManager {
             double depth = (x - pos.x) * fwd.x() + (y - pos.y) * fwd.y() + (z - pos.z) * fwd.z();
             if (depth < -radius || depth > ((CameraDepthAccessor) camera).ephemera$depthFar() + radius * 3 + 16) return false;
         }
-        // Center-point inside frustum guarantees the expanded box intersects; only fall back to AABB test near edges.
-        if (!frustum.pointInFrustum(x, y, z)) {
+        // 1-pass branchless 6-plane cube intersection via FrustumFastCube (zero point+AABB double work).
+        if (frustum instanceof FrustumFastCube fastCube) {
+            if (!fastCube.ephemera$intersectsCube(x, y, z, radius)) return false;
+        } else if (!frustum.pointInFrustum(x, y, z)) {
             int result = ((FrustumAccessor) frustum).ephemera$cube(x - radius, y - radius, z - radius, x + radius, y + radius, z + radius);
             if (result != -1 && result != -2) return false;
         }

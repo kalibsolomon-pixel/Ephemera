@@ -72,11 +72,10 @@ public final class FastVertexBuffer {
 			return 0;
 		}
 		ByteBufferBuilder storage = builder.ephemera$buffer();
-		if (!(storage instanceof FastBufferState.Storage checkedStorage)) {
+		if (!(storage instanceof FastBufferState.Storage fastStorage)) {
 			return 0;
 		}
-		checkedStorage.ephemera$checkOpen();
-		return storage.reserve(count * layout.stride);
+		return fastStorage.ephemera$fastReserve(count * layout.stride);
 	}
 
 	private static boolean canAppend(FastBufferState builder, int count) {
@@ -144,5 +143,28 @@ public final class FastVertexBuffer {
 		memPutFloat(address + 16, u);
 		memPutFloat(address + 20, v);
 		memPutInt(address + 24, packedLight);
+	}
+
+	/** Branch-free attribute write for {@link FastVertexLayout#PARTICLE} (stride 28: uv=12, color=20, light=24). */
+	static void attributesParticle(long address, float u, float v, int packedColor, int packedLight) {
+		memPutFloat(address + 12, u);
+		memPutFloat(address + 16, v);
+		memPutInt(address + 20, packedColor);
+		memPutInt(address + 24, packedLight);
+	}
+
+	/** Branch-free attribute write for {@link FastVertexLayout#UI_TEXT} (stride 24: uv=12, color=20). */
+	static void attributesUiText(long address, float u, float v, int packedColor) {
+		memPutFloat(address + 12, u);
+		memPutFloat(address + 16, v);
+		memPutInt(address + 20, packedColor);
+	}
+
+	/** Branch-free attribute write for {@link FastVertexLayout#WORLD_TEXT} (stride 28: uv=12, light=20, color=24). */
+	static void attributesWorldText(long address, float u, float v, int packedLight, int packedColor) {
+		memPutFloat(address + 12, u);
+		memPutFloat(address + 16, v);
+		memPutInt(address + 20, packedLight);
+		memPutInt(address + 24, packedColor);
 	}
 }

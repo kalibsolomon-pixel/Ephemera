@@ -29,7 +29,21 @@ public final class FastCuboidWriter {
 		final int[] normals = new int[6];
 	}
 
+	private static final CuboidScratch RENDER_SCRATCH = new CuboidScratch();
 	private static final ThreadLocal<CuboidScratch> SCRATCH = ThreadLocal.withInitial(CuboidScratch::new);
+	private static volatile Thread renderThread;
+
+	private static CuboidScratch scratch() {
+		Thread cur = Thread.currentThread();
+		if (cur == renderThread) {
+			return RENDER_SCRATCH;
+		}
+		if (renderThread == null && com.mojang.blaze3d.systems.RenderSystem.isOnRenderThread()) {
+			renderThread = cur;
+			return RENDER_SCRATCH;
+		}
+		return SCRATCH.get();
+	}
 
 	private FastCuboidWriter() {}
 
@@ -61,7 +75,7 @@ public final class FastCuboidWriter {
 		if (layout == null || !layout.model) {
 			return false;
 		}
-		CuboidScratch sc = SCRATCH.get();
+		CuboidScratch sc = scratch();
 		int[] normals = sc.normals;
 		if (layout.normal >= 0) {
 			if (!((Object) pose instanceof PoseAccess access)) {

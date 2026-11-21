@@ -1,5 +1,6 @@
 package com.ephemera.mixin.client.terrain;
 
+import com.ephemera.render.terrain.FrustumFastCube;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.AABB;
 import org.joml.Matrix4f;
@@ -25,21 +26,23 @@ import static org.joml.Math.fma;
  *       as the box is known not to be fully inside, matching JOML's exact {@code -2 / -1 / 0..5}
  *       return codes.</li>
  *   <li>{@link #pointInFrustum}: inline FMA 6-plane test with zero indirection.</li>
+ *   <li>{@link #ephemera$intersectsCube}: 1-pass branchless 6-FMA cube-vs-frustum test using
+ *       precomputed {@code |a| + |b| + |c|} plane L1 norms.</li>
  * </ul>
  */
 @Mixin(Frustum.class)
-abstract class FrustumFastMixin {
+abstract class FrustumFastMixin implements FrustumFastCube {
 	@Shadow @Final private Matrix4f matrix;
 	@Shadow private double camX;
 	@Shadow private double camY;
 	@Shadow private double camZ;
 
-	@Unique private float ep$nxX, ep$nxY, ep$nxZ, ep$nxW;
-	@Unique private float ep$pxX, ep$pxY, ep$pxZ, ep$pxW;
-	@Unique private float ep$nyX, ep$nyY, ep$nyZ, ep$nyW;
-	@Unique private float ep$pyX, ep$pyY, ep$pyZ, ep$pyW;
-	@Unique private float ep$nzX, ep$nzY, ep$nzZ, ep$nzW;
-	@Unique private float ep$pzX, ep$pzY, ep$pzZ, ep$pzW;
+	@Unique private float ep$nxX, ep$nxY, ep$nxZ, ep$nxW, ep$nxAbs;
+	@Unique private float ep$pxX, ep$pxY, ep$pxZ, ep$pxW, ep$pxAbs;
+	@Unique private float ep$nyX, ep$nyY, ep$nyZ, ep$nyW, ep$nyAbs;
+	@Unique private float ep$pyX, ep$pyY, ep$pyZ, ep$pyW, ep$pyAbs;
+	@Unique private float ep$nzX, ep$nzY, ep$nzZ, ep$nzW, ep$nzAbs;
+	@Unique private float ep$pzX, ep$pzY, ep$pzZ, ep$pzW, ep$pzAbs;
 
 	@Inject(method = "calculateFrustum", at = @At("TAIL"))
 	private void ephemera$extractPlanesOnCalc(Matrix4fc modelView, Matrix4f projection, CallbackInfo ci) {
@@ -58,11 +61,31 @@ abstract class FrustumFastMixin {
 		float m01 = m.m01(), m11 = m.m11(), m21 = m.m21(), m31 = m.m31();
 		float m02 = m.m02(), m12 = m.m12(), m22 = m.m22(), m32 = m.m32();
 		this.ep$nxX = m03 + m00; this.ep$nxY = m13 + m10; this.ep$nxZ = m23 + m20; this.ep$nxW = m33 + m30;
+		this.ep$nxAbs = Math.abs(this.ep$nxX) + Math.abs(this.ep$nxY) + Math.abs(this.ep$nxZ);
 		this.ep$pxX = m03 - m00; this.ep$pxY = m13 - m10; this.ep$pxZ = m23 - m20; this.ep$pxW = m33 - m30;
+		this.ep$pxAbs = Math.abs(this.ep$pxX) + Math.abs(this.ep$pxY) + Math.abs(this.ep$pxZ);
 		this.ep$nyX = m03 + m01; this.ep$nyY = m13 + m11; this.ep$nyZ = m23 + m21; this.ep$nyW = m33 + m31;
+		this.ep$nyAbs = Math.abs(this.ep$nyX) + Math.abs(this.ep$nyY) + Math.abs(this.ep$nyZ);
 		this.ep$pyX = m03 - m01; this.ep$pyY = m13 - m11; this.ep$pyZ = m23 - m21; this.ep$pyW = m33 - m31;
+		this.ep$pyAbs = Math.abs(this.ep$pyX) + Math.abs(this.ep$pyY) + Math.abs(this.ep$pyZ);
 		this.ep$nzX = m03 + m02; this.ep$nzY = m13 + m12; this.ep$nzZ = m23 + m22; this.ep$nzW = m33 + m32;
+		this.ep$nzAbs = Math.abs(this.ep$nzX) + Math.abs(this.ep$nzY) + Math.abs(this.ep$nzZ);
 		this.ep$pzX = m03 - m02; this.ep$pzY = m13 - m12; this.ep$pzZ = m23 - m22; this.ep$pzW = m33 - m32;
+		this.ep$pzAbs = Math.abs(this.ep$pzX) + Math.abs(this.ep$pzY) + Math.abs(this.ep$pzZ);
+	}
+
+	@Override
+	public boolean ephemera$intersectsCube(double cx, double cy, double cz, double radius) {
+		float fx = (float) (cx - this.camX);
+		float fy = (float) (cy - this.camY);
+		float fz = (float) (cz - this.camZ);
+		float fr = (float) radius;
+		return fma(ep$nxX, fx, fma(ep$nxY, fy, fma(ep$nxZ, fz, fma(ep$nxAbs, fr, ep$nxW)))) >= 0f
+			&& fma(ep$pxX, fx, fma(ep$pxY, fy, fma(ep$pxZ, fz, fma(ep$pxAbs, fr, ep$pxW)))) >= 0f
+			&& fma(ep$nyX, fx, fma(ep$nyY, fy, fma(ep$nyZ, fz, fma(ep$nyAbs, fr, ep$nyW)))) >= 0f
+			&& fma(ep$pyX, fx, fma(ep$pyY, fy, fma(ep$pyZ, fz, fma(ep$pyAbs, fr, ep$pyW)))) >= 0f
+			&& fma(ep$nzX, fx, fma(ep$nzY, fy, fma(ep$nzZ, fz, fma(ep$nzAbs, fr, ep$nzW)))) >= 0f
+			&& fma(ep$pzX, fx, fma(ep$pzY, fy, fma(ep$pzZ, fz, fma(ep$pzAbs, fr, ep$pzW)))) >= 0f;
 	}
 
 	/**

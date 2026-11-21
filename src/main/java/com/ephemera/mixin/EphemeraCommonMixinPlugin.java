@@ -50,7 +50,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 			case "CompactTrigMixin" -> cfg.engineFastMath;
 			case "ChunkModuloMixin", "LevelChunkIndexMixin", "PaletteIndexAccessor", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin" -> cfg.engineFastChunkLookup;
 			case "SimpleBitStorageFastMixin", "LinearPaletteFastMixin", "PalettedContainerFastMixin" -> cfg.engineFastPalettedStorage;
-			case "ImprovedNoiseFastMixin", "PerlinNoiseFastMixin", "BeardifierFastMixin" -> cfg.engineFastWorldgenNoise;
+			case "ImprovedNoiseFastMixin", "PerlinNoiseFastMixin", "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess" -> cfg.engineFastWorldgenNoise;
 			case "BiomeManagerFastMixin", "ClimateRTreeFastMixin", "ClimateRTreeNodeFastMixin" -> cfg.engineFastBiomeLookup;
 			case "UtilWorkerPriorityMixin" -> cfg.engineWorkerPriorityIsolation;
 			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin" -> cfg.engineFastLighting;
@@ -77,6 +77,8 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("ImprovedNoiseFastMixin", "c2me", "noisium");
 		registerYield("PerlinNoiseFastMixin", "c2me", "noisium");
 		registerYield("BeardifierFastMixin", "c2me", "lithium");
+		registerYield("NoiseChunkFastMixin", "c2me", "noisium");
+		registerYield("NoiseInterpolatorAccess", "c2me", "noisium");
 		registerYield("BiomeManagerFastMixin", "c2me", "lithium");
 		registerYield("ClimateRTreeFastMixin", "c2me", "lithium");
 		registerYield("ClimateRTreeNodeFastMixin", "c2me", "lithium");
