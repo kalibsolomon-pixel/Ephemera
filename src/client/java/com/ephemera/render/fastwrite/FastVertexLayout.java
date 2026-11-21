@@ -7,14 +7,15 @@ import com.mojang.blaze3d.vertex.VertexFormatElement;
 
 /** Explicit byte offsets for the supported 26.2 default formats. */
 public enum FastVertexLayout {
-	BLOCK(DefaultVertexFormat.BLOCK, 28, 12, 16, -1, 24, -1, true),
-	ENTITY(DefaultVertexFormat.ENTITY, 36, 12, 16, 24, 28, 32, true),
-	POSITION_TEX_COLOR_NORMAL(DefaultVertexFormat.POSITION_TEX_COLOR_NORMAL, 28, 20, 12, -1, -1, 24, true),
-	POSITION_TEX(DefaultVertexFormat.POSITION_TEX, 20, -1, 12, -1, -1, -1, true),
-	PARTICLE(DefaultVertexFormat.PARTICLE, 28, 20, 12, -1, 24, -1, false),
-	UI_TEXT(DefaultVertexFormat.POSITION_TEX_COLOR, 24, 20, 12, -1, -1, -1, false),
-	WORLD_TEXT(DefaultVertexFormat.POSITION_TEX_LIGHTMAP_COLOR, 28, 24, 12, -1, 20, -1, false),
-	COLOR_FIRST_TEXT(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, 28, 12, 16, -1, 24, -1, false);
+	BLOCK(DefaultVertexFormat.BLOCK, 28, 12, 16, -1, 24, -1, -1, true),
+	ENTITY(DefaultVertexFormat.ENTITY, 36, 12, 16, 24, 28, 32, -1, true),
+	POSITION_TEX_COLOR_NORMAL(DefaultVertexFormat.POSITION_TEX_COLOR_NORMAL, 28, 20, 12, -1, -1, 24, -1, true),
+	POSITION_TEX(DefaultVertexFormat.POSITION_TEX, 20, -1, 12, -1, -1, -1, -1, true),
+	PARTICLE(DefaultVertexFormat.PARTICLE, 28, 20, 12, -1, 24, -1, -1, false),
+	UI_TEXT(DefaultVertexFormat.POSITION_TEX_COLOR, 24, 20, 12, -1, -1, -1, -1, false),
+	WORLD_TEXT(DefaultVertexFormat.POSITION_TEX_LIGHTMAP_COLOR, 28, 24, 12, -1, 20, -1, -1, false),
+	COLOR_FIRST_TEXT(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, 28, 12, 16, -1, 24, -1, -1, false),
+	LINES(DefaultVertexFormat.POSITION_COLOR_NORMAL_LINE_WIDTH, 24, 12, -1, -1, -1, 16, 20, false);
 
 	private static final FastVertexLayout[] LAYOUTS = values();
 
@@ -24,6 +25,7 @@ public enum FastVertexLayout {
 	final int overlay;
 	final int light;
 	final int normal;
+	final int lineWidth;
 	final boolean model;
 	private final VertexFormat format;
 	private final boolean validated;
@@ -34,8 +36,9 @@ public enum FastVertexLayout {
 	private final VertexFormatElement elUv1;
 	private final VertexFormatElement elUv2;
 	private final VertexFormatElement elNormal;
+	private final VertexFormatElement elLineWidth;
 
-	FastVertexLayout(VertexFormat format, int stride, int color, int uv, int overlay, int light, int normal, boolean model) {
+	FastVertexLayout(VertexFormat format, int stride, int color, int uv, int overlay, int light, int normal, int lineWidth, boolean model) {
 		this.format = format;
 		this.stride = stride;
 		this.color = color;
@@ -43,15 +46,17 @@ public enum FastVertexLayout {
 		this.overlay = overlay;
 		this.light = light;
 		this.normal = normal;
+		this.lineWidth = lineWidth;
 		this.model = model;
 		this.mask = (color >= 0 ? 1 << 1 : 0) | (uv >= 0 ? 1 << 2 : 0) | (overlay >= 0 ? 1 << 3 : 0)
-			| (light >= 0 ? 1 << 4 : 0) | (normal >= 0 ? 1 << 5 : 0);
+			| (light >= 0 ? 1 << 4 : 0) | (normal >= 0 ? 1 << 5 : 0) | (lineWidth >= 0 ? 1 << 6 : 0);
 		this.elPos = format.getElement("Position");
 		this.elColor = format.getElement("Color");
 		this.elUv0 = format.getElement("UV0");
 		this.elUv1 = format.getElement("UV1");
 		this.elUv2 = format.getElement("UV2");
 		this.elNormal = format.getElement("Normal");
+		this.elLineWidth = format.getElement("LineWidth");
 		this.validated = format.getStepRate() == 0 && format.getVertexSize() == stride
 			&& format.getElements().size() == Integer.bitCount(mask) + 1
 			&& matches(elPos, GpuFormat.RGB32_FLOAT, 0)
@@ -60,16 +65,20 @@ public enum FastVertexLayout {
 			&& matches(elUv1, GpuFormat.RG16_SINT, overlay)
 			&& matches(elUv2, GpuFormat.RG16_SINT, light)
 			&& matches(elNormal, GpuFormat.RGBA8_SNORM, normal)
-			&& format.getElement("LineWidth") == null;
+			&& matches(elLineWidth, GpuFormat.R32_FLOAT, lineWidth);
 	}
 
 	public static FastVertexLayout validate(VertexFormat format, FastBufferState builder) {
 		for (FastVertexLayout layout : LAYOUTS) {
-			if (format == layout.format) {
+			if (layout != LINES && format == layout.format) {
 				return layout.validated && layout.matchesBuilder(builder) ? layout : null;
 			}
 		}
 		return null;
+	}
+
+	public static FastVertexLayout validateLines(VertexFormat format, FastBufferState builder) {
+		return format == LINES.format && LINES.validated && LINES.matchesBuilder(builder) ? LINES : null;
 	}
 
 	private boolean matchesBuilder(FastBufferState builder) {
@@ -78,7 +87,7 @@ public enum FastVertexLayout {
 			&& elements.length == 7 && elements[0] == elPos
 			&& elements[1] == elColor && elements[2] == elUv0
 			&& elements[3] == elUv1 && elements[4] == elUv2
-			&& elements[5] == elNormal && elements[6] == null;
+			&& elements[5] == elNormal && elements[6] == elLineWidth;
 	}
 
 	private static boolean matches(VertexFormatElement element, GpuFormat type, int offset) {

@@ -23,6 +23,7 @@ import java.util.Set;
 public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 	protected final Set<String> disabledViaProp = parseDisabledProp();
 	protected final Map<String, List<String>> yieldRules = new HashMap<>();
+	protected final Map<String, String> requiresRules = new HashMap<>();
 
 	protected static Set<String> parseDisabledProp() {
 		String raw = System.getProperty("ephemera.mixin.disable", "");
@@ -41,6 +42,10 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 
 	protected void registerYield(String mixinSimpleName, String... ownerModIds) {
 		yieldRules.put(mixinSimpleName, Arrays.asList(ownerModIds));
+	}
+
+	protected void registerRequires(String mixinSimpleName, String requiredModId) {
+		requiresRules.put(mixinSimpleName, requiredModId);
 	}
 
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
@@ -105,6 +110,11 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		EphemeraConfig cfg = EphemeraCommon.config();
 		if (!isConfigEnabled(simple, cfg)) {
 			MixinHealth.recordStoodDown(simple, "config");
+			return false;
+		}
+		String requiredMod = requiresRules.get(simple);
+		if (requiredMod != null && !FabricLoader.getInstance().isModLoaded(requiredMod)) {
+			MixinHealth.recordStoodDown(simple, "requires:" + requiredMod);
 			return false;
 		}
 		if (cfg.modStandDownEnabled) {

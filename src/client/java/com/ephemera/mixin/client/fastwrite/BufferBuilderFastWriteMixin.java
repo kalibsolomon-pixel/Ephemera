@@ -25,8 +25,12 @@ abstract class BufferBuilderFastWriteMixin implements VertexConsumer, FastBuffer
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$verifyQuadLayout(ByteBufferBuilder storage, PrimitiveTopology topology, VertexFormat format,
 			CallbackInfo ci) {
-		if (topology == PrimitiveTopology.QUADS && this instanceof FastBufferState builder) {
-			ephemera$fastLayout = FastVertexLayout.validate(format, builder);
+		if (this instanceof FastBufferState builder) {
+			if (topology == PrimitiveTopology.QUADS) {
+				ephemera$fastLayout = FastVertexLayout.validate(format, builder);
+			} else if (topology == PrimitiveTopology.LINES) {
+				ephemera$fastLayout = FastVertexLayout.validateLines(format, builder);
+			}
 		}
 	}
 
