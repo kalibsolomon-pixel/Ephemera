@@ -2,6 +2,7 @@ package com.ephemera.render.fastwrite;
 
 import com.ephemera.core.render.VertexPacking;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.core.Direction;
 import org.joml.Matrix3f;
 import org.joml.Matrix4fc;
 import org.joml.Vector3fc;
@@ -10,10 +11,42 @@ import static org.joml.Math.fma;
 import static org.joml.Math.invsqrt;
 
 public final class FastVertexTransforms {
+	private static final int[] CARDINAL_PACKED_NORMALS = new int[6];
+
+	static {
+		for (Direction d : Direction.values()) {
+			Vector3fc u = d.getUnitVec3f();
+			CARDINAL_PACKED_NORMALS[d.ordinal()] = VertexPacking.normal(u.x(), u.y(), u.z());
+		}
+	}
+
 	private FastVertexTransforms() {}
 
 	public interface PoseAccess {
 		boolean ephemera$trustedNormals();
+	}
+
+	static int cardinalNormalIdentity(Direction dir) {
+		return CARDINAL_PACKED_NORMALS[dir.ordinal()];
+	}
+
+	static int cardinalNormal(Matrix3f matrix, boolean trusted, Direction dir) {
+		float nx, ny, nz;
+		switch (dir) {
+			case DOWN -> { nx = -matrix.m10(); ny = -matrix.m11(); nz = -matrix.m12(); }
+			case UP -> { nx = matrix.m10(); ny = matrix.m11(); nz = matrix.m12(); }
+			case NORTH -> { nx = -matrix.m20(); ny = -matrix.m21(); nz = -matrix.m22(); }
+			case SOUTH -> { nx = matrix.m20(); ny = matrix.m21(); nz = matrix.m22(); }
+			case WEST -> { nx = -matrix.m00(); ny = -matrix.m01(); nz = -matrix.m02(); }
+			default -> { nx = matrix.m00(); ny = matrix.m01(); nz = matrix.m02(); }
+		}
+		if (!trusted) {
+			float inverseLength = invsqrt(fma(nx, nx, fma(ny, ny, nz * nz)));
+			nx *= inverseLength;
+			ny *= inverseLength;
+			nz *= inverseLength;
+		}
+		return VertexPacking.normal(nx, ny, nz);
 	}
 
 	static void position(long address, Matrix4fc matrix, int properties, float x, float y, float z) {

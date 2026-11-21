@@ -22,6 +22,7 @@ public final class EphemeraConfig {
 	public boolean terrainPrefixSumBiomeBlend = true;
 	public boolean terrainVulkanMeshShaders = true;
 	public boolean terrainVulkanGpuCulling = true;
+	public boolean terrainFastFrustumAndGrid = true;
 	public int chunkBuilderThreads = 0; // 0 = auto tuned to CPU topology
 	public int maxSectionUploadsPerFrameMs = 4;
 
@@ -76,6 +77,10 @@ public final class EphemeraConfig {
 	public boolean engineFastMath = true;
 	public boolean engineFastLighting = true;
 	public boolean engineFastChunkLookup = true;
+	public boolean engineFastPalettedStorage = true;
+	public boolean engineFastWorldgenNoise = true;
+	public boolean engineFastBiomeLookup = true;
+	public boolean engineWorkerPriorityIsolation = true;
 	public boolean engineLightmapCaching = true;
 	public boolean engineSoundListenerThrottle = true;
 	public boolean engineDebugHudCache = true;

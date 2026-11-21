@@ -22,11 +22,20 @@ public final class FastCuboidWriter {
 	// Each nibble names a corner in the DOWN (0–3) or UP (4–7) face, in vanilla's face order.
 	private static final int[] SIDE_CORNERS = {0x5612, 0x4523, 0x7430, 0x6701};
 
+	private static final class CuboidScratch {
+		final float[] px = new float[8];
+		final float[] py = new float[8];
+		final float[] pz = new float[8];
+		final int[] normals = new int[6];
+	}
+
+	private static final ThreadLocal<CuboidScratch> SCRATCH = ThreadLocal.withInitial(CuboidScratch::new);
+
 	private FastCuboidWriter() {}
 
 	/**
-	 * Fast 3-edge-vector 8-corner register path for precompiled standard {@link ModelPart.Cube}s.
-	 * Zero polygon/vertex object chasing, zero per-vertex division by 16, zero copyCorner checks.
+	 * Fast 3-edge-vector 8-corner L1-table path for precompiled standard {@link ModelPart.Cube}s.
+	 * Zero polygon/vertex object chasing, zero per-vertex switch mispredictions, unrolled 4-corner emission.
 	 */
 	public static boolean writeCompiled(VertexConsumer consumer, PoseStack.Pose pose, CompiledCuboid c,
 			ModelPart.Polygon[] polygons, int light, int overlay, int color) {
@@ -52,7 +61,8 @@ public final class FastCuboidWriter {
 		if (layout == null || !layout.model) {
 			return false;
 		}
-		int nPosX = 0, nNegX = 0, nPosY = 0, nNegY = 0, nPosZ = 0, nNegZ = 0;
+		CuboidScratch sc = SCRATCH.get();
+		int[] normals = sc.normals;
 		if (layout.normal >= 0) {
 			if (!((Object) pose instanceof PoseAccess access)) {
 				return false;
@@ -61,17 +71,23 @@ public final class FastCuboidWriter {
 			Matrix3f nm = pose.normal();
 			int am = c.axisMask;
 			if ((am & 1) != 0) {
-				nPosX = packAxisNormal(nm.m00(), nm.m01(), nm.m02(), trusted);
-				nNegX = FastVertexTransforms.negatePackedNormal(nPosX);
+				int pos = packAxisNormal(nm.m00(), nm.m01(), nm.m02(), trusted);
+				normals[CompiledCuboid.POS_X] = pos;
+				normals[CompiledCuboid.NEG_X] = FastVertexTransforms.negatePackedNormal(pos);
 			}
 			if ((am & 2) != 0) {
-				nPosY = packAxisNormal(nm.m10(), nm.m11(), nm.m12(), trusted);
-				nNegY = FastVertexTransforms.negatePackedNormal(nPosY);
+				int pos = packAxisNormal(nm.m10(), nm.m11(), nm.m12(), trusted);
+				normals[CompiledCuboid.POS_Y] = pos;
+				normals[CompiledCuboid.NEG_Y] = FastVertexTransforms.negatePackedNormal(pos);
 			}
 			if ((am & 4) != 0) {
-				nPosZ = packAxisNormal(nm.m20(), nm.m21(), nm.m22(), trusted);
-				nNegZ = FastVertexTransforms.negatePackedNormal(nPosZ);
+				int pos = packAxisNormal(nm.m20(), nm.m21(), nm.m22(), trusted);
+				normals[CompiledCuboid.POS_Z] = pos;
+				normals[CompiledCuboid.NEG_Z] = FastVertexTransforms.negatePackedNormal(pos);
 			}
+		} else {
+			normals[0] = 0; normals[1] = 0; normals[2] = 0;
+			normals[3] = 0; normals[4] = 0; normals[5] = 0;
 		}
 
 		int faceCount = c.faceCount;
@@ -81,7 +97,7 @@ public final class FastCuboidWriter {
 			return false;
 		}
 
-		// Transform 1 origin + 3 edge vectors -> derive all 8 corners in registers.
+		// Transform 1 origin + 3 edge vectors -> derive all 8 corners into 2 L1 cache lines.
 		Matrix4f m = pose.pose();
 		int props = m.properties();
 		float cx0, cy0, cz0, exX, exY, exZ, eyX, eyY, eyZ, ezX, ezY, ezZ;
@@ -106,17 +122,20 @@ public final class FastCuboidWriter {
 			eyX = m10 * c.dy; eyY = m11 * c.dy; eyZ = m12 * c.dy;
 			ezX = m20 * c.dz; ezY = m21 * c.dz; ezZ = m22 * c.dz;
 		}
-		float p0x = cx0, p0y = cy0, p0z = cz0;
+		float[] px = sc.px, py = sc.py, pz = sc.pz;
 		float p1x = cx0 + exX, p1y = cy0 + exY, p1z = cz0 + exZ;
 		float p2x = cx0 + eyX, p2y = cy0 + eyY, p2z = cz0 + eyZ;
 		float p3x = p1x + eyX, p3y = p1y + eyY, p3z = p1z + eyZ;
-		float p4x = cx0 + ezX, p4y = cy0 + ezY, p4z = cz0 + ezZ;
-		float p5x = p1x + ezX, p5y = p1y + ezY, p5z = p1z + ezZ;
-		float p6x = p2x + ezX, p6y = p2y + ezY, p6z = p2z + ezZ;
-		float p7x = p3x + ezX, p7y = p3y + ezY, p7z = p3z + ezZ;
+		px[0] = cx0;        py[0] = cy0;        pz[0] = cz0;
+		px[1] = p1x;        py[1] = p1y;        pz[1] = p1z;
+		px[2] = p2x;        py[2] = p2y;        pz[2] = p2z;
+		px[3] = p3x;        py[3] = p3y;        pz[3] = p3z;
+		px[4] = cx0 + ezX;  py[4] = cy0 + ezY;  pz[4] = cz0 + ezZ;
+		px[5] = p1x + ezX;  py[5] = p1y + ezY;  pz[5] = p1z + ezZ;
+		px[6] = p2x + ezX;  py[6] = p2y + ezY;  pz[6] = p2z + ezZ;
+		px[7] = p3x + ezX;  py[7] = p3y + ezY;  pz[7] = p3z + ezZ;
 
 		int stride = layout.stride;
-		boolean isEntity = layout == FastVertexLayout.ENTITY;
 		int packedColor = FastVertexBuffer.packColor(color);
 		int packedLight = FastVertexBuffer.packUv(light);
 		int packedOverlay = FastVertexBuffer.packUv(overlay);
@@ -124,29 +143,42 @@ public final class FastCuboidWriter {
 		byte[] normalCodes = c.normalCodes;
 		float[] uvs = c.uvs;
 
-		for (int f = 0; f < faceCount; f++) {
-			int normal = switch (normalCodes[f]) {
-				case CompiledCuboid.POS_X -> nPosX;
-				case CompiledCuboid.NEG_X -> nNegX;
-				case CompiledCuboid.POS_Y -> nPosY;
-				case CompiledCuboid.NEG_Y -> nNegY;
-				case CompiledCuboid.POS_Z -> nPosZ;
-				default -> nNegZ;
-			};
+		if (layout == FastVertexLayout.ENTITY && !remapUv) {
+			for (int f = 0, uvOff = 0; f < faceCount; f++, uvOff += 8) {
+				int normal = normals[normalCodes[f]];
+				int pack = cornerPacks[f];
+
+				int i0 = pack & 7;
+				FastVertexBuffer.position(address, px[i0], py[i0], pz[i0]);
+				FastVertexBuffer.attributesEntity(address, packedColor, uvs[uvOff], uvs[uvOff + 1], packedOverlay, packedLight, normal);
+				address += stride;
+
+				int i1 = (pack >>> 4) & 7;
+				FastVertexBuffer.position(address, px[i1], py[i1], pz[i1]);
+				FastVertexBuffer.attributesEntity(address, packedColor, uvs[uvOff + 2], uvs[uvOff + 3], packedOverlay, packedLight, normal);
+				address += stride;
+
+				int i2 = (pack >>> 8) & 7;
+				FastVertexBuffer.position(address, px[i2], py[i2], pz[i2]);
+				FastVertexBuffer.attributesEntity(address, packedColor, uvs[uvOff + 4], uvs[uvOff + 5], packedOverlay, packedLight, normal);
+				address += stride;
+
+				int i3 = (pack >>> 12) & 7;
+				FastVertexBuffer.position(address, px[i3], py[i3], pz[i3]);
+				FastVertexBuffer.attributesEntity(address, packedColor, uvs[uvOff + 6], uvs[uvOff + 7], packedOverlay, packedLight, normal);
+				address += stride;
+			}
+			FastVertexBuffer.finish(builder, address - stride, vertexCount);
+			return true;
+		}
+
+		boolean isEntity = layout == FastVertexLayout.ENTITY;
+		for (int f = 0, uvOff = 0; f < faceCount; f++, uvOff += 8) {
+			int normal = normals[normalCodes[f]];
 			int pack = cornerPacks[f];
-			int uvOff = f * 8;
 			for (int corner = 0; corner < 4; corner++, address += stride) {
 				int idx = (pack >>> (corner * 4)) & 7;
-				switch (idx) {
-					case 0 -> FastVertexBuffer.position(address, p0x, p0y, p0z);
-					case 1 -> FastVertexBuffer.position(address, p1x, p1y, p1z);
-					case 2 -> FastVertexBuffer.position(address, p2x, p2y, p2z);
-					case 3 -> FastVertexBuffer.position(address, p3x, p3y, p3z);
-					case 4 -> FastVertexBuffer.position(address, p4x, p4y, p4z);
-					case 5 -> FastVertexBuffer.position(address, p5x, p5y, p5z);
-					case 6 -> FastVertexBuffer.position(address, p6x, p6y, p6z);
-					default -> FastVertexBuffer.position(address, p7x, p7y, p7z);
-				}
+				FastVertexBuffer.position(address, px[idx], py[idx], pz[idx]);
 				float u = uvs[uvOff + corner * 2];
 				float v = uvs[uvOff + corner * 2 + 1];
 				if (remapUv) {

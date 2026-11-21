@@ -18,6 +18,7 @@ public final class VertexPacking {
 	}
 
 	private static int normalByte(float component) {
-		return (int) (Math.clamp(component, -1.0f, 1.0f) * 127.0f) & 0xff;
+		float clamped = component < -1.0f ? -1.0f : (component > 1.0f ? 1.0f : component);
+		return (int) (clamped * 127.0f) & 0xff;
 	}
 }

@@ -157,6 +157,10 @@ public final class VulkanMeshTerrainEngine {
 		}
 	}
 
+	public int arenaEpoch() {
+		return arena != null ? arena.epoch() : -1;
+	}
+
 	public boolean isValidHandle(@Nullable VulkanMeshSectionHandle handle) {
 		return handle != null && !handle.released && arena != null && handle.arenaEpoch == arena.epoch();
 	}

@@ -6,4 +6,5 @@ package com.ephemera.render.terrain;
  * reuse in the chunk batcher depends on it.
  */
 public interface SectionMeshSwapHook {
+	long ephemera$fadeEndMs();
 }

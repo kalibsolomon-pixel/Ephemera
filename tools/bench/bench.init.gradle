@@ -9,6 +9,7 @@ gradle.projectsEvaluated {
 	def benchJfr = (p.findProperty('ephemera.benchJfr') ?: 'true').toString().toBoolean()
 	def benchDurationSec = (p.findProperty('ephemera.benchDurationSec') ?: '6').toString()
 	def benchRd = (p.findProperty('ephemera.benchRd') ?: '20').toString()
+	def benchSuite = (p.findProperty('ephemera.benchSuite') ?: 'default').toString()
 
 	def probe = p.sourceSets.create('benchprobe') {
 		java.srcDir p.file('tools/bench/probe/java')
@@ -36,7 +37,8 @@ gradle.projectsEvaluated {
 		"-Dephemera.bench.backend=${benchBackend}",
 		"-Dephemera.bench.jfr=${benchJfr}",
 		"-Dephemera.bench.durationSec=${benchDurationSec}",
-		"-Dephemera.bench.rd=${benchRd}"
+		"-Dephemera.bench.rd=${benchRd}",
+		"-Dephemera.bench.suite=${benchSuite}"
 	)
 	if (benchDisableEphemera) {
 		run.jvmArgs '-Dfabric.debug.disableModIds=ephemera'

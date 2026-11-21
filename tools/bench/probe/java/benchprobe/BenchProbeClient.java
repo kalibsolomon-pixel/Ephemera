@@ -40,6 +40,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static final boolean JFR_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.jfr", "true"));
 	private static final int DURATION_SEC = Integer.parseInt(System.getProperty("ephemera.bench.durationSec", "6"));
 	private static final int VISTA_RD = Integer.parseInt(System.getProperty("ephemera.bench.rd", "20"));
+	private static final String SUITE = System.getProperty("ephemera.bench.suite", "default").toLowerCase();
 	private static final String SCENE1_NAME = "terrain_vista_rd" + VISTA_RD;
 
 	private enum Phase {
@@ -57,6 +58,18 @@ public final class BenchProbeClient implements ClientModInitializer {
 		SCENE4_SETUP,
 		SCENE4_SETTLE,
 		SCENE4_MEASURE,
+		G1_MOUSE_SETUP,
+		G1_MOUSE_SETTLE,
+		G1_MOUSE_MEASURE,
+		G2_FLUID_SETUP,
+		G2_FLUID_SETTLE,
+		G2_FLUID_MEASURE,
+		G3_FLIGHT_SETUP,
+		G3_FLIGHT_SETTLE,
+		G3_FLIGHT_MEASURE,
+		G4_WORLDGEN_SETUP,
+		G4_WORLDGEN_SETTLE,
+		G4_WORLDGEN_MEASURE,
 		FINISH,
 		DONE
 	}
@@ -71,9 +84,12 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static long lastFrameNs = 0L;
 	private static boolean measuringFrames = false;
 
-	// Camera sweep state for Scene 1
-	private static boolean sweepingCamera = false;
+	// Camera motion modes during frame measurement
+	private static int motionMode = 0; // 0=none, 1=steady sweep, 2=mouse whip flick, 3=fast chunk flight, 4=worldgen frontier
 	private static long sweepStartNs = 0L;
+	private static int fluidStep = 0;
+	private static int startLoadedChunks = 0;
+	private static int maxLoadedChunks = 0;
 
 	// Per-scene telemetry baselines
 	private static long sceneStartAllocBytes = 0L;
@@ -112,13 +128,39 @@ public final class BenchProbeClient implements ClientModInitializer {
 		}
 		lastFrameNs = now;
 
-		if (sweepingCamera) {
+		if (motionMode != 0) {
 			Minecraft mc = Minecraft.getInstance();
 			if (mc.player != null) {
-				double elapsedSec = (now - sweepStartNs) / 1_000_000_000.0;
-				float yaw = (float) ((elapsedSec * 36.0) % 360.0);
-				mc.player.setYRot(yaw);
-				mc.player.setXRot(16.0f);
+				double t = (now - sweepStartNs) / 1_000_000_000.0;
+				switch (motionMode) {
+					case 1 -> {
+						float yaw = (float) ((t * 36.0) % 360.0);
+						mc.player.setYRot(yaw);
+						mc.player.setXRot(16.0f);
+					}
+					case 2 -> {
+						// High-velocity PvP mouse flicks + rapid whip-pans + subtle strafing across section borders
+						float yaw = (float) ((Math.sin(t * 7.3) * 180.0 + Math.cos(t * 13.7) * 95.0 + t * 240.0) % 360.0);
+						float pitch = (float) Math.max(-72.0, Math.min(72.0, Math.sin(t * 5.9) * 44.0 + Math.cos(t * 11.3) * 18.0));
+						double sx = 0.5 + Math.sin(t * 1.9) * 10.0;
+						double sz = 0.5 + Math.cos(t * 1.4) * 10.0;
+						mc.player.absSnapTo(sx, 128.0, sz, yaw, pitch);
+					}
+					case 3 -> {
+						// Fast elytra-speed flight across chunks (96 blocks/sec = 6 chunks/sec) + banking camera
+						float yaw = (float) (-90.0 + Math.sin(t * 2.4) * 22.0);
+						float pitch = (float) (18.0 + Math.cos(t * 1.8) * 8.0);
+						mc.player.setYRot(yaw);
+						mc.player.setXRot(pitch);
+					}
+					case 4 -> {
+						// Worldgen frontier exploration sweep
+						float yaw = (float) (-90.0 + Math.sin(t * 1.9) * 28.0);
+						float pitch = (float) (20.0 + Math.cos(t * 1.3) * 6.0);
+						mc.player.setYRot(yaw);
+						mc.player.setXRot(pitch);
+					}
+				}
 			}
 		}
 	}
@@ -167,7 +209,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 				double maxWait = VISTA_RD > 20 ? 24.0 : 12.0;
 				boolean chunksReady = mc.levelRenderer != null && mc.levelRenderer.hasRenderedAllSections();
 				if (elapsed >= maxWait || (elapsed >= 4.0 && chunksReady)) {
-					enter(Phase.SCENE1_SETUP, now);
+					enter("gameplay".equals(SUITE) ? Phase.G1_MOUSE_SETUP : Phase.SCENE1_SETUP, now);
 				}
 			}
 			case SCENE1_SETUP -> {
@@ -183,7 +225,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 					captureScreenshot(mc, "scene1_terrain_vista");
 				}
 				if (phaseTicks >= 30) {
-					sweepingCamera = true;
+					motionMode = 1;
 					sweepStartNs = now;
 					beginMeasure(SCENE1_NAME, now);
 					enter(Phase.SCENE1_MEASURE, now);
@@ -191,7 +233,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 			}
 			case SCENE1_MEASURE -> {
 				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
-					sweepingCamera = false;
+					motionMode = 0;
 					endMeasure(SCENE1_NAME, now, null);
 					enter(Phase.SCENE2_SETUP, now);
 				}
@@ -304,6 +346,184 @@ public final class BenchProbeClient implements ClientModInitializer {
 				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
 					endMeasure("gui_pvp_hud", now, null);
 					mc.gui.setScreen(null);
+					enter("all".equals(SUITE) ? Phase.G1_MOUSE_SETUP : Phase.FINISH, now);
+				}
+			}
+			// ---- Real-world gameplay & stutter stress suite ----
+			case G1_MOUSE_SETUP -> {
+				if (phaseTicks == 1) {
+					mc.gui.setScreen(null);
+					mc.options.renderDistance().set(VISTA_RD);
+					return;
+				}
+				if (phaseTicks < 6) {
+					return;
+				}
+				send(mc, "kill @e[type=!player]");
+				send(mc, "tp @s 0.5 128.0 0.5 0 16");
+				// Place nearby entities & chests in all 4 directions around player so 360° whip-pans hit frustum + occlusion
+				for (int i = 0; i < 24; i++) {
+					double ang = (i / 24.0) * Math.PI * 2.0;
+					double ex = 0.5 + Math.cos(ang) * 14.0;
+					double ez = 0.5 + Math.sin(ang) * 14.0;
+					send(mc, String.format("summon minecraft:pig %.1f 128.0 %.1f {NoAI:1b,Silent:1b}", ex, ez));
+				}
+				enter(Phase.G1_MOUSE_SETTLE, now);
+			}
+			case G1_MOUSE_SETTLE -> {
+				if (phaseTicks >= 25) {
+					motionMode = 2;
+					sweepStartNs = now;
+					beginMeasure("mouse_whip_flick", now);
+					enter(Phase.G1_MOUSE_MEASURE, now);
+				}
+			}
+			case G1_MOUSE_MEASURE -> {
+				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
+					motionMode = 0;
+					endMeasure("mouse_whip_flick", now, null);
+					enter(Phase.G2_FLUID_SETUP, now);
+				}
+			}
+			case G2_FLUID_SETUP -> {
+				if (phaseTicks == 1) {
+					mc.gui.setScreen(null);
+					mc.options.renderDistance().set(16);
+					return;
+				}
+				if (phaseTicks < 6) {
+					return;
+				}
+				send(mc, "kill @e[type=!player]");
+				send(mc, "tp @s 0.5 134.0 0.5 0 28");
+				// Build terraced stone basin + fluid ledge spanning section boundaries (y=124..132, z=4..20)
+				send(mc, "fill -10 124 4 10 124 20 minecraft:stone");
+				send(mc, "fill -10 125 4 -10 128 20 minecraft:stone");
+				send(mc, "fill 10 125 4 10 128 20 minecraft:stone");
+				send(mc, "fill -10 125 20 10 128 20 minecraft:stone");
+				send(mc, "fill -9 125 5 9 133 19 minecraft:air");
+				send(mc, "fill -8 129 12 8 129 14 minecraft:stone");
+				fluidStep = 0;
+				enter(Phase.G2_FLUID_SETTLE, now);
+			}
+			case G2_FLUID_SETTLE -> {
+				if (mc.player != null) {
+					mc.player.absSnapTo(0.5, 134.0, 0.5, 0.0f, 28.0f);
+				}
+				if (phaseTicks >= 25) {
+					beginMeasure("block_fluid_storm", now);
+					enter(Phase.G2_FLUID_MEASURE, now);
+				}
+			}
+			case G2_FLUID_MEASURE -> {
+				if (mc.player != null) {
+					mc.player.absSnapTo(0.5, 134.0, 0.5, 0.0f, 28.0f);
+				}
+				if (phaseTicks % 2 == 0) {
+					int k = fluidStep++;
+					int col = -6 + (k % 7) * 2;
+					if ((k & 1) == 0) {
+						// Rapid block + light-emitter + leaf + flowing water/lava placement
+						String block = switch ((k >>> 1) % 4) {
+							case 0 -> "minecraft:glowstone";
+							case 1 -> "minecraft:oak_leaves[persistent=true]";
+							case 2 -> "minecraft:redstone_block";
+							default -> "minecraft:glass";
+						};
+						send(mc, String.format("fill %d 125 8 %d 128 10 %s", col, col + 1, block));
+						String fluid = ((k >>> 1) & 1) == 0 ? "minecraft:water" : "minecraft:lava";
+						send(mc, String.format("setblock %d 130 13 %s", col, fluid));
+					} else {
+						// Rapid block breaking + fluid removal triggering drainage, relighting, and section rebuilds
+						send(mc, String.format("fill %d 125 8 %d 128 10 minecraft:air", col, col + 1));
+						send(mc, String.format("setblock %d 130 13 minecraft:air", col));
+					}
+				}
+				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
+					endMeasure("block_fluid_storm", now, null);
+					captureScreenshot(mc, "scene_g2_block_fluid_storm");
+					enter(Phase.G3_FLIGHT_SETUP, now);
+				}
+			}
+			case G3_FLIGHT_SETUP -> {
+				if (phaseTicks == 1) {
+					mc.gui.setScreen(null);
+					mc.options.renderDistance().set(VISTA_RD);
+					return;
+				}
+				if (phaseTicks < 6) {
+					return;
+				}
+				send(mc, "tp @s 0.5 138.0 0.5 -90 18");
+				enter(Phase.G3_FLIGHT_SETTLE, now);
+			}
+			case G3_FLIGHT_SETTLE -> {
+				if (phaseTicks >= 20) {
+					motionMode = 3;
+					sweepStartNs = now;
+					startLoadedChunks = mc.level != null ? mc.level.getChunkSource().getLoadedChunksCount() : 0;
+					maxLoadedChunks = startLoadedChunks;
+					beginMeasure("chunk_flight_load", now);
+					enter(Phase.G3_FLIGHT_MEASURE, now);
+				}
+			}
+			case G3_FLIGHT_MEASURE -> {
+				double elapsedSec = (now - phaseStartNs) / 1e9;
+				// Elytra-speed 96 blocks/sec (+6 chunks/sec) streaming across loaded & fresh chunks
+				if (phaseTicks % 2 == 0) {
+					double nx = 0.5 + elapsedSec * 96.0;
+					send(mc, String.format("tp @s %.1f 138.0 0.5", nx));
+				}
+				if (mc.level != null) {
+					maxLoadedChunks = Math.max(maxLoadedChunks, mc.level.getChunkSource().getLoadedChunksCount());
+				}
+				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
+					motionMode = 0;
+					Map<String, Object> extra = new LinkedHashMap<>();
+					extra.put("maxLoadedChunks", maxLoadedChunks);
+					endMeasure("chunk_flight_load", now, extra);
+					enter(Phase.G4_WORLDGEN_SETUP, now);
+				}
+			}
+			case G4_WORLDGEN_SETUP -> {
+				if (phaseTicks == 1) {
+					mc.gui.setScreen(null);
+					mc.options.renderDistance().set(16);
+					return;
+				}
+				if (phaseTicks < 6) {
+					return;
+				}
+				// Jump far into ungenerated frontier so server worldgen (NoiseChunk/Biomes/Aquifer/Light) runs at full load
+				send(mc, "tp @s 12000.5 142.0 12000.5 -90 20");
+				enter(Phase.G4_WORLDGEN_SETTLE, now);
+			}
+			case G4_WORLDGEN_SETTLE -> {
+				if (phaseTicks >= 10) {
+					motionMode = 4;
+					sweepStartNs = now;
+					startLoadedChunks = mc.level != null ? mc.level.getChunkSource().getLoadedChunksCount() : 0;
+					maxLoadedChunks = startLoadedChunks;
+					beginMeasure("worldgen_frontier", now);
+					enter(Phase.G4_WORLDGEN_MEASURE, now);
+				}
+			}
+			case G4_WORLDGEN_MEASURE -> {
+				double elapsedSec = (now - phaseStartNs) / 1e9;
+				if (phaseTicks % 2 == 0) {
+					double nx = 12000.5 + elapsedSec * 48.0;
+					send(mc, String.format("tp @s %.1f 142.0 12000.5", nx));
+				}
+				if (mc.level != null) {
+					maxLoadedChunks = Math.max(maxLoadedChunks, mc.level.getChunkSource().getLoadedChunksCount());
+				}
+				if ((now - phaseStartNs) >= DURATION_SEC * 1_000_000_000L) {
+					motionMode = 0;
+					Map<String, Object> extra = new LinkedHashMap<>();
+					extra.put("loadedChunksEnd", mc.level != null ? mc.level.getChunkSource().getLoadedChunksCount() : 0);
+					extra.put("maxLoadedChunks", maxLoadedChunks);
+					endMeasure("worldgen_frontier", now, extra);
+					captureScreenshot(mc, "scene_g4_worldgen_frontier");
 					enter(Phase.FINISH, now);
 				}
 			}

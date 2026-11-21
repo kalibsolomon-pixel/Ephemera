@@ -66,7 +66,7 @@ public final class RegionalChunkBatchPlan {
 	private static final int TRANSLUCENT = ChunkSectionLayer.TRANSLUCENT.ordinal();
 	private static final GpuBufferSlice[] NO_SLICES = new GpuBufferSlice[0];
 	/** Flat batch table: uniform slots {@code [0, FAST_UBOS)} times heaps {@code [0, FAST_HEAPS)}. */
-	private static final int FAST_UBOS = 256;
+	private static final int FAST_UBOS = 1024;
 	private static final int FAST_HEAP_BITS = 2;
 	private static final int FAST_HEAPS = 1 << FAST_HEAP_BITS;
 	/** Pooled batches kept per layer between frames (covers worlds where most sections still fade in). */

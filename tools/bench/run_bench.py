@@ -135,7 +135,7 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render
     (run_dir / "options.txt").write_text("\n".join(opts) + "\n", encoding="utf-8")
 
 
-def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20) -> dict | None:
+def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20, suite: str = "default") -> dict | None:
     spec = MOD_SETS[target]
     run_dir = REPO / "build" / "bench" / f"game-{target}-{backend.lower()}"
     prepare_run_dir(run_dir, spec["mods"], backend, render_distance)
@@ -157,6 +157,7 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         f"-Pephemera.benchJfr={'true' if jfr else 'false'}",
         f"-Pephemera.benchDurationSec={duration_sec}",
         f"-Pephemera.benchRd={render_distance}",
+        f"-Pephemera.benchSuite={suite}",
         "-I", str(REPO / "tools" / "bench" / "bench.init.gradle"),
     ]
     if extra_jvm:
@@ -209,7 +210,7 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
             print(
                 f"  {sc_name:20s}: {sc['avgFps']:7.1f} FPS | med {sc['medianMs']:6.3f} ms | "
                 f"p99 {sc['p99Ms']:6.3f} ms | 1%L {sc['onePercentLowFps']:6.1f} | "
-                f"alloc {sc['allocMbPerSec']:5.1f} MB/s",
+                f"0.1%L {sc['pointOnePercentLowFps']:5.1f} | alloc {sc['allocMbPerSec']:5.1f} MB/s",
                 flush=True,
             )
         return data
@@ -227,6 +228,7 @@ def main() -> None:
     ap.add_argument("--no-jfr", action="store_true")
     ap.add_argument("--extra-jvm", default="")
     ap.add_argument("--render-distance", type=int, default=20)
+    ap.add_argument("--suite", default="default", choices=["default", "gameplay", "all"])
     args = ap.parse_args()
 
     out_dir = Path(args.out).resolve()
@@ -236,7 +238,7 @@ def main() -> None:
     summary = {}
     for backend in backends:
         for target in targets:
-            res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance)
+            res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance, args.suite)
             if res:
                 summary[f"{target}_{backend.lower()}"] = res
 

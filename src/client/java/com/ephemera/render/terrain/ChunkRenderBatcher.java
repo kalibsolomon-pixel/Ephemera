@@ -101,6 +101,8 @@ public final class ChunkRenderBatcher {
 	private static final long SPRITE_RESTAMP_MS = 50L;
 	private static final boolean FADE_ACCESSOR =
 		TerrainRenderSectionFadeAccessor.class.isAssignableFrom(SectionRenderDispatcher.RenderSection.class);
+	private static final boolean SWAP_HOOK =
+		SectionMeshSwapHook.class.isAssignableFrom(SectionRenderDispatcher.RenderSection.class);
 	private static final boolean DIAG = Boolean.getBoolean("ephemera.diag.terrain");
 	private static final ChunkRenderBatcher INSTANCE = new ChunkRenderBatcher();
 
@@ -380,7 +382,11 @@ public final class ChunkRenderBatcher {
 
 	/** Vanilla {@code getVisibility}, without calling it once the fade has finished (where vanilla returns exactly 1). */
 	private static float visibility(SectionRenderDispatcher.RenderSection section, long now) {
-		if (FADE_ACCESSOR) {
+		if (SWAP_HOOK) {
+			if (now >= ((SectionMeshSwapHook) section).ephemera$fadeEndMs()) {
+				return 1.0f;
+			}
+		} else if (FADE_ACCESSOR) {
 			TerrainRenderSectionFadeAccessor fade = (TerrainRenderSectionFadeAccessor) section;
 			if (now - fade.getEphemeraUploadedTime() >= fade.getEphemeraFadeDuration()) {
 				return 1.0f;
@@ -614,6 +620,7 @@ public final class ChunkRenderBatcher {
 		int meshVisUpdates = 0;
 		VulkanMeshTerrainEngine meshEngine = meshActive ? VulkanMeshTerrainEngine.get() : null;
 		boolean meshTaskMode = meshEngine != null && meshEngine.usesTaskShader();
+		int meshEpoch = meshEngine != null ? meshEngine.arenaEpoch() : -1;
 		if (!lastRegional) {
 			resetGroups();
 		}
@@ -627,12 +634,36 @@ public final class ChunkRenderBatcher {
 		double cx = camX;
 		double cy = camY;
 		double cz = camZ;
-		float env = envEnd;
-		float rd = rdEnd;
+		double cxMin = cx + FOG_PADDING;
+		double cyMin = cy + FOG_PADDING;
+		double czMin = cz + FOG_PADDING;
+		double cxMax = cx - (16.0 + FOG_PADDING);
+		double cyMax = cy - (16.0 + FOG_PADDING);
+		double czMax = cz - (16.0 + FOG_PADDING);
+		boolean checkEnvFog = doFog && envEnd < Float.MAX_VALUE;
+		double envSq = checkEnvFog ? (envEnd <= 0.0f ? 0.0 : (double) envEnd * (double) envEnd) : Double.POSITIVE_INFINITY;
+		boolean checkRdFog = doFog && rdEnd < Float.MAX_VALUE;
+		double rdVal = rdEnd;
+		double rdSq = checkRdFog ? (rdVal <= 0.0 ? 0.0 : rdVal * rdVal) : Double.POSITIVE_INFINITY;
 		int fogCulled = 0;
 		int unbakedCount = 0;
 		Object[] elements = visibleSections.elements();
 		int size = visibleSections.size();
+		if (meshEngine != null) {
+			int minCap = Math.max(1024, size + 64);
+			if (meshSolidTasks.length < minCap) {
+				meshSolidTasks = new int[Integer.highestOneBit(minCap - 1) << 1];
+			}
+			if (meshCutoutTasks.length < minCap) {
+				meshCutoutTasks = new int[Integer.highestOneBit(minCap - 1) << 1];
+			}
+		}
+		int[] solidTasks = meshSolidTasks;
+		int solidCount = 0;
+		int[] cutoutTasks = meshCutoutTasks;
+		int cutoutCount = 0;
+		int meshSections = 0;
+		int activeMeshMask = 0;
 		int spriteGeneration = trackSprites ? VisibleSpriteTracker.generation().id : 0;
 		dispatcher.lock();
 		try {
@@ -641,50 +672,102 @@ public final class ChunkRenderBatcher {
 				if (!(section.getSectionMesh() instanceof SectionMeshRenderCache cache)) {
 					continue;
 				}
-				SectionDrawState state = cache.ephemera$drawState(epoch);
-				int mask = state != null ? state.readyMask : 0;
+				int mask = cache.ephemera$readyMask(epoch);
 				if (mask == 0) {
 					continue;
 				}
-				SectionLayout layout = cache.ephemera$layout();
 				BlockPos origin = null;
 				if (doFog) {
 					int ox, oy, oz;
-					if (layout != null) {
-						ox = layout.sectionX;
-						oy = layout.sectionY;
-						oz = layout.sectionZ;
+					if (cache.ephemera$hasSectionCoords()) {
+						ox = cache.ephemera$sectionX();
+						oy = cache.ephemera$sectionY();
+						oz = cache.ephemera$sectionZ();
 					} else {
 						origin = section.getRenderOrigin();
 						ox = origin.getX();
 						oy = origin.getY();
 						oz = origin.getZ();
 					}
-					if (FastFrustumMath.isFullyFogged(
-						ox - cx - FOG_PADDING, oy - cy - FOG_PADDING, oz - cz - FOG_PADDING,
-						ox + 16 - cx + FOG_PADDING, oy + 16 - cy + FOG_PADDING, oz + 16 - cz + FOG_PADDING,
-						env, rd)) {
+					double fMinX = ox - cxMin, fMaxX = ox - cxMax;
+					double dx = fMinX > 0.0 ? fMinX : (fMaxX < 0.0 ? -fMaxX : 0.0);
+					double fMinZ = oz - czMin, fMaxZ = oz - czMax;
+					double dz = fMinZ > 0.0 ? fMinZ : (fMaxZ < 0.0 ? -fMaxZ : 0.0);
+					double horizSq = dx * dx + dz * dz;
+					if (checkRdFog && horizSq >= rdSq) {
+						fogCulled++;
+						continue;
+					}
+					double fMinY = oy - cyMin, fMaxY = oy - cyMax;
+					double dy = fMinY > 0.0 ? fMinY : (fMaxY < 0.0 ? -fMaxY : 0.0);
+					if ((checkRdFog && dy >= rdVal) || (checkEnvFog && horizSq + dy * dy >= envSq)) {
 						fogCulled++;
 						continue;
 					}
 				}
 
 				float visibility = visibility(section, now);
+				SectionLayout layout = null;
 
 				// Vulkan VK_EXT_mesh_shader fast path: SOLID & CUTOUT render in 1 GPU-driven draw call
 				// with zero per-section UBOs (even when fading!), leaving only TRANSLUCENT or unbaked
 				// layers for the indirect batch plan.
-				if (meshEngine != null && layout != null && layout.meshlets != null) {
+				if (meshEngine != null) {
 					VulkanMeshSectionHandle h = cache.ephemera$meshHandle();
-					if (!meshEngine.isValidHandle(h)) {
-						h = meshEngine.uploadSection(layout.meshlets, visibility);
-						cache.ephemera$setMeshHandle(h);
+					if (h == null || h.released || h.arenaEpoch != meshEpoch) {
+						layout = cache.ephemera$layout();
+						if (layout != null && layout.meshlets != null) {
+							h = meshEngine.uploadSection(layout.meshlets, visibility);
+							cache.ephemera$setMeshHandle(h);
+						} else {
+							h = null;
+						}
 					}
 					if (h != null) {
 						int handledLayers = h.layerMask & mask;
 						if (handledLayers != 0) {
-							enqueueMeshSectionTasks(h, handledLayers, meshTaskMode);
-							meshActiveLayerMask |= handledLayers;
+							meshSections++;
+							if (!meshTaskMode) {
+								if (solidCount == solidTasks.length) {
+									solidTasks = meshSolidTasks = java.util.Arrays.copyOf(solidTasks, solidTasks.length * 2);
+								}
+								solidTasks[solidCount++] = h.slot;
+							} else {
+								int prefix = h.slotPrefix;
+								if ((handledLayers & 1) != 0) {
+									int chunks = h.solidTaskChunks;
+									if (chunks == 1) {
+										if (solidCount == solidTasks.length) {
+											solidTasks = meshSolidTasks = java.util.Arrays.copyOf(solidTasks, solidTasks.length * 2);
+										}
+										solidTasks[solidCount++] = prefix;
+									} else if (chunks > 1) {
+										if (solidCount + chunks > solidTasks.length) {
+											solidTasks = meshSolidTasks = java.util.Arrays.copyOf(solidTasks, Math.max(solidTasks.length * 2, solidCount + chunks));
+										}
+										for (int c = 0; c < chunks; c++) {
+											solidTasks[solidCount++] = prefix | c;
+										}
+									}
+								}
+								if ((handledLayers & 2) != 0) {
+									int chunks = h.cutoutTaskChunks;
+									if (chunks == 1) {
+										if (cutoutCount == cutoutTasks.length) {
+											cutoutTasks = meshCutoutTasks = java.util.Arrays.copyOf(cutoutTasks, cutoutTasks.length * 2);
+										}
+										cutoutTasks[cutoutCount++] = prefix;
+									} else if (chunks > 1) {
+										if (cutoutCount + chunks > cutoutTasks.length) {
+											cutoutTasks = meshCutoutTasks = java.util.Arrays.copyOf(cutoutTasks, Math.max(cutoutTasks.length * 2, cutoutCount + chunks));
+										}
+										for (int c = 0; c < chunks; c++) {
+											cutoutTasks[cutoutCount++] = prefix | c;
+										}
+									}
+								}
+							}
+							activeMeshMask |= handledLayers;
 							if (visibility != h.lastVisibility) {
 								meshVisUpdates = addMeshVisUpdate(meshVisUpdates, h.slot, visibility);
 								h.lastVisibility = visibility;
@@ -698,6 +781,10 @@ public final class ChunkRenderBatcher {
 				}
 
 				if (mask != 0) {
+					SectionDrawState state = cache.ephemera$drawState(epoch);
+					if (layout == null) {
+						layout = cache.ephemera$layout();
+					}
 					// Settled region-baked sections share their region's slot; fading or unbaked
 					// sections get their own, positioned at the origin their vertices are relative to.
 					int ubo;
@@ -766,17 +853,18 @@ public final class ChunkRenderBatcher {
 					} while (mask != 0);
 				}
 
-				if (trackSprites) {
-					if (cache.ephemera$animatedSprites().length != 0 || cache.ephemera$untrackedSprites()
-						|| cache.ephemera$spriteGeneration() != spriteGeneration) {
-						VisibleSpriteTracker.markSection(cache, now);
-						spriteSections.add(cache);
-					}
+				if (trackSprites && cache.ephemera$needsSpriteStamp(spriteGeneration)) {
+					VisibleSpriteTracker.markSection(cache, now);
+					spriteSections.add(cache);
 				}
 			}
 		} finally {
 			dispatcher.unlock();
 		}
+		meshSolidTaskCount = solidCount;
+		meshCutoutTaskCount = cutoutCount;
+		meshSectionCount = meshSections;
+		meshActiveLayerMask = activeMeshMask;
 		if (trackSprites) {
 			lastSpriteStamp = now;
 		}

@@ -89,14 +89,25 @@ public final class FastFrustumMath {
 	 */
 	public static boolean isFullyFogged(double minX, double minY, double minZ, double maxX, double maxY, double maxZ,
 										float environmentalEnd, float renderDistanceEnd) {
+		double dx = minX > 0.0 ? minX : (maxX < 0.0 ? -maxX : 0.0);
+		double dy = minY > 0.0 ? minY : (maxY < 0.0 ? -maxY : 0.0);
+		double dz = minZ > 0.0 ? minZ : (maxZ < 0.0 ? -maxZ : 0.0);
+		double horizSq = dx * dx + dz * dz;
 		if (environmentalEnd < Float.MAX_VALUE) {
+			if (environmentalEnd <= 0.0f) {
+				return true;
+			}
 			double env = environmentalEnd;
-			if (minDistanceSquared(minX, minY, minZ, maxX, maxY, maxZ) >= env * env) {
+			if (horizSq + dy * dy >= env * env) {
 				return true;
 			}
 		}
 		if (renderDistanceEnd < Float.MAX_VALUE) {
-			return minCylindricalDistance(minX, minY, minZ, maxX, maxY, maxZ) >= renderDistanceEnd;
+			if (renderDistanceEnd <= 0.0f) {
+				return true;
+			}
+			double rd = renderDistanceEnd;
+			return dy >= rd || horizSq >= rd * rd;
 		}
 		return false;
 	}

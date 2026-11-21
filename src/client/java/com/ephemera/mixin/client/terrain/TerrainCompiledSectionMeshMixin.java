@@ -72,6 +72,18 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	private @Nullable SectionLayout ephemera$layout;
 	@Unique
 	private @Nullable VulkanMeshSectionHandle ephemera$meshHandle;
+	@Unique
+	private int ephemera$readyMask;
+	@Unique
+	private boolean ephemera$hasSectionCoords;
+	@Unique
+	private int ephemera$sectionX;
+	@Unique
+	private int ephemera$sectionY;
+	@Unique
+	private int ephemera$sectionZ;
+	@Unique
+	private boolean ephemera$hasAnimatedSprites;
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$captureDraws(TranslucencyPointOfView translucencyPointOfView, SectionCompiler.Results results, CallbackInfo ci) {
@@ -84,11 +96,19 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 		}
 		if ((Object) results instanceof CompileResultsSprites sprites) {
 			ephemera$sprites = sprites.ephemera$animatedSprites();
+			ephemera$hasAnimatedSprites = ephemera$sprites.length != 0;
 			ephemera$spriteGeneration = sprites.ephemera$spriteGeneration();
 			ephemera$untrackedSprites = sprites.ephemera$untrackedSprites();
 		}
 		if ((Object) results instanceof CompileResultsLayout layout) {
-			ephemera$layout = layout.ephemera$layout();
+			SectionLayout sl = layout.ephemera$layout();
+			ephemera$layout = sl;
+			if (sl != null) {
+				ephemera$hasSectionCoords = true;
+				ephemera$sectionX = sl.sectionX;
+				ephemera$sectionY = sl.sectionY;
+				ephemera$sectionZ = sl.sectionZ;
+			}
 		}
 	}
 
@@ -116,6 +136,7 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 			VulkanMeshTerrainEngine.get().releaseSection(meshHandle);
 		}
 		ephemera$draws = null;
+		ephemera$readyMask = 0;
 		SectionDrawState state = ephemera$drawState;
 		if (state != null) {
 			state.clear();
@@ -151,6 +172,7 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 		int layer = slot >> 1;
 		ephemera$drawState.refresh(layer, ephemera$draw(layer), ephemera$layout,
 			allocations[SectionMeshRenderCache.vertexSlot(layer)], allocations[SectionMeshRenderCache.indexSlot(layer)]);
+		ephemera$readyMask = ephemera$drawState.readyMask;
 		TerrainTopology.bumpTopology();
 	}
 
@@ -158,6 +180,36 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	public @Nullable SectionDrawState ephemera$drawState(int epoch) {
 		SectionDrawState state = ephemera$drawState;
 		return state != null && state.epoch == epoch ? state : null;
+	}
+
+	@Override
+	public int ephemera$readyMask(int epoch) {
+		return epoch == ephemera$epoch ? ephemera$readyMask : 0;
+	}
+
+	@Override
+	public boolean ephemera$hasSectionCoords() {
+		return ephemera$hasSectionCoords;
+	}
+
+	@Override
+	public int ephemera$sectionX() {
+		return ephemera$sectionX;
+	}
+
+	@Override
+	public int ephemera$sectionY() {
+		return ephemera$sectionY;
+	}
+
+	@Override
+	public int ephemera$sectionZ() {
+		return ephemera$sectionZ;
+	}
+
+	@Override
+	public boolean ephemera$needsSpriteStamp(int spriteGeneration) {
+		return ephemera$hasAnimatedSprites || ephemera$untrackedSprites || ephemera$spriteGeneration != spriteGeneration;
 	}
 
 	@Override

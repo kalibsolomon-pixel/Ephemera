@@ -11,6 +11,9 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 	public void onLoad(String mixinPackage) {
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
+			"FrustumFastMixin",
+			"RotatingSectionStorageFastMixin",
+			"SectionOcclusionGraphExecutorMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
 			"TerrainCompiledSectionMeshMixin",
@@ -143,6 +146,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			case "TitleFadeMixin" -> cfg.loadingSkipTitleFade;
 			case "LoadingFadeMixin" -> cfg.loadingNonBlockingReload;
 			case "NumericAddressMixin" -> cfg.loadingFastIpPing;
+			case "FrustumFastMixin", "RotatingSectionStorageFastMixin" -> cfg.terrainFastFrustumAndGrid;
+			case "SectionOcclusionGraphExecutorMixin" -> cfg.terrainAsyncGraphUpdates;
 
 			// Keep terrain, culling, gui, visuals & UI mixins live-toggleable at runtime!
 			default -> true;

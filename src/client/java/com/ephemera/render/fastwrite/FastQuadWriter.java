@@ -166,13 +166,13 @@ public final class FastQuadWriter {
 				|| (p2 = quad.position2()) == null || (p3 = quad.position3()) == null) {
 			return false;
 		}
-		Vector3fc direction = quad.direction().getUnitVec3f();
 		int normal = 0;
 		if (layout.normal >= 0) {
+			Direction dir = quad.direction();
 			if (pose == null) {
-				normal = VertexPacking.normal(direction.x(), direction.y(), direction.z());
+				normal = FastVertexTransforms.cardinalNormalIdentity(dir);
 			} else if ((Object) pose instanceof PoseAccess access) {
-				normal = FastVertexTransforms.normal(pose, access.ephemera$trustedNormals(), direction);
+				normal = FastVertexTransforms.cardinalNormal(pose.normal(), access.ephemera$trustedNormals(), dir);
 			} else {
 				return false;
 			}
@@ -198,6 +198,31 @@ public final class FastQuadWriter {
 			return false;
 		}
 		int stride = layout.stride;
+		if (!remapUv) {
+			if (layout == FastVertexLayout.ENTITY) {
+				if (matrix == null) {
+					writeEntityOffset(address, stride, p0, p1, p2, p3, quad, instance, emission, packedOverlay, normal, x, y, z);
+				} else if (identity) {
+					writeEntityIdentity(address, stride, p0, p1, p2, p3, quad, instance, emission, packedOverlay, normal);
+				} else if (translation) {
+					writeEntityOffset(address, stride, p0, p1, p2, p3, quad, instance, emission, packedOverlay, normal, m30, m31, m32);
+				} else {
+					writeEntityMatrix(address, stride, p0, p1, p2, p3, quad, instance, emission, packedOverlay, normal,
+						m00, m01, m02, m10, m11, m12, m20, m21, m22, m30, m31, m32);
+				}
+				FastVertexBuffer.finish(builder, address + stride * 3L, 4);
+				return true;
+			}
+			if (layout == FastVertexLayout.BLOCK && matrix == null) {
+				writeBlockVert(address, p0, quad.packedUV(0), instance, 0, emission, x, y, z);
+				writeBlockVert(address + stride, p1, quad.packedUV(1), instance, 1, emission, x, y, z);
+				writeBlockVert(address + stride * 2L, p2, quad.packedUV(2), instance, 2, emission, x, y, z);
+				long last = address + stride * 3L;
+				writeBlockVert(last, p3, quad.packedUV(3), instance, 3, emission, x, y, z);
+				FastVertexBuffer.finish(builder, last, 4);
+				return true;
+			}
+		}
 		boolean isEntity = layout == FastVertexLayout.ENTITY;
 		boolean isBlock = layout == FastVertexLayout.BLOCK;
 		boolean hasColor = layout.color >= 0;
@@ -246,5 +271,93 @@ public final class FastQuadWriter {
 		}
 		FastVertexBuffer.finish(builder, address - stride, 4);
 		return true;
+	}
+
+	private static void writeEntityMatrix(long address, int stride, Vector3fc p0, Vector3fc p1, Vector3fc p2, Vector3fc p3,
+			BakedQuad quad, QuadInstance instance, int emission, int packedOverlay, int normal,
+			float m00, float m01, float m02, float m10, float m11, float m12,
+			float m20, float m21, float m22, float m30, float m31, float m32) {
+		float x0 = p0.x(), y0 = p0.y(), z0 = p0.z();
+		FastVertexBuffer.position(address,
+			fma(m00, x0, fma(m10, y0, fma(m20, z0, m30))),
+			fma(m01, x0, fma(m11, y0, fma(m21, z0, m31))),
+			fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))));
+		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		address += stride;
+
+		float x1 = p1.x(), y1 = p1.y(), z1 = p1.z();
+		FastVertexBuffer.position(address,
+			fma(m00, x1, fma(m10, y1, fma(m20, z1, m30))),
+			fma(m01, x1, fma(m11, y1, fma(m21, z1, m31))),
+			fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))));
+		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		address += stride;
+
+		float x2 = p2.x(), y2 = p2.y(), z2 = p2.z();
+		FastVertexBuffer.position(address,
+			fma(m00, x2, fma(m10, y2, fma(m20, z2, m30))),
+			fma(m01, x2, fma(m11, y2, fma(m21, z2, m31))),
+			fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))));
+		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		address += stride;
+
+		float x3 = p3.x(), y3 = p3.y(), z3 = p3.z();
+		FastVertexBuffer.position(address,
+			fma(m00, x3, fma(m10, y3, fma(m20, z3, m30))),
+			fma(m01, x3, fma(m11, y3, fma(m21, z3, m31))),
+			fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))));
+		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+	}
+
+	private static void writeEntityOffset(long address, int stride, Vector3fc p0, Vector3fc p1, Vector3fc p2, Vector3fc p3,
+			BakedQuad quad, QuadInstance instance, int emission, int packedOverlay, int normal,
+			float ox, float oy, float oz) {
+		FastVertexBuffer.position(address, p0.x() + ox, p0.y() + oy, p0.z() + oz);
+		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p1.x() + ox, p1.y() + oy, p1.z() + oz);
+		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p2.x() + ox, p2.y() + oy, p2.z() + oz);
+		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p3.x() + ox, p3.y() + oy, p3.z() + oz);
+		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+	}
+
+	private static void writeEntityIdentity(long address, int stride, Vector3fc p0, Vector3fc p1, Vector3fc p2, Vector3fc p3,
+			BakedQuad quad, QuadInstance instance, int emission, int packedOverlay, int normal) {
+		FastVertexBuffer.position(address, p0.x(), p0.y(), p0.z());
+		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p1.x(), p1.y(), p1.z());
+		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p2.x(), p2.y(), p2.z());
+		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		address += stride;
+
+		FastVertexBuffer.position(address, p3.x(), p3.y(), p3.z());
+		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+	}
+
+	private static void writeEntityAttrs(long address, long uv, QuadInstance instance, int i,
+			int emission, int packedOverlay, int normal) {
+		int rawLight = emission == 0 ? instance.getLightCoords(i) : instance.getLightCoordsWithEmission(i, emission);
+		FastVertexBuffer.attributesEntity(address, FastVertexBuffer.packColor(instance.getColor(i)),
+			UVPair.unpackU(uv), UVPair.unpackV(uv), packedOverlay, FastVertexBuffer.packUv(rawLight), normal);
+	}
+
+	private static void writeBlockVert(long address, Vector3fc pos, long uv, QuadInstance instance, int i,
+			int emission, float x, float y, float z) {
+		FastVertexBuffer.position(address, pos.x() + x, pos.y() + y, pos.z() + z);
+		int rawLight = emission == 0 ? instance.getLightCoords(i) : instance.getLightCoordsWithEmission(i, emission);
+		FastVertexBuffer.attributesBlock(address, FastVertexBuffer.packColor(instance.getColor(i)),
+			UVPair.unpackU(uv), UVPair.unpackV(uv), FastVertexBuffer.packUv(rawLight));
 	}
 }

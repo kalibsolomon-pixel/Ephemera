@@ -40,6 +40,21 @@ public interface SectionMeshRenderCache {
 	/** Precomputed draw parameters for {@code epoch}, or null when nothing was uploaded for it. */
 	@Nullable SectionDrawState ephemera$drawState(int epoch);
 
+	/** Cached ready-layer bitmask for {@code epoch} (0 when absent) without chasing {@code SectionDrawState}. */
+	int ephemera$readyMask(int epoch);
+
+	/** True when {@code ephemera$sectionX/Y/Z} hold valid section coordinates from layout. */
+	boolean ephemera$hasSectionCoords();
+
+	int ephemera$sectionX();
+
+	int ephemera$sectionY();
+
+	int ephemera$sectionZ();
+
+	/** True when animated sprites on this mesh must be stamped for {@code spriteGeneration}. */
+	boolean ephemera$needsSpriteStamp(int spriteGeneration);
+
 	/** Vanilla {@code getSectionDraw(layer)} without the {@code EnumMap} lookup. */
 	SectionMesh.@Nullable SectionDraw ephemera$draw(int layerOrdinal);
 

@@ -69,6 +69,13 @@ public final class EphemeraClient implements ClientModInitializer {
 		EphemeraVisibilityService.init();
 		GuiFeatures.init();
 
+		if (cfg.engineWorkerPriorityIsolation) {
+			try {
+				Thread.currentThread().setPriority(Math.min(Thread.MAX_PRIORITY, Thread.NORM_PRIORITY + 1));
+			} catch (SecurityException ignored) {
+			}
+		}
+
 		LOGGER.info("Ephemera {} initialized ({})", version, MixinHealth.summary());
 	}
 
