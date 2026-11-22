@@ -36,6 +36,10 @@
     }
   ],
   "accessWidener": "ephemera.accesswidener",
+  "custom": {
+    "ephemera:engine_ownership": true,
+    "ephemera:world_visual_ownership": "${world_visual_ownership}"
+  },
   "depends": {
     "fabricloader": ">=0.20.0",
     "minecraft": "~${minecraft_version}",

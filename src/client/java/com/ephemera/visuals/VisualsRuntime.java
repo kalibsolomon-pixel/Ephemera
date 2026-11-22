@@ -14,8 +14,6 @@ import net.fabricmc.loader.api.FabricLoader;
 public final class VisualsRuntime {
 	private static final String[] DYNAMIC_LIGHT_MODS = {"lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights"};
 	private static final boolean DYNAMIC_LIGHT_COMPETITOR = anyLoaded(DYNAMIC_LIGHT_MODS);
-	private static final boolean AURORA_WORLD_SHADERS = FabricLoader.getInstance().isModLoaded("aurora")
-		&& VisualsRuntime.class.getResource("/com/aurora/client/mixin/GradientDitherSourceMixin.class") != null;
 	private static final long GATE_TTL_NS = 100_000_000L;
 
 	/** How much farther underwater fog reaches when underwater clarity is on. */
@@ -118,8 +116,8 @@ public final class VisualsRuntime {
 		EphemeraShaderHooks hooks = hooks();
 		boolean external = hooks.isExternalShaderPackActive();
 		return new Gates(
-			!AURORA_WORLD_SHADERS && hooks.ownsSmoothFog(),
-			!AURORA_WORLD_SHADERS && hooks.ownsGradientDithering(),
+			hooks.ownsSmoothFog(),
+			hooks.ownsGradientDithering(),
 			c.visualAtmosphericHorizon && !external,
 			c.visualUnderwaterClarity && !external,
 			!DYNAMIC_LIGHT_COMPETITOR && hooks.ownsDynamicLighting(),

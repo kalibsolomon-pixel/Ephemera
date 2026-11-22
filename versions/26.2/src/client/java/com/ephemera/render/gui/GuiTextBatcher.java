@@ -13,6 +13,7 @@ import net.minecraft.client.gui.render.TextureSetup;
 import net.minecraft.client.renderer.state.gui.GuiElementRenderState;
 import net.minecraft.client.renderer.state.gui.GuiRenderState;
 import net.minecraft.client.renderer.state.gui.GuiTextRenderState;
+import net.minecraft.resources.Identifier;
 import org.joml.Matrix3x2fc;
 import org.joml.Matrix4f;
 
@@ -29,6 +30,7 @@ import org.joml.Matrix4f;
 public final class GuiTextBatcher implements Font.GlyphVisitor {
 	/** Vanilla {@code GlyphRenderState.buildVertices} light value ({@code 0xF000F0}). */
 	private static final int FULL_BRIGHT = 15728880;
+	private static final Identifier AURORA_SDF_FRAGMENT = Identifier.fromNamespaceAndPath("aurora", "core/gui_text_sdf");
 
 	TextRenderable[] glyphs = new TextRenderable[512];
 	int glyphCount;
@@ -94,8 +96,9 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 			run = runs[runCount] = new Run();
 		}
 		runCount++;
-		// Same call as vanilla GlyphRenderState.textureSetup() so TextureSetupCacheMixin & Polytone hooks apply
-		TextureSetup setup = TextureSetup.singleTextureWithLightmap(runTexture, RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+		// Match Aurora's GlyphRenderState sampler when the batch contains distance-field glyphs.
+		FilterMode filter = AURORA_SDF_FRAGMENT.equals(runPipeline.getFragmentShader()) ? FilterMode.LINEAR : FilterMode.NEAREST;
+		TextureSetup setup = TextureSetup.singleTextureWithLightmap(runTexture, RenderSystem.getSamplerCache().getClampToEdge(filter));
 		run.set(activePose, activeScissor, runPipeline, setup, runStart, glyphCount);
 		activeRenderState.addGlyphToCurrentLayer(run);
 		runStart = glyphCount;

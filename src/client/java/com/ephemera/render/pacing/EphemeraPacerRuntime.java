@@ -2,26 +2,21 @@ package com.ephemera.render.pacing;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.pacing.EphemeraFramePacer;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.platform.RenderPlatform;
 import net.minecraft.client.Minecraft;
 
+import java.util.function.BooleanSupplier;
+import java.util.function.IntUnaryOperator;
+
 /**
  * Render-thread runtime owner of Ephemera's precision frame pacer, adaptive terrain-upload budget,
  * and cooperative handshake with Aurora Client's frame pacer.
  *
- * <p>Cooperation contract:
- * <ul>
- *   <li>When Aurora Client is installed and actively owning frame waits, Aurora reports its live
- *       effective target FPS and wait metrics through {@code ObjectShare} ({@code ephemera:frame_pacer}).
- *       Ephemera automatically yields blocking sleeps to Aurora (preventing any double-wait) while
- *       using Aurora's exact target FPS and wait timing to budget terrain GPU uploads and coordinate
- *       with Vulkan async presenter.</li>
- *   <li>When Aurora is absent or its custom pacer is disabled/VANILLA, Ephemera's own
- *       {@link EphemeraFramePacer} steps in automatically with adaptive overshoot compensation,
- *       bounded re-parking, anti-sawtooth phase recovery, and optional low-latency frame-head pacing.</li>
- * </ul>
+ * <p>A paired Aurora Client supplies its cap and effective VSync preference over ObjectShare.
+ * Ephemera owns the wait and its upload budget. Older clients still report waits already taken.
  */
 public final class EphemeraPacerRuntime {
 	private static final int VANILLA_UNLIMITED_FPS = 260;
@@ -31,6 +26,10 @@ public final class EphemeraPacerRuntime {
 	private static final FrameBudgetPacer BUDGET = new FrameBudgetPacer();
 
 	private static volatile boolean externalBeforeWaitActive;
+	private static volatile AuroraLimits auroraLimits;
+	private static int postSwapTargetWithoutNativeLimiter;
+
+	private record AuroraLimits(IntUnaryOperator cap, BooleanSupplier forceVsyncOff) {}
 
 	private EphemeraPacerRuntime() {}
 
@@ -42,9 +41,21 @@ public final class EphemeraPacerRuntime {
 		return BUDGET;
 	}
 
+	public static void setAuroraLimits(IntUnaryOperator cap, BooleanSupplier forceVsyncOff) {
+		if (MixinHealth.applied().contains("MinecraftFramePacingMixin")
+			&& MixinHealth.applied().contains("FramerateLimiterPacingMixin")) {
+			auroraLimits = new AuroraLimits(cap, forceVsyncOff);
+		}
+	}
+
+	public static boolean ownsAuroraPacing() {
+		return auroraLimits != null && EphemeraCommon.config().framePacerEnabled
+			&& !MixinHealth.hasFailed("MinecraftFramePacingMixin")
+			&& !MixinHealth.hasFailed("FramerateLimiterPacingMixin");
+	}
+
 	/**
-	 * Invoked by Aurora Client at {@code runTick} HEAD (priority 10000, before Ephemera's 10500)
-	 * or post-swap to synchronize ownership and effective FPS target with zero allocations.
+	 * Invoked by Aurora Client when it still owns the wait, for example with older clients.
 	 */
 	public static void onAuroraReport(boolean auroraOwnsWait, int effectiveTargetFps, long lastWaitNanos) {
 		long now = System.nanoTime();
@@ -85,15 +96,17 @@ public final class EphemeraPacerRuntime {
 	}
 
 	/**
-	 * Called at {@code Minecraft.runTick} HEAD (priority 10500, immediately after Aurora's 10000).
+	 * Called at {@code Minecraft.runTick} HEAD before input and render work.
 	 */
 	public static void onFrameHead(Minecraft mc) {
 		EphemeraConfig cfg = EphemeraCommon.config();
 		long now = System.nanoTime();
 		int nativeLimit = mc.getFramerateLimitTracker().getFramerateLimit();
-		int activeNative = (nativeLimit > 0 && nativeLimit < VANILLA_UNLIMITED_FPS) ? nativeLimit : 0;
+		int activeNative = activeNativeLimit(nativeLimit);
+		boolean managedAurora = ownsAuroraPacing();
+		postSwapTargetWithoutNativeLimiter = 0;
 
-		if (BUDGET.isExternalPacerActive(now)) {
+		if (!managedAurora && BUDGET.isExternalPacerActive(now)) {
 			// Aurora owns the blocking wait; Ephemera only updates frame work & budget state.
 			int effective = BUDGET.effectiveTargetFps(now, activeNative);
 			BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.AURORA, effective);
@@ -101,14 +114,18 @@ public final class EphemeraPacerRuntime {
 			return;
 		}
 
-		boolean vsync = mc.options != null && mc.options.enableVsync().get();
+		int target = managedAurora ? auroraLimits.cap().applyAsInt(nativeLimit) : activeNative;
+		boolean vsync = usesVsync(mc, managedAurora);
 		if (vsync) {
 			// Never sleep before render under VSync: the present already blocks on VBlank, so a
 			// frame-head wait phase-locks into missed VBlanks and halves/thirds the framerate.
 			// Only drop frame-head ownership; a sub-refresh post-swap cadence must survive across frames.
 			PACER.paceFrameHead(0, false, cfg.framePacerSpinTailMicros);
 			int refresh = safeRefreshRate(mc);
-			int effectiveBudgetFps = activeNative > 0 ? Math.min(activeNative, refresh) : refresh;
+			int effectiveBudgetFps = target > 0 ? Math.min(target, refresh) : refresh;
+			if (managedAurora && activeNative == 0 && target > 0 && target < refresh) {
+				postSwapTargetWithoutNativeLimiter = target;
+			}
 			BUDGET.setActiveOwner(cfg.framePacerEnabled
 				? FrameBudgetPacer.PacerOwner.EPHEMERA
 				: FrameBudgetPacer.PacerOwner.VANILLA, effectiveBudgetFps);
@@ -123,14 +140,17 @@ public final class EphemeraPacerRuntime {
 			return;
 		}
 
-		BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, activeNative);
-		if (activeNative > 0 && cfg.framePacerLowLatency) {
+		BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, target);
+		if (target > 0 && cfg.framePacerLowLatency) {
 			// Pace right before input/tick/render for lowest input-to-photon latency.
-			PACER.paceFrameHead(activeNative, true, cfg.framePacerSpinTailMicros);
+			PACER.paceFrameHead(target, true, cfg.framePacerSpinTailMicros);
 			now = System.nanoTime();
 		} else {
 			// Ensure frame-head state is cleared if low-latency mode or FPS cap turned off.
 			PACER.paceFrameHead(0, false, cfg.framePacerSpinTailMicros);
+			if (managedAurora && activeNative == 0) {
+				postSwapTargetWithoutNativeLimiter = target;
+			}
 		}
 		BUDGET.beginFrameWork(now);
 	}
@@ -141,26 +161,33 @@ public final class EphemeraPacerRuntime {
 			BUDGET.endFrameWork(System.nanoTime());
 		}
 		externalBeforeWaitActive = false;
+		int target = postSwapTargetWithoutNativeLimiter;
+		postSwapTargetWithoutNativeLimiter = 0;
+		if (target > 0) {
+			PACER.pacePostSwap(target, EphemeraCommon.config().framePacerSpinTailMicros);
+		}
 	}
 
 	/**
-	 * Called at {@code FramerateLimiter.limitDisplayFPS(int)} HEAD (priority 10500, after Aurora's 10000).
+	 * Called at {@code FramerateLimiter.limitDisplayFPS(int)} HEAD.
 	 *
 	 * @return {@code true} if Ephemera handled the wait and vanilla's limiter should be cancelled
 	 */
 	public static boolean onPostSwapLimit(int fps) {
+		postSwapTargetWithoutNativeLimiter = 0;
 		EphemeraConfig cfg = EphemeraCommon.config();
 		long now = System.nanoTime();
-		if (BUDGET.isExternalPacerActive(now) || !cfg.framePacerEnabled) {
+		boolean managedAurora = ownsAuroraPacing();
+		if ((!managedAurora && BUDGET.isExternalPacerActive(now)) || !cfg.framePacerEnabled) {
 			return false;
 		}
-		int active = (fps > 0 && fps < VANILLA_UNLIMITED_FPS) ? fps : 0;
+		int active = managedAurora ? auroraLimits.cap().applyAsInt(fps) : activeNativeLimit(fps);
 		if (active <= 0) {
 			PACER.reset();
 			return false;
 		}
 		Minecraft mc = Minecraft.getInstance();
-		boolean vsync = mc != null && mc.options != null && mc.options.enableVsync().get();
+		boolean vsync = usesVsync(mc, managedAurora);
 		if (vsync && active >= safeRefreshRate(mc)) {
 			// VBlank already caps this frame; neither Ephemera nor vanilla should sleep on top of it.
 			PACER.reset();
@@ -168,6 +195,15 @@ public final class EphemeraPacerRuntime {
 		}
 		// Non-VSync, or VSync with a sub-refresh cap (e.g. 60 fps menu on a 240 Hz display).
 		return PACER.pacePostSwap(active, cfg.framePacerSpinTailMicros);
+	}
+
+	private static int activeNativeLimit(int nativeFps) {
+		return nativeFps > 0 && nativeFps < VANILLA_UNLIMITED_FPS ? nativeFps : 0;
+	}
+
+	private static boolean usesVsync(Minecraft mc, boolean managedAurora) {
+		return mc != null && mc.options != null && mc.options.enableVsync().get()
+			&& !(managedAurora && auroraLimits.forceVsyncOff().getAsBoolean());
 	}
 
 	private static int safeRefreshRate(Minecraft mc) {

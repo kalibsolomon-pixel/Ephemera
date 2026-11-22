@@ -36,7 +36,7 @@ Names are relative to `com.ephemera.mixin.client`.
 | `engine.ByteBufferBuilderShrinkMixin` | `memoryTrimNativeBuffers` | *(none)* | Shrinks bloated off-heap `ByteBufferBuilder` allocations back down after sustained low utilization. |
 | `engine.MinecraftMemoryGuardMixin` | `memoryLeakGuard` | *(none)* | Sweeps all world-scoped Ephemera caches on `clearClientLevel` so old `ClientLevel`/`LocalPlayer` instances never stay pinned. |
 | `engine.ModelManagerReloadMixin` | `memoryLeakGuard` | *(none)* | Clears transient model/state interning tables and cached GPU samplers after resource-pack reloads apply. |
-| `engine.MinecraftFramePacingMixin` | `framePacerEnabled` | *(none; cooperates with Aurora)* | Runs Ephemera's low-latency frame-head pacer and frame CPU-work budget measurement; automatically yields blocking sleeps to Aurora Client via `ephemera:frame_pacer`. |
+| `engine.MinecraftFramePacingMixin` | `framePacerEnabled` | *(none; cooperates with Aurora)* | Runs Ephemera's low-latency frame-head pacer and frame CPU-work budget measurement. The `ephemera:frame_pacer` bridge accepts the paired client's effective FPS cap and VSync preference. |
 | `engine.FramerateLimiterPacingMixin` | `framePacerEnabled` | *(none; cooperates with Aurora)* | Replaces vanilla's `FramerateLimiter` with Ephemera's adaptive overshoot-compensated pacer when Ephemera owns post-swap pacing. |
 | `engine.LightmapMixin` | `engineLightmapCaching` | `badoptimizations` | Compares all six scalar and twelve vector-component uniform bits per lightmap before repeating an update. Records inputs after a successful draw. |
 | `engine.LightmapShaderReloadMixin` | `engineLightmapCaching` | `badoptimizations` | Invalidates sampled inputs after the shader manager applies new configs. |

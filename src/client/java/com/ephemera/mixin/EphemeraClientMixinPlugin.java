@@ -1,16 +1,9 @@
 package com.ephemera.mixin;
 
 import com.ephemera.core.config.EphemeraConfig;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.ephemera.core.diagnostics.MixinHealth;
 import net.fabricmc.loader.api.FabricLoader;
 
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.Set;
 
 /**
@@ -18,26 +11,10 @@ import java.util.Set;
  * performance/rendering mods when installed alongside Ephemera.
  */
 public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
-	private static Set<String> loadAuroraDeclaredMixins() {
-		if (!FabricLoader.getInstance().isModLoaded("aurora")) {
-			return Collections.emptySet();
-		}
-		try (InputStream in = EphemeraClientMixinPlugin.class.getResourceAsStream("/aurora.mixins.json")) {
-			if (in == null) {
-				return Collections.emptySet();
-			}
-			JsonObject obj = JsonParser.parseReader(new InputStreamReader(in, StandardCharsets.UTF_8)).getAsJsonObject();
-			Set<String> names = new HashSet<>();
-			if (obj.has("client")) {
-				for (JsonElement el : obj.getAsJsonArray("client")) {
-					names.add(el.getAsString());
-				}
-			}
-			return names;
-		} catch (Throwable ignored) {
-			return Collections.emptySet();
-		}
-	}
+	// These adapters accelerate Aurora releases that predate ObjectShare fast writes.
+	private static final Set<String> LEGACY_AURORA_ADAPTERS = Set.of(
+		"AuroraSdfCellMixin", "AuroraSdfInstanceFastMixin", "AuroraWorldLineFastMixin"
+	);
 
 	private static boolean auroraHasNativeBridge() {
 		return FabricLoader.getInstance().isModLoaded("aurora")
@@ -46,11 +23,6 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 	@Override
 	public void onLoad(String mixinPackage) {
-		// When Aurora ships its native EphemeraBridge (3.8+), Aurora yields overlapping engine
-		// optimizations to Ephemera and calls ephemera:fast_write directly; older Aurora releases
-		// (3.6/3.7) use manifest inspection + Ephemera's @Pseudo compat bridges instead.
-		boolean auroraNative = auroraHasNativeBridge();
-		Set<String> legacyAuroraMixins = auroraNative ? Collections.emptySet() : loadAuroraDeclaredMixins();
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
 			"BlockTintCacheFastMixin",
@@ -93,12 +65,9 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("GlSamplerCacheMixin", "sodium", "vulkanmod");
 		registerYield("GlStateManagerCacheMixin", "sodium", "vulkanmod");
 		registerYield("GlTextureBindingAccess", "sodium", "vulkanmod");
-		registerYield("GlTextureMixin", legacyAuroraMixins.contains("GlTextureMipCacheMixin")
-			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
-		registerYield("FrameBufferCacheMixin", legacyAuroraMixins.contains("FrameBufferCacheMixin")
-			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
-		registerYield("SeparateVertexArrayCacheMixin", legacyAuroraMixins.contains("VertexArrayCacheSeparateMixin")
-			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
+		registerYield("GlTextureMixin", "sodium", "vulkanmod");
+		registerYield("FrameBufferCacheMixin", "sodium", "vulkanmod");
+		registerYield("SeparateVertexArrayCacheMixin", "sodium", "vulkanmod");
 		registerYield("MinecraftGlDebugOptionsMixin", "iris", "oculus", "vulkanmod");
 		registerYield("WindowGlNoErrorMixin", "iris", "oculus", "vulkanmod");
 		registerYield("GlDeviceTerrainPatchMixin", "sodium", "iris", "oculus", "vulkanmod");
@@ -119,17 +88,10 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		}) {
 			registerYield(m, "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
 		}
-		registerYield("BakedSheetGlyphFastWriteMixin", "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast", "aurora");
-		// @Pseudo compat bridges apply only to older Aurora builds without native EphemeraBridge.
-		for (String m : new String[] {
-			"AuroraSdfCellMixin", "AuroraSdfInstanceFastMixin", "AuroraWorldLineFastMixin"
-		}) {
-			registerRequires(m, "aurora");
-			if (auroraNative) {
-				registerYield(m, "aurora");
-			} else {
-				registerYield(m, "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
-			}
+		registerYield("BakedSheetGlyphFastWriteMixin", "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
+		for (String adapter : LEGACY_AURORA_ADAPTERS) {
+			registerRequires(adapter, "aurora");
+			registerYield(adapter, "sodium", "iris", "oculus", "vulkanmod", "immediatelyfast");
 		}
 
 		// Culling, shadows, particles & MoreCulling block states
@@ -138,10 +100,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("BlockEntityRendererCacheMixin", "badoptimizations");
 		registerYield("ShadowGroundCacheMixin", "badoptimizations");
 		registerYield("ShadowFeatureRendererMixin", "badoptimizations");
-		registerYield("EntityOcclusionMixin", legacyAuroraMixins.contains("OcclusionBodyMixin")
-			? new String[] { "entityculling", "aurora" } : new String[] { "entityculling" });
-		registerYield("BlockEntityOcclusionMixin", legacyAuroraMixins.contains("OcclusionChestMixin")
-			? new String[] { "entityculling", "aurora" } : new String[] { "entityculling" });
+		registerYield("EntityOcclusionMixin", "entityculling");
+		registerYield("BlockEntityOcclusionMixin", "entityculling");
 		registerYield("LeafBlockCullingMixin", "moreculling");
 		registerYield("LeavesOpaqueFaceMixin", "moreculling");
 		registerYield("SignTextCullingMixin", "moreculling");
@@ -152,38 +112,27 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("SingleQuadParticleRotationMixin", "particle_core", "badoptimizations");
 		registerYield("ParticleLightmapMixin", "particle_core", "badoptimizations");
 
-		// GUI, text & animated item baking (yields SDF font & item-atlas mixins to Aurora; overlapping engine mixins only for legacy Aurora)
-		registerYield("GuiRenderStateMixin", legacyAuroraMixins.contains("GuiRenderStateLayeringMixin")
-			? new String[] { "immediatelyfast", "modernui", "gnetum", "aurora" }
-			: new String[] { "immediatelyfast", "modernui", "gnetum" });
-		registerYield("GuiRenderStateNodeMixin", legacyAuroraMixins.contains("GuiRenderStateNodeMixin")
-			? new String[] { "immediatelyfast", "modernui", "gnetum", "aurora" }
-			: new String[] { "immediatelyfast", "modernui", "gnetum" });
-		registerYield("GuiRendererMixin", legacyAuroraMixins.contains("GuiRendererElementOrderMixin")
-			? new String[] { "immediatelyfast", "modernui", "aurora" }
-			: new String[] { "immediatelyfast", "modernui" });
-		registerYield("FormattedBidiReorderMixin", legacyAuroraMixins.contains("FormattedBidiReorderMixin")
-			? new String[] { "modernui", "caxton", "aurora" }
-			: new String[] { "modernui", "caxton" });
-		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast", "aurora");
-		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast", "aurora");
+		// GUI, text & animated item baking
+		registerYield("GuiRenderStateMixin", "immediatelyfast", "modernui", "gnetum");
+		registerYield("GuiRenderStateNodeMixin", "immediatelyfast", "modernui", "gnetum");
+		registerYield("GuiRendererMixin", "immediatelyfast", "modernui");
+		registerYield("FormattedBidiReorderMixin", "modernui", "caxton");
+		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast");
+		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast");
 		registerYield("GlyphRenderStateFastMixin", "modernui", "caxton", "immediatelyfast");
-		registerYield("GuiRendererTextBatchMixin", "immediatelyfast", "modernui", "caxton", "aurora");
+		registerYield("GuiRendererTextBatchMixin", "immediatelyfast", "modernui", "caxton");
 		registerYield("TextureSetupCacheMixin", "immediatelyfast");
-		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone", "aurora");
-		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone", "aurora");
-		registerYield("DynamicAtlasAllocatorMixin", "immediatelyfast", "polytone", "aurora");
-		registerYield("TrackingItemStackRenderStateMixin", "immediatelyfast", "polytone", "aurora");
+		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone");
+		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone");
+		registerYield("DynamicAtlasAllocatorMixin", "immediatelyfast", "polytone");
+		registerYield("TrackingItemStackRenderStateMixin", "immediatelyfast", "polytone");
 		registerYield("GuiGraphicsExtractorMixin", "immediatelyfast", "gnetum", "polytone");
 		registerYield("PatchedDataComponentMapMixin", "immediatelyfast", "gnetum", "polytone");
-		registerYield("FramerateLimitTrackerMixin", legacyAuroraMixins.contains("FramerateLimitUnfocusedMixin")
-			? new String[] { "dynamic_fps", "aurora" } : new String[] { "dynamic_fps" });
+		registerYield("FramerateLimitTrackerMixin", "dynamic_fps");
 
 		// Client memory, lightmap, micro-optimizations & loading
-		registerYield("SpriteContentsMixin", legacyAuroraMixins.contains("TextureAtlasFreeMipsMixin")
-			? new String[] { "ferritecore", "aurora" } : new String[] { "ferritecore" });
-		registerYield("TextureAtlasMipMixin", legacyAuroraMixins.contains("TextureAtlasFreeMipsMixin")
-			? new String[] { "ferritecore", "aurora" } : new String[] { "ferritecore" });
+		registerYield("SpriteContentsMixin", "ferritecore");
+		registerYield("TextureAtlasMipMixin", "ferritecore");
 		registerYield("QuadCollectionDedupMixin", "ferritecore", "modernfix");
 		registerYield("ClientChunkCacheFastMixin", "sodium", "lithium", "radium", "canary", "c2me");
 		registerYield("ClientChunkCacheStorageMixin", "sodium", "lithium", "radium", "canary", "c2me");
@@ -192,10 +141,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Aurora Client (never yielding to Aurora; frame pacing coordinates via ephemera:frame_pacer).
 		registerYield("LightmapMixin", "badoptimizations");
 		registerYield("LightmapShaderReloadMixin", "badoptimizations");
-		registerYield("DebugEntryMixin", legacyAuroraMixins.contains("DebugScreenEntryCacheMixin")
-			? new String[] { "badoptimizations", "aurora" } : new String[] { "badoptimizations" });
-		registerYield("SoundListenerMixin", legacyAuroraMixins.contains("SoundEngineListenerMixin")
-			? new String[] { "badoptimizations", "aurora" } : new String[] { "badoptimizations" });
+		registerYield("DebugEntryMixin", "badoptimizations");
+		registerYield("SoundListenerMixin", "badoptimizations");
 		registerYield("ToastIdleMixin", "badoptimizations");
 		registerYield("TutorialIdleMixin", "badoptimizations");
 		registerYield("DebugRendererIdleMixin", "badoptimizations");
@@ -210,6 +157,16 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 		// Visuals
 		registerYield("EntityRendererLightMixin", "lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights");
+	}
+
+	@Override
+	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+		String simple = mixinClassName.substring(mixinClassName.lastIndexOf('.') + 1);
+		if (LEGACY_AURORA_ADAPTERS.contains(simple) && auroraHasNativeBridge()) {
+			MixinHealth.recordStoodDown(simple, "native fast-write bridge");
+			return false;
+		}
+		return super.shouldApplyMixin(targetClassName, mixinClassName);
 	}
 
 	@Override
