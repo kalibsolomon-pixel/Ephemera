@@ -1,4 +1,4 @@
-package com.ephemera.mixin.common;
+package com.ephemera.mixin.common.worldgen;
 
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.levelgen.Beardifier;

@@ -1,0 +1,5 @@
+{
+  "26.1.2": {"fabricApi": "0.155.3+26.1.2", "status": "porting"},
+  "26.2": {"fabricApi": "0.161.0+26.2", "status": "supported"},
+  "26.3": {"fabricApi": "0.166.0+26.3", "status": "porting"}
+}

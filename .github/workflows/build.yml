@@ -2,8 +2,25 @@ name: build
 on: [pull_request, push]
 
 jobs:
-  build:
+  versions:
     runs-on: ubuntu-24.04
+    outputs:
+      supported: ${{ steps.list.outputs.supported }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: List supported Minecraft versions
+        id: list
+        run: |
+          echo "supported=$(jq -c '[to_entries[] | select(.value.status == "supported") | .key]' gradle/minecraft-versions.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: versions
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        minecraft: ${{ fromJson(needs.versions.outputs.supported) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -17,9 +34,11 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
       - name: Check layering, run tests, and build JAR
-        run: ./gradlew --no-daemon check build --console=plain
+        run: ./gradlew --no-daemon -Pephemera.minecraft=${{ matrix.minecraft }} check build --console=plain
       - name: Upload built JAR
         uses: actions/upload-artifact@v7
         with:
-          name: ephemera-mc26.2
-          path: build/libs/ephemera-*-mc*.jar
+          name: ephemera-mc${{ matrix.minecraft }}
+          path: |
+            build/libs/ephemera-*-mc*.jar
+            build/minecraft-${{ matrix.minecraft }}/libs/ephemera-*-mc*.jar

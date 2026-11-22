@@ -1,4 +1,4 @@
-package com.ephemera.mixin.common;
+package com.ephemera.mixin.common.worldgen;
 
 import java.util.List;
 import net.minecraft.world.level.block.state.BlockState;

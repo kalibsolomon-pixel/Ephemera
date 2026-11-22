@@ -1,0 +1,19 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.ephemera.mixin.common.worldgen",
+  "compatibilityLevel": "JAVA_25",
+  "plugin": "com.ephemera.mixin.EphemeraCommonMixinPlugin",
+  "mixins": [
+    "BeardifierFastMixin",
+    "BiomeManagerFastMixin",
+    "ImprovedNoiseFastMixin",
+    "NoiseChunkFastMixin",
+    "NoiseInterpolatorAccess",
+    "PerlinNoiseFastMixin",
+    "SurfaceRulesSequenceFastMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

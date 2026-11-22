@@ -25,6 +25,7 @@
   },
   "mixins": [
     "ephemera.mixins.json",
+    "ephemera.worldgen.mixins.json",
     {
       "config": "ephemera.client.mixins.json",
       "environment": "client"
