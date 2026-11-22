@@ -19,4 +19,7 @@ public interface VulkanRenderPassBridge {
 
 	/** Clears cached pipeline/descriptor state after a custom mesh-shader draw so subsequent Blaze3D draws rebind cleanly. */
 	void ephemera$invalidateAfterExternalDraw();
+
+	/** Returns pooled descriptor binding arrays when the encoder finishes this render pass. */
+	void ephemera$releaseBindings();
 }

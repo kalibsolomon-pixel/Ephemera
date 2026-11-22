@@ -61,6 +61,11 @@ public final class GuiItemStateCache {
 			new Entry(stack, level, owner, seed, stack.getCount(), components.ephemera$armPatchToken(), state);
 	}
 
+	public static void clear() {
+		Arrays.fill(TABLE, null);
+		tableTick = Long.MIN_VALUE;
+	}
+
 	/** Use animations (bow draw, eating, shield raise) advance with the owner, not with the stack. */
 	private static boolean isBeingUsed(LivingEntity owner, ItemStack stack) {
 		return owner != null && owner.isUsingItem() && owner.getUseItem().getItem() == stack.getItem();

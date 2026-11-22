@@ -26,6 +26,9 @@ public final class FastShadowCache {
     public static AABB bounds(VoxelShape shape) {
         return EphemeraCommon.config().entityRendererDirectCache && shape == Shapes.block() ? UNIT_BOUNDS : shape.bounds();
     }
+    public static AABB cachedFullCubeBounds(VoxelShape shape) {
+        return EphemeraCommon.config().entityRendererDirectCache && shape == Shapes.block() ? UNIT_BOUNDS : null;
+    }
     public static boolean extract(EntityRenderState state, Level level, float strength,
                                   BlockPos.MutableBlockPos pos, ChunkAccess chunk) {
         if (!EphemeraCommon.config().entityRendererDirectCache || level != Minecraft.getInstance().level

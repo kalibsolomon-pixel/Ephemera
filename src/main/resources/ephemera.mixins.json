@@ -5,8 +5,10 @@
   "compatibilityLevel": "JAVA_25",
   "plugin": "com.ephemera.mixin.EphemeraCommonMixinPlugin",
   "mixins": [
+    "ArrayVoxelShapeMixin",
     "BeardifierFastMixin",
     "BiomeManagerFastMixin",
+    "BlockCollisionsFastMixin",
     "BlockShapeMixin",
     "BlockStateCacheMixin",
     "BlockStateMixin",
@@ -15,7 +17,9 @@
     "ClimateRTreeNodeFastMixin",
     "CompactTrigMixin",
     "ConnectionFlushMixin",
+    "CubeVoxelShapeFastMixin",
     "DataLayerMixin",
+    "EntitySectionStorageFastMixin",
     "FluidAccess",
     "FluidStateFastMixin",
     "ImprovedNoiseFastMixin",
@@ -29,9 +33,16 @@
     "PaletteIndexAccessor",
     "PalettedContainerFastMixin",
     "PerlinNoiseFastMixin",
+    "ProfilerFastMixin",
     "SectionStateMixin",
+    "ServerChunkCacheFastMixin",
     "SimpleBitStorageFastMixin",
-    "UtilWorkerPriorityMixin"
+    "StateHolderMixin",
+    "SurfaceRulesSequenceFastMixin",
+    "TrackedEntityFastMixin",
+    "UtilWorkerPriorityMixin",
+    "VarIntFastMixin",
+    "VarLongFastMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -7,6 +7,7 @@ import com.sun.management.ThreadMXBean;
 import jdk.jfr.Recording;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.InactivityFpsLimit;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
@@ -38,6 +39,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static final String LABEL = System.getProperty("ephemera.bench.label", "unknown");
 	private static final String BACKEND = System.getProperty("ephemera.bench.backend", "OPENGL").toLowerCase();
 	private static final boolean JFR_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.jfr", "true"));
+	private static final boolean SPARK_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.spark", "false"));
 	private static final int DURATION_SEC = Integer.parseInt(System.getProperty("ephemera.bench.durationSec", "6"));
 	private static final int VISTA_RD = Integer.parseInt(System.getProperty("ephemera.bench.rd", "20"));
 	private static final String SUITE = System.getProperty("ephemera.bench.suite", "default").toLowerCase();
@@ -173,6 +175,8 @@ public final class BenchProbeClient implements ClientModInitializer {
 		if (renderThreadId == -1L) {
 			renderThreadId = Thread.currentThread().threadId();
 		}
+		// Keep vanilla's 60s AFK framerate throttle from firing during long multi-scene stress suites.
+		mc.getFramerateLimitTracker().onInputReceived();
 
 		long now = System.nanoTime();
 		phaseTicks++;
@@ -187,6 +191,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 				if (phaseTicks == 1) {
 					mc.options.enableVsync().set(false);
 					mc.options.framerateLimit().set(260);
+					mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
 					mc.options.guiScale().set(3);
 					mc.options.renderDistance().set(VISTA_RD);
 					mc.gui.setScreen(null);
@@ -209,6 +214,10 @@ public final class BenchProbeClient implements ClientModInitializer {
 				double maxWait = VISTA_RD > 20 ? 24.0 : 12.0;
 				boolean chunksReady = mc.levelRenderer != null && mc.levelRenderer.hasRenderedAllSections();
 				if (elapsed >= maxWait || (elapsed >= 4.0 && chunksReady)) {
+					if (SPARK_ENABLED && FabricLoader.getInstance().isModLoaded("spark")) {
+						send(mc, "sparkc profiler start --thread *");
+						send(mc, "spark profiler start --thread *");
+					}
 					enter("gameplay".equals(SUITE) ? Phase.G1_MOUSE_SETUP : Phase.SCENE1_SETUP, now);
 				}
 			}
@@ -528,6 +537,26 @@ public final class BenchProbeClient implements ClientModInitializer {
 				}
 			}
 			case FINISH -> {
+				if (SPARK_ENABLED && FabricLoader.getInstance().isModLoaded("spark")) {
+					if (phaseTicks == 1) {
+						send(mc, "sparkc healthreport --memory");
+						send(mc, "sparkc gc");
+						send(mc, "spark tps");
+						return;
+					}
+					if (phaseTicks == 6) {
+						send(mc, "sparkc profiler stop --save-to-file");
+						send(mc, "spark profiler stop --save-to-file");
+						return;
+					}
+					if (phaseTicks < 240) {
+						if (phaseTicks >= 30 && phaseTicks % 10 == 0 && sparkProfilesSaved(mc) >= 2) {
+							// Both client & server .sparkprofile dumps are on disk; wait 10 ticks then exit.
+							phaseTicks = 235;
+						}
+						return;
+					}
+				}
 				writeResults(mc);
 				enter(Phase.DONE, now);
 				mc.stop();
@@ -671,6 +700,24 @@ public final class BenchProbeClient implements ClientModInitializer {
 		} catch (Throwable t) {
 			LOGGER.error("Failed to write benchmark results", t);
 		}
+	}
+
+	private static int sparkProfilesSaved(Minecraft mc) {
+		int count = 0;
+		for (String sub : new String[]{"config/spark", "spark"}) {
+			Path dir = mc.gameDirectory.toPath().resolve(sub);
+			if (Files.isDirectory(dir)) {
+				try (var stream = Files.walk(dir, 3)) {
+					count += (int) stream
+						.filter(p -> p.getFileName().toString().endsWith(".sparkprofile"))
+						.filter(p -> {
+							try { return Files.size(p) > 0L; } catch (Exception e) { return false; }
+						})
+						.count();
+				} catch (Exception ignored) {}
+			}
+		}
+		return count;
 	}
 
 	private static void send(Minecraft mc, String cmd) {

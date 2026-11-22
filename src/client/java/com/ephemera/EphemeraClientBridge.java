@@ -7,6 +7,7 @@ import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.render.fastwrite.FastGlyphWriter;
 import com.ephemera.render.fastwrite.FastLineWriter;
 import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.ephemera.ui.EphemeraSettingsScreen;
 import com.ephemera.visuals.VisualsRuntime;
@@ -28,17 +29,20 @@ import java.util.Map;
 import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
- * Registers zero-compile-coupling {@link ObjectShare} bridges ({@code ephemera:fast_write} and
- * {@code ephemera:settings}) and implements {@link EphemeraSettingsBridge} so companion mods
- * such as Aurora Client can invoke Ephemera's native fast-write paths directly and embed
+ * Registers zero-compile-coupling {@link ObjectShare} bridges ({@code ephemera:fast_write},
+ * {@code ephemera:frame_pacer}, and {@code ephemera:settings}) and implements
+ * {@link EphemeraSettingsBridge} so companion mods such as Aurora Client can invoke Ephemera's
+ * native fast-write paths directly, coordinate frame pacing without double-sleeping, and embed
  * Ephemera's performance controls inside their own UI.
  */
 final class EphemeraClientBridge implements EphemeraSettingsBridge {
 	static final String SHARE_FAST_WRITE = "ephemera:fast_write";
+	static final String SHARE_FRAME_PACER = "ephemera:frame_pacer";
 	static final String SHARE_SETTINGS = "ephemera:settings";
 
 	private final String version;
@@ -56,6 +60,11 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 		Map<String, MethodHandle> fastWrite = buildFastWriteHandles();
 		if (!fastWrite.isEmpty()) {
 			share.put(SHARE_FAST_WRITE, fastWrite);
+		}
+
+		Map<String, Object> framePacer = buildFramePacerBridge();
+		if (!framePacer.isEmpty()) {
+			share.put(SHARE_FRAME_PACER, framePacer);
 		}
 
 		Map<String, Object> settings = new LinkedHashMap<>();
@@ -99,6 +108,30 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 		}
 	}
 
+	private static Map<String, Object> buildFramePacerBridge() {
+		try {
+			MethodHandles.Lookup lookup = MethodHandles.publicLookup();
+			MethodHandle reportAurora = lookup.findStatic(EphemeraPacerRuntime.class, "onAuroraReport",
+				MethodType.methodType(void.class, boolean.class, int.class, long.class));
+			MethodHandle beforeWait = lookup.findStatic(EphemeraPacerRuntime.class, "onAuroraBeforeWait",
+				MethodType.methodType(void.class, long.class));
+			MethodHandle afterPark = lookup.findStatic(EphemeraPacerRuntime.class, "onAuroraAfterPark",
+				MethodType.methodType(void.class, long.class, long.class));
+			Map<String, Object> map = new LinkedHashMap<>();
+			map.put("protocolVersion", 1);
+			map.put("reportAurora", reportAurora);
+			map.put("beforeWait", beforeWait);
+			map.put("afterPark", afterPark);
+			map.put("isVulkanAsyncPresentActive", (BooleanSupplier) EphemeraPacerRuntime::isVulkanAsyncPresentActive);
+			map.put("recommendedOvershootMicros", (IntSupplier) EphemeraPacerRuntime::recommendedOvershootMicros);
+			map.put("statusLine", (Supplier<String>) EphemeraPacerRuntime::statusLine);
+			return Map.copyOf(map);
+		} catch (Throwable t) {
+			EphemeraClient.LOGGER.warn("Could not publish Ephemera frame_pacer ObjectShare handles: {}", t.toString());
+			return Map.of();
+		}
+	}
+
 	@Override
 	public List<EphemeraOptionDescriptor> options() {
 		EphemeraConfig c = EphemeraCommon.config();
@@ -119,6 +152,10 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 				"Skips rendering chests and other block entities hidden behind solid terrain.", "Culling", c.blockEntityOcclusionCulling, false),
 			new EphemeraOptionDescriptor("particleCulling", "Particle Frustum & Occlusion Culling",
 				"Skips particles outside the view frustum or occluded behind solid blocks.", "Culling", c.particleCulling, false),
+			new EphemeraOptionDescriptor("framePacerEnabled", "Adaptive Frame Pacer & Upload Budget",
+				"Smooths frame cadence and paces chunk uploads to eliminate frametime spikes (cooperates with Aurora Client).", "Pacing", c.framePacerEnabled, false),
+			new EphemeraOptionDescriptor("memoryLeakGuard", "Memory Leak Guard & Deduplication",
+				"Deduplicates block states/models, shrinks bloated off-heap buffers, and sweeps caches on world unload.", "Memory", c.memoryLeakGuard, false),
 			new EphemeraOptionDescriptor("visualEnhancedAmbientOcclusion", "Enhanced Ambient Occlusion",
 				"Refines block corner ambient occlusion contrast with negligible frame cost.", "Visuals", c.visualEnhancedAmbientOcclusion, false),
 			new EphemeraOptionDescriptor("visualDynamicLights", "Dynamic Entity Lights",
@@ -158,6 +195,8 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			case "entityOcclusionCulling" -> c.entityOcclusionCulling;
 			case "blockEntityOcclusionCulling" -> c.blockEntityOcclusionCulling;
 			case "particleCulling" -> c.particleCulling;
+			case "framePacerEnabled" -> c.framePacerEnabled;
+			case "memoryLeakGuard" -> c.memoryLeakGuard;
 			case "visualEnhancedAmbientOcclusion" -> c.visualEnhancedAmbientOcclusion;
 			case "visualDynamicLights" -> c.visualDynamicLights;
 			case "visualSmoothChunkFade" -> c.visualSmoothChunkFade;
@@ -178,6 +217,8 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			case "entityOcclusionCulling" -> { c.entityOcclusionCulling = value; yield true; }
 			case "blockEntityOcclusionCulling" -> { c.blockEntityOcclusionCulling = value; yield true; }
 			case "particleCulling" -> { c.particleCulling = value; yield true; }
+			case "framePacerEnabled" -> { c.framePacerEnabled = value; yield true; }
+			case "memoryLeakGuard" -> { c.memoryLeakGuard = value; yield true; }
 			case "visualEnhancedAmbientOcclusion" -> { c.visualEnhancedAmbientOcclusion = value; VisualsRuntime.invalidate(); yield true; }
 			case "visualDynamicLights" -> { c.visualDynamicLights = value; VisualsRuntime.invalidate(); yield true; }
 			case "visualSmoothChunkFade" -> { c.visualSmoothChunkFade = value; VisualsRuntime.invalidate(); yield true; }

@@ -1,6 +1,9 @@
 package com.ephemera.mixin.client.terrain;
 
+import com.ephemera.EphemeraCommon;
 import com.ephemera.render.terrain.SectionMeshSwapHook;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -20,7 +23,6 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
@@ -45,12 +47,17 @@ public abstract class LevelExtractorBlockEntityFastMixin {
 
 	@Unique private final PoseStack ephemera$crumblingPoseStack = new PoseStack();
 
-	/**
-	 * @author Ephemera
-	 * @reason Direct array scan with 1-byte block-entity presence filter and reused PoseStack.
-	 */
-	@Overwrite
-	private void extractVisibleBlockEntities(Camera camera, float partialTick, LevelRenderState levelRenderState) {
+	@WrapMethod(method = "extractVisibleBlockEntities")
+	private void ephemera$extractVisibleBlockEntities(
+		Camera camera,
+		float partialTick,
+		LevelRenderState levelRenderState,
+		Operation<Void> original
+	) {
+		if (!EphemeraCommon.config().terrainFastFrustumAndGrid) {
+			original.call(camera, partialTick, levelRenderState);
+			return;
+		}
 		Vec3 camPos = camera.position();
 		double camX = camPos.x();
 		double camY = camPos.y();
@@ -95,7 +102,8 @@ public abstract class LevelExtractorBlockEntityFastMixin {
 						PoseStack ps = this.ephemera$crumblingPoseStack;
 						ps.pushPose();
 						ps.translate((double) pos.getX() - camX, (double) pos.getY() - camY, (double) pos.getZ() - camZ);
-						overlay = new ModelFeatureRenderer.CrumblingOverlay(progressSet.last().getProgress(), ps.last());
+						// Copy the pose so subsequent crumbling block entities in the same frame do not alias pooled state.
+						overlay = new ModelFeatureRenderer.CrumblingOverlay(progressSet.last().getProgress(), ps.last().copy());
 						ps.popPose();
 					}
 				}

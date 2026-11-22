@@ -3,6 +3,8 @@ package com.ephemera.mixin.client.backend;
 import com.ephemera.render.backend.VulkanAsyncPresenter;
 import com.ephemera.render.backend.VulkanDiagTracker;
 import com.ephemera.render.backend.VulkanModernCapabilities;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.systems.CommandEncoderBackend;
 import com.mojang.blaze3d.systems.GpuSurface;
 import com.mojang.blaze3d.systems.SurfaceException;
@@ -26,7 +28,6 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -201,51 +202,51 @@ abstract class VulkanGpuSurfaceMixin {
 		if (VulkanDiagTracker.ENABLED) VulkanDiagTracker.recordPresent(System.nanoTime() - ephemera$t0);
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "blitFromTexture",
 		at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/vulkan/VulkanCommandEncoder;waitSemaphore(JJJ)V")
 	)
-	private void ephemera$narrowAcquireWaitStage(VulkanCommandEncoder encoder, long sem, long value, long stageMask) {
+	private void ephemera$narrowAcquireWaitStage(VulkanCommandEncoder encoder, long sem, long value, long stageMask, Operation<Void> original) {
 		long narrowed = VulkanModernCapabilities.modernSyncActive()
 			? KHRSynchronization2.VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR
 			: stageMask;
-		encoder.waitSemaphore(sem, value, narrowed);
+		original.call(encoder, sem, value, narrowed);
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "blitFromTexture",
 		at = @At(value = "INVOKE", target = "Lorg/lwjgl/vulkan/VkImageMemoryBarrier2$Buffer;dstStageMask(J)Lorg/lwjgl/vulkan/VkImageMemoryBarrier2$Buffer;", ordinal = 1)
 	)
-	private VkImageMemoryBarrier2.Buffer ephemera$narrowPresentTransitionDstStage(VkImageMemoryBarrier2.Buffer barrier, long dstStage) {
-		return barrier.dstStageMask(VulkanModernCapabilities.modernSyncActive()
+	private VkImageMemoryBarrier2.Buffer ephemera$narrowPresentTransitionDstStage(VkImageMemoryBarrier2.Buffer barrier, long dstStage, Operation<VkImageMemoryBarrier2.Buffer> original) {
+		return original.call(barrier, VulkanModernCapabilities.modernSyncActive()
 			? KHRSynchronization2.VK_PIPELINE_STAGE_2_NONE_KHR
 			: dstStage);
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "blitFromTexture",
 		at = @At(value = "INVOKE", target = "Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;srcAccessMask(J)Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;")
 	)
-	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitSrcAccess(VkMemoryBarrier2.Buffer barrier, long srcAccess) {
-		return barrier.srcAccessMask(VulkanModernCapabilities.modernSyncActive() ? 0L : srcAccess);
+	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitSrcAccess(VkMemoryBarrier2.Buffer barrier, long srcAccess, Operation<VkMemoryBarrier2.Buffer> original) {
+		return original.call(barrier, VulkanModernCapabilities.modernSyncActive() ? 0L : srcAccess);
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "blitFromTexture",
 		at = @At(value = "INVOKE", target = "Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;dstStageMask(J)Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;")
 	)
-	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitDstStage(VkMemoryBarrier2.Buffer barrier, long dstStage) {
-		return barrier.dstStageMask(VulkanModernCapabilities.modernSyncActive()
+	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitDstStage(VkMemoryBarrier2.Buffer barrier, long dstStage, Operation<VkMemoryBarrier2.Buffer> original) {
+		return original.call(barrier, VulkanModernCapabilities.modernSyncActive()
 			? (KHRSynchronization2.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR
 				| KHRSynchronization2.VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR)
 			: dstStage);
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "blitFromTexture",
 		at = @At(value = "INVOKE", target = "Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;dstAccessMask(J)Lorg/lwjgl/vulkan/VkMemoryBarrier2$Buffer;")
 	)
-	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitDstAccess(VkMemoryBarrier2.Buffer barrier, long dstAccess) {
-		return barrier.dstAccessMask(VulkanModernCapabilities.modernSyncActive() ? 0L : dstAccess);
+	private VkMemoryBarrier2.Buffer ephemera$narrowPostBlitDstAccess(VkMemoryBarrier2.Buffer barrier, long dstAccess, Operation<VkMemoryBarrier2.Buffer> original) {
+		return original.call(barrier, VulkanModernCapabilities.modernSyncActive() ? 0L : dstAccess);
 	}
 }

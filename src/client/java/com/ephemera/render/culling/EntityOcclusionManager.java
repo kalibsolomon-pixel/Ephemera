@@ -37,6 +37,7 @@ import net.minecraft.world.level.block.WallBannerBlock;
 import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 /** Render-thread owner of all occlusion proofs. Unknown or unavailable data always fails open. */
 public final class EntityOcclusionManager {
@@ -50,11 +51,19 @@ public final class EntityOcclusionManager {
     private static final IntOpenHashSet LEASH_HOLDERS = new IntOpenHashSet();
     private static final IntOpenHashSet PACKET_HOLDERS = new IntOpenHashSet();
     private static ClientLevel level;
-    private static boolean frameActive, cameraValid;
+    private static boolean frameActive, cameraValid, entityShadowsEnabled, hasGlobalBlockEntities;
     private static long terrainStamp = 1, frame = 1, now;
     private static double cameraX, cameraY, cameraZ;
+    private static int camCellX, camCellY, camCellZ;
+    private static Vec3 lastCamPos;
+    private static Thread renderThread;
     private static Frustum frustum;
     private static int occludedEntities, occludedBlockEntities, visibleSections;
+    private static final ClassValue<Boolean> VANILLA_CLASS = new ClassValue<>() {
+        @Override protected Boolean computeValue(Class<?> type) {
+            return type.getName().startsWith("net.minecraft.");
+        }
+    };
     private static final ClassValue<Boolean> STANDARD_SHADOW = new ClassValue<>() {
         @Override protected Boolean computeValue(Class<?> type) {
             for (Class<?> c = type; c != null && c != MobRenderer.class && c != EntityRenderer.class; c = c.getSuperclass()) {
@@ -66,9 +75,16 @@ public final class EntityOcclusionManager {
     private EntityOcclusionManager() { }
 
     public static void beginFrame(Camera camera) {
-        ClientLevel current = Minecraft.getInstance().level;
+        Minecraft minecraft = Minecraft.getInstance();
+        ClientLevel current = minecraft.level;
         if (level != current) reset(current);
-        cameraX = camera.position().x; cameraY = camera.position().y; cameraZ = camera.position().z;
+        Vec3 pos = camera.position();
+        lastCamPos = pos;
+        cameraX = pos.x; cameraY = pos.y; cameraZ = pos.z;
+        camCellX = lower(cameraX); camCellY = lower(cameraY); camCellZ = lower(cameraZ);
+        entityShadowsEnabled = minecraft.options.entityShadows().get();
+        hasGlobalBlockEntities = current != null && !current.getGloballyRenderedBlockEntities().isEmpty();
+        renderThread = Thread.currentThread();
         frustum = camera.getCullFrustum();
         frameActive = true; cameraValid = current != null;
         frame++; now = System.nanoTime();
@@ -88,7 +104,8 @@ public final class EntityOcclusionManager {
         ParticleCullingManager.invalidateLight();
     }
     public static void reset(ClientLevel current) {
-        level = current; cameraValid = false; frustum = null; frameActive = false;
+        level = current; cameraValid = false; frustum = null; frameActive = false; lastCamPos = null;
+        hasGlobalBlockEntities = false;
         terrainChanged(); ENTITIES.clear(); BLOCK_ENTITIES.clear(); BOX_QUERIES.clear();
         FastShadowCache.invalidate();
         LEASH_HOLDERS.clear(); PACKET_HOLDERS.clear();
@@ -127,13 +144,13 @@ public final class EntityOcclusionManager {
         if (!EphemeraCommon.config().entityOcclusionCulling || !ready() || excluded(entity)
                 || entity.level() != level || !(entity instanceof Mob || entity instanceof ItemEntity
                 || entity instanceof ItemFrame || entity instanceof Painting)
-                || !renderer.getClass().getName().startsWith("net.minecraft.")) return false;
+                || !VANILLA_CLASS.get(renderer.getClass())) return false;
         AABB box = ((EntityRendererAccessor) renderer).ephemera$cullingBox(entity);
         if (box.maxX - box.minX > 8 || box.maxY - box.minY > 8 || box.maxZ - box.minZ > 8) return false;
         double dx = entity.xOld - entity.getX(), dy = entity.yOld - entity.getY(), dz = entity.zOld - entity.getZ();
         BOUNDS.entity(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ,
                 dx, dy, dz, entity instanceof Mob mob ? mob.getScale() : 1);
-        if (Minecraft.getInstance().options.entityShadows().get()) {
+        if (frameActive ? entityShadowsEnabled : Minecraft.getInstance().options.entityShadows().get()) {
             // Vanilla EntityRenderer/MobRenderer contracts, inspected from 26.2 bytecode. Unknown
             // radius overrides use the engine's absolute 32-block cap instead of an estimate.
             float radius = 32;
@@ -154,13 +171,14 @@ public final class EntityOcclusionManager {
     public static boolean cullBlockEntity(BlockEntity entity, boolean global, BlockEntityRenderer<?, ?> renderer) {
         if (!EphemeraCommon.config().blockEntityOcclusionCulling || global || !ready()
                 || entity.getLevel() != level || entity instanceof BeaconBlockEntity
-                || level.getGloballyRenderedBlockEntities().contains(entity) || renderer == null
-                || renderer.shouldRenderOffScreen() || !renderer.getClass().getName().startsWith("net.minecraft.")) return false;
+                || (hasGlobalBlockEntities && level.getGloballyRenderedBlockEntities().contains(entity))
+                || renderer == null || renderer.shouldRenderOffScreen()
+                || !VANILLA_CLASS.get(renderer.getClass())) return false;
         // Type-specific envelopes cover moving lids, attached chest halves and hanging geometry.
         if (!(entity instanceof ChestBlockEntity || entity instanceof EnderChestBlockEntity
                 || entity instanceof SignBlockEntity || entity instanceof ShulkerBoxBlockEntity
                 || entity instanceof BannerBlockEntity)
-                || !entity.getClass().getName().startsWith("net.minecraft.")) return false;
+                || !VANILLA_CLASS.get(entity.getClass())) return false;
         BlockPos p = entity.getBlockPos();
         BOUNDS.block(p.getX(), p.getY(), p.getZ());
         BlockState state = entity.getBlockState();
@@ -195,17 +213,23 @@ public final class EntityOcclusionManager {
         return hidden;
     }
     private static boolean ready() {
+        if (!cameraValid || level == null) return false;
         Minecraft minecraft = Minecraft.getInstance();
-        if (!cameraValid || level == null || level != minecraft.level || !minecraft.isSameThread()) return false;
-        var current = minecraft.gameRenderer.mainCamera().position();
-        return cameraX == current.x && cameraY == current.y && cameraZ == current.z;
+        if (level != minecraft.level) return false;
+        if (frameActive && Thread.currentThread() == renderThread) {
+            Vec3 current = minecraft.gameRenderer.mainCamera().position();
+            return current == lastCamPos || (cameraX == current.x && cameraY == current.y && cameraZ == current.z);
+        }
+        if (!minecraft.isSameThread()) return false;
+        Vec3 current = minecraft.gameRenderer.mainCamera().position();
+        return current == lastCamPos || (cameraX == current.x && cameraY == current.y && cameraZ == current.z);
     }
     private static int lower(double v) { return (int) Math.floor(v * 4); }
     private static int upper(double v) { return (int) Math.ceil(v * 4); }
     private static boolean cached(DirectMappedSweepCache cache, long id,
                                   double x0, double y0, double z0, double x1, double y1, double z1) {
         if (!finite(x0, y0, z0, x1, y1, z1)) return false;
-        int cx = lower(cameraX), cy = lower(cameraY), cz = lower(cameraZ);
+        int cx = camCellX, cy = camCellY, cz = camCellZ;
         int ax = lower(x0), ay = lower(y0), az = lower(z0), bx = upper(x1), by = upper(y1), bz = upper(z1);
         long time = frameActive ? now : System.nanoTime();
         int result = cache.lookup(id, terrainStamp, time, cx, cy, cz, ax, ay, az, bx, by, bz);

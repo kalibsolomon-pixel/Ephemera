@@ -84,6 +84,9 @@ final class IndirectBufferRing {
 			}
 			buffers[i] = null;
 		}
+		if (staging.capacity() > MIN_BYTES * 4) {
+			staging = ByteBuffer.allocateDirect(MIN_BYTES).order(ByteOrder.nativeOrder());
+		}
 	}
 
 	private static long capacityFor(int bytes) {

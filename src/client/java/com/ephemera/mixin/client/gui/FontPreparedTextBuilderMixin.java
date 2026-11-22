@@ -11,11 +11,13 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Vanilla emits one underline/strikethrough quad per glyph. Contiguous quads with identical attributes are
- * collapsed into one quad that replaces the previous one in the effect list.
+ * collapsed into one quad that replaces the previous one in the effect list. Also pre-sizes the glyph
+ * list to 32 entries to avoid repeated {@code ArrayList.grow} reallocations on normal HUD/chat lines.
  */
 @Mixin(targets = "net.minecraft.client.gui.Font$PreparedTextBuilder")
 abstract class FontPreparedTextBuilderMixin {
@@ -29,6 +31,14 @@ abstract class FontPreparedTextBuilderMixin {
 	@Unique private TextDecorationRunMerger ephemera$underline;
 	@Unique private TextRenderable ephemera$lastStrikethrough;
 	@Unique private TextRenderable ephemera$lastUnderline;
+
+	@WrapOperation(
+		method = "<init>(Lnet/minecraft/client/gui/Font;FFIIZZ)V",
+		at = @At(value = "NEW", target = "()Ljava/util/ArrayList;")
+	)
+	private ArrayList<?> ephemera$presizeGlyphList(Operation<ArrayList<?>> original) {
+		return new ArrayList<>(32);
+	}
 
 	@WrapOperation(method = ACCEPT, at = @At(value = "INVOKE", target = CREATE_EFFECT, ordinal = 0))
 	private TextRenderable ephemera$mergeStrikethrough(

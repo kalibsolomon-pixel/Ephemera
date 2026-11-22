@@ -53,11 +53,15 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		Set<String> legacyAuroraMixins = auroraNative ? Collections.emptySet() : loadAuroraDeclaredMixins();
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
+			"BlockTintCacheFastMixin",
+			"ClientLevelTintBindMixin",
 			"FrustumFastMixin",
 			"LevelExtractorBlockEntityFastMixin",
+			"LevelExtractorSectionUpdatesMixin",
 			"RenderSectionRegionFastMixin",
 			"RotatingSectionStorageFastMixin",
 			"SectionCopyFastMixin",
+			"SectionDirtyStateEpochMixin",
 			"SectionOcclusionGraphExecutorMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
@@ -126,6 +130,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 		// Culling, shadows, particles & MoreCulling block states
 		registerYield("EntityRendererCacheMixin", "badoptimizations");
+		registerYield("EntityRendererFrustumFastMixin", "sodium", "entityculling", "badoptimizations");
 		registerYield("BlockEntityRendererCacheMixin", "badoptimizations");
 		registerYield("ShadowGroundCacheMixin", "badoptimizations");
 		registerYield("ShadowFeatureRendererMixin", "badoptimizations");
@@ -158,6 +163,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			: new String[] { "modernui", "caxton" });
 		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast", "aurora");
 		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast", "aurora");
+		registerYield("GlyphRenderStateFastMixin", "modernui", "caxton", "immediatelyfast");
+		registerYield("TextureSetupCacheMixin", "immediatelyfast");
 		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone", "aurora");
 		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone", "aurora");
 		registerYield("DynamicAtlasAllocatorMixin", "immediatelyfast", "polytone", "aurora");
@@ -172,6 +179,12 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			? new String[] { "ferritecore", "aurora" } : new String[] { "ferritecore" });
 		registerYield("TextureAtlasMipMixin", legacyAuroraMixins.contains("TextureAtlasFreeMipsMixin")
 			? new String[] { "ferritecore", "aurora" } : new String[] { "ferritecore" });
+		registerYield("QuadCollectionDedupMixin", "ferritecore", "modernfix");
+		registerYield("ClientChunkCacheFastMixin", "sodium", "lithium", "radium", "canary", "c2me");
+		registerYield("ClientChunkCacheStorageMixin", "sodium", "lithium", "radium", "canary", "c2me");
+		// Note: ByteBufferBuilderShrinkMixin, MinecraftMemoryGuardMixin, ModelManagerReloadMixin,
+		// MinecraftFramePacingMixin, and FramerateLimiterPacingMixin intentionally cooperate alongside
+		// Aurora Client (never yielding to Aurora; frame pacing coordinates via ephemera:frame_pacer).
 		registerYield("LightmapMixin", "badoptimizations");
 		registerYield("LightmapShaderReloadMixin", "badoptimizations");
 		registerYield("DebugEntryMixin", legacyAuroraMixins.contains("DebugScreenEntryCacheMixin")
@@ -182,10 +195,13 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("TutorialIdleMixin", "badoptimizations");
 		registerYield("DebugRendererIdleMixin", "badoptimizations");
 		registerYield("FovIdleMixin", "badoptimizations");
-		registerYield("LevelLoadDelayMixin", "rrls");
-		registerYield("TitleFadeMixin", "rrls");
-		registerYield("LoadingFadeMixin", "rrls");
+		registerYield("LevelLoadDelayMixin", "rrls", "fastload");
+		registerYield("TitleFadeMixin", "rrls", "fastload");
+		registerYield("LoadingFadeMixin", "rrls", "fastload");
 		registerYield("NumericAddressMixin", "fast-ip-ping");
+		registerYield("ResolvedServerAddressFastMixin", "fast-ip-ping");
+		registerYield("ServerNameResolverFastMixin", "fast-ip-ping");
+		registerYield("ScreenEffectRendererFastMixin", "badoptimizations");
 
 		// Visuals
 		registerYield("EntityRendererLightMixin", "lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights");
@@ -213,6 +229,10 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 			// Client engine / memory / loading
 			case "SpriteContentsMixin", "TextureAtlasMipMixin" -> cfg.memoryFreeSpriteMipmaps;
+			case "ClientChunkCacheFastMixin", "ClientChunkCacheStorageMixin" -> cfg.engineFastChunkLookup;
+			case "QuadCollectionDedupMixin" -> cfg.memoryDeduplicateModels;
+			case "ByteBufferBuilderShrinkMixin" -> cfg.memoryTrimNativeBuffers;
+			case "MinecraftMemoryGuardMixin", "ModelManagerReloadMixin" -> cfg.memoryLeakGuard;
 			case "LightmapMixin", "LightmapShaderReloadMixin" -> cfg.engineLightmapCaching;
 			case "DebugEntryMixin" -> cfg.engineDebugHudCache;
 			case "SoundListenerMixin" -> cfg.engineSoundListenerThrottle;
@@ -220,9 +240,9 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			case "LevelLoadDelayMixin" -> cfg.loadingSkipLevelLoadDelay;
 			case "TitleFadeMixin" -> cfg.loadingSkipTitleFade;
 			case "LoadingFadeMixin" -> cfg.loadingNonBlockingReload;
-			case "NumericAddressMixin" -> cfg.loadingFastIpPing;
+			case "NumericAddressMixin", "ResolvedServerAddressFastMixin", "ServerNameResolverFastMixin" -> cfg.loadingFastIpPing;
 			case "FrustumFastMixin", "RotatingSectionStorageFastMixin", "LevelExtractorBlockEntityFastMixin",
-				 "SectionCopyFastMixin", "RenderSectionRegionFastMixin" -> cfg.terrainFastFrustumAndGrid;
+				 "EntityRendererFrustumFastMixin", "SectionCopyFastMixin", "RenderSectionRegionFastMixin" -> cfg.terrainFastFrustumAndGrid;
 			case "SectionOcclusionGraphExecutorMixin" -> cfg.terrainAsyncGraphUpdates;
 
 			// Keep terrain, culling, gui, visuals & UI mixins live-toggleable at runtime!

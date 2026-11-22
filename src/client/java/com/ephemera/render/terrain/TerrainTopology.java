@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class TerrainTopology {
 	private static final AtomicLong TOPOLOGY = new AtomicLong();
+	private static final AtomicLong DIRTY_SECTIONS = new AtomicLong(1L);
 	private static volatile long visibleSections;
 
 	private TerrainTopology() {}
@@ -36,5 +37,13 @@ public final class TerrainTopology {
 
 	public static void bumpVisibleSections() {
 		visibleSections++;
+	}
+
+	public static long dirtySections() {
+		return DIRTY_SECTIONS.get();
+	}
+
+	public static void bumpDirtySections() {
+		DIRTY_SECTIONS.incrementAndGet();
 	}
 }

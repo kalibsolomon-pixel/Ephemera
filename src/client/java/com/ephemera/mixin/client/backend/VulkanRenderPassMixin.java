@@ -154,11 +154,11 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 	@Unique
 	private VulkanDescriptorBindings ephemera$activeBindings() {
 		if (!ephemera$descriptorDispatchEnabled()) {
-			ephemera$bindings = null;
+			ephemera$releaseBindings();
 			return null;
 		}
 		if (ephemera$bindings == null) {
-			ephemera$bindings = new VulkanDescriptorBindings(uniforms, textures);
+			ephemera$bindings = VulkanDescriptorBindings.acquire(uniforms, textures);
 		}
 		return ephemera$bindings;
 	}
@@ -285,5 +285,13 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 		ephemera$boundPipeline = null;
 		pipeline = null;
 		anyDescriptorDirty = true;
+	}
+
+	@Override
+	public void ephemera$releaseBindings() {
+		if (ephemera$bindings != null) {
+			VulkanDescriptorBindings.release(ephemera$bindings);
+			ephemera$bindings = null;
+		}
 	}
 }

@@ -1,10 +1,13 @@
 package com.ephemera.render.terrain;
 
+import com.ephemera.core.memory.MemoryPressurePolicy;
+import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.core.terrain.FastFrustumMath;
 import com.ephemera.core.terrain.QuadBuckets;
 import com.ephemera.core.terrain.SectionVertexBaker;
 import com.ephemera.mixin.client.terrain.TerrainFogRendererAccessor;
 import com.ephemera.mixin.client.terrain.TerrainRenderSectionFadeAccessor;
+import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.render.terrain.vulkan.VulkanMeshSectionHandle;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.mojang.blaze3d.IndexType;
@@ -248,6 +251,9 @@ public final class ChunkRenderBatcher {
 		planValid = false;
 		planDispatcher = null;
 		java.util.Arrays.fill(planSections, null);
+		if (planSections.length > 4096) {
+			planSections = new Object[0];
+		}
 		planSectionCount = 0;
 		clearFading();
 		clearMeshFading();
@@ -255,8 +261,27 @@ public final class ChunkRenderBatcher {
 		meshCutoutTaskCount = 0;
 		meshSectionCount = 0;
 		meshActiveLayerMask = 0;
+		java.util.Arrays.fill(infos, null);
+		exactInfos = new DynamicUniforms.ChunkSectionInfo[0];
+		java.util.Arrays.fill(uploaders, null);
+		if (infos.length > 4096) {
+			infos = new DynamicUniforms.ChunkSectionInfo[1024];
+			@SuppressWarnings("unchecked")
+			BiConsumer<GpuBufferSlice[], RenderPass.UniformUploader>[] freshUploaders = new BiConsumer[1024];
+			uploaders = freshUploaders;
+		}
+		if (meshSolidTasks.length > 16384) {
+			meshSolidTasks = new int[1024];
+		}
+		if (meshCutoutTasks.length > 16384) {
+			meshCutoutTasks = new int[1024];
+		}
 		spriteSections.clear();
+		spriteSections.trim(256);
 		regionInfos.clear();
+		regionInfos.trim(256);
+		regionUbos.clear();
+		regionUbos.trim(256);
 		TerrainTopology.bumpTopology();
 	}
 
@@ -664,6 +689,11 @@ public final class ChunkRenderBatcher {
 		int cutoutCount = 0;
 		int meshSections = 0;
 		int activeMeshMask = 0;
+		int meshUploadedThisFrame = 0;
+		long meshUploadElapsedNs = 0L;
+		long meshUploadBudgetNs = meshEngine != null ? EphemeraPacerRuntime.currentUploadBudgetNs() : 0L;
+		FrameBudgetPacer budgetPacer = EphemeraPacerRuntime.budget();
+		boolean deferredMeshUpload = false;
 		int spriteGeneration = trackSprites ? VisibleSpriteTracker.generation().id : 0;
 		boolean useSwapHook = SWAP_HOOK;
 		dispatcher.lock();
@@ -681,9 +711,15 @@ public final class ChunkRenderBatcher {
 					continue;
 				}
 				BlockPos origin = null;
+				VulkanMeshSectionHandle existingMesh = meshEngine != null ? cache.ephemera$meshHandle() : null;
+				boolean meshReady = existingMesh != null && !existingMesh.released && existingMesh.arenaEpoch == meshEpoch;
 				if (doFog) {
 					int ox, oy, oz;
-					if (cache.ephemera$hasSectionCoords()) {
+					if (meshReady) {
+						ox = existingMesh.sectionX;
+						oy = existingMesh.sectionY;
+						oz = existingMesh.sectionZ;
+					} else if (cache.ephemera$hasSectionCoords()) {
 						ox = cache.ephemera$sectionX();
 						oy = cache.ephemera$sectionY();
 						oz = cache.ephemera$sectionZ();
@@ -717,12 +753,27 @@ public final class ChunkRenderBatcher {
 				// with zero per-section UBOs (even when fading!), leaving only TRANSLUCENT or unbaked
 				// layers for the indirect batch plan.
 				if (meshEngine != null) {
-					VulkanMeshSectionHandle h = cache.ephemera$meshHandle();
-					if (h == null || h.released || h.arenaEpoch != meshEpoch) {
+					VulkanMeshSectionHandle h = meshReady ? existingMesh : null;
+					if (h == null) {
 						layout = cache.ephemera$layout();
 						if (layout != null && layout.meshlets != null) {
-							h = meshEngine.uploadSection(layout.meshlets, visibility);
-							cache.ephemera$setMeshHandle(h);
+							if (budgetPacer.allowSectionUpload(meshUploadedThisFrame, meshUploadElapsedNs, meshUploadBudgetNs)) {
+								long tUp = System.nanoTime();
+								h = meshEngine.uploadSection(layout.meshlets, visibility);
+								meshUploadElapsedNs += Math.max(0L, System.nanoTime() - tUp);
+								cache.ephemera$setMeshHandle(h);
+								if (h != null) {
+									meshUploadedThisFrame++;
+									// Immediately drop CPU-side meshlet arrays now that geometry lives in VRAM.
+									long freed = layout.releaseCpuMeshlets();
+									if (freed > 0L) {
+										MemoryPressurePolicy.recordHeapReclaimed(freed);
+									}
+								}
+							} else {
+								h = null;
+								deferredMeshUpload = true;
+							}
 						} else {
 							h = null;
 						}
@@ -925,7 +976,7 @@ public final class ChunkRenderBatcher {
 		planTrackSprites = trackSprites;
 		planDirect = direct;
 		planMeshActive = meshActive;
-		planValid = true;
+		planValid = !deferredMeshUpload;
 		return result;
 	}
 

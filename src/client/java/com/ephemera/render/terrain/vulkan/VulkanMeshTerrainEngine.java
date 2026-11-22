@@ -146,7 +146,7 @@ public final class VulkanMeshTerrainEngine {
 				return false;
 			}
 			ensureInitialized(bridge.ephemera$device(), (VulkanCommandEncoder) bridge);
-			arena.beginFrame();
+			arena.beginFrame((VulkanCommandEncoder) bridge);
 			frameSolidTasks = 0;
 			frameCutoutTasks = 0;
 			frameActiveLayerMask = 0;
@@ -192,7 +192,11 @@ public final class VulkanMeshTerrainEngine {
 		frameCutoutTasks = 0;
 		frameActiveLayerMask = 0;
 		if (arena != null) {
-			arena.resetAllSections();
+			VulkanEncoderBridge bridge = null;
+			try {
+				bridge = currentBridge();
+			} catch (Throwable ignored) {}
+			arena.resetAllSections(bridge instanceof VulkanCommandEncoder enc ? enc : null);
 		}
 	}
 

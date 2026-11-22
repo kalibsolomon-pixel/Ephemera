@@ -10,6 +10,8 @@ Names are relative to `com.ephemera.mixin.common`. Use the same combined config 
 | --- | --- | --- | --- |
 | `BlockStateCacheMixin` | `memoryCompactBlockStates \|\| memoryDeduplicateShapes` | `ferritecore` | Interns completed face-support arrays and collision shapes in the cache constructor. Supplies the cache comparison key. |
 | `BlockStateMixin` | `memoryCompactBlockStates \|\| memoryDeduplicateShapes` | `ferritecore` | Shares completed state caches, occlusion shapes and immutable per-face arrays in `BlockStateBase.initCache`. |
+| `StateHolderMixin` | `memoryCompactBlockStates \|\| memoryDeduplicateShapes` | `ferritecore` | Canonicalizes identical `propertyValues` tuples across `StateHolder` instances. |
+| `ArrayVoxelShapeMixin` | `memoryDeduplicateShapes` | `ferritecore` | Deduplicates immutable axis coordinate `DoubleList`s in `ArrayVoxelShape`. |
 | `BlockShapeMixin` | `memoryDeduplicateShapes` | `ferritecore`, `lithium` | Answers `Block.isShapeFullBlock` directly for the empty and full-block singletons. |
 | `CompactTrigMixin` | `engineFastMath` | `lithium` | Samples the 4096-float sine table in `Mth.sin(double)` and `cos(double)`. |
 | `ChunkModuloMixin` | `engineFastChunkLookup` | `lithium` | Masks positive power-of-two divisors in integer `Mth.positiveModulo`. Other divisors retain Java floor-mod semantics. |
@@ -30,6 +32,12 @@ Names are relative to `com.ephemera.mixin.client`.
 | --- | --- | --- | --- |
 | `engine.SpriteContentsMixin` | `memoryFreeSpriteMipmaps` | `ferritecore` | Releases upper native images in vanilla sprite contents and regenerates them on a subsequent upload or animation-state rebuild. |
 | `engine.TextureAtlasMipMixin` | `memoryFreeSpriteMipmaps` | `ferritecore` | Calls the release hook after a successful return from the atlas upload. |
+| `engine.QuadCollectionDedupMixin` | `memoryDeduplicateModels` | `ferritecore` | Canonicalizes `BakedQuad` vertex positions, `MaterialInfo`, and identical quads during model baking; tables clear after reload. |
+| `engine.ByteBufferBuilderShrinkMixin` | `memoryTrimNativeBuffers` | *(none)* | Shrinks bloated off-heap `ByteBufferBuilder` allocations back down after sustained low utilization. |
+| `engine.MinecraftMemoryGuardMixin` | `memoryLeakGuard` | *(none)* | Sweeps all world-scoped Ephemera caches on `clearClientLevel` so old `ClientLevel`/`LocalPlayer` instances never stay pinned. |
+| `engine.ModelManagerReloadMixin` | `memoryLeakGuard` | *(none)* | Clears transient model/state interning tables and cached GPU samplers after resource-pack reloads apply. |
+| `engine.MinecraftFramePacingMixin` | `framePacerEnabled` | *(none; cooperates with Aurora)* | Runs Ephemera's low-latency frame-head pacer and frame CPU-work budget measurement; automatically yields blocking sleeps to Aurora Client via `ephemera:frame_pacer`. |
+| `engine.FramerateLimiterPacingMixin` | `framePacerEnabled` | *(none; cooperates with Aurora)* | Replaces vanilla's `FramerateLimiter` with Ephemera's adaptive overshoot-compensated pacer when Ephemera owns post-swap pacing. |
 | `engine.LightmapMixin` | `engineLightmapCaching` | `badoptimizations` | Compares all six scalar and twelve vector-component uniform bits per lightmap before repeating an update. Records inputs after a successful draw. |
 | `engine.LightmapShaderReloadMixin` | `engineLightmapCaching` | `badoptimizations` | Invalidates sampled inputs after the shader manager applies new configs. |
 | `engine.DebugEntryMixin` | `engineDebugHudCache` | `badoptimizations` | Replays debug text for up to 50 ms. World, chunk and enabled-entry changes invalidate the cache. Charts and layout still execute each frame. |

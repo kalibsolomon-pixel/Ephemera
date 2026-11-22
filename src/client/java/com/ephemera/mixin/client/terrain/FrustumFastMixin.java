@@ -88,18 +88,14 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 			&& fma(ep$pzX, fx, fma(ep$pzY, fy, fma(ep$pzZ, fz, fma(ep$pzAbs, fr, ep$pzW)))) >= 0f;
 	}
 
-	/**
-	 * @author Ephemera
-	 * @reason 6-plane p-vertex-only FMA test (skips the 6 n-vertex tests vanilla does via intersectAab).
-	 */
-	@Overwrite
-	public boolean isVisible(AABB box) {
-		float minX = (float) (box.minX - this.camX);
-		float minY = (float) (box.minY - this.camY);
-		float minZ = (float) (box.minZ - this.camZ);
-		float maxX = (float) (box.maxX - this.camX);
-		float maxY = (float) (box.maxY - this.camY);
-		float maxZ = (float) (box.maxZ - this.camZ);
+	@Override
+	public boolean ephemera$isVisible(double x0, double y0, double z0, double x1, double y1, double z1) {
+		float minX = (float) (x0 - this.camX);
+		float minY = (float) (y0 - this.camY);
+		float minZ = (float) (z0 - this.camZ);
+		float maxX = (float) (x1 - this.camX);
+		float maxY = (float) (y1 - this.camY);
+		float maxZ = (float) (z1 - this.camZ);
 		return fma(ep$nxX, ep$nxX < 0f ? minX : maxX, fma(ep$nxY, ep$nxY < 0f ? minY : maxY, fma(ep$nxZ, ep$nxZ < 0f ? minZ : maxZ, ep$nxW))) >= 0f
 			&& fma(ep$pxX, ep$pxX < 0f ? minX : maxX, fma(ep$pxY, ep$pxY < 0f ? minY : maxY, fma(ep$pxZ, ep$pxZ < 0f ? minZ : maxZ, ep$pxW))) >= 0f
 			&& fma(ep$nyX, ep$nyX < 0f ? minX : maxX, fma(ep$nyY, ep$nyY < 0f ? minY : maxY, fma(ep$nyZ, ep$nyZ < 0f ? minZ : maxZ, ep$nyW))) >= 0f
@@ -110,10 +106,19 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 
 	/**
 	 * @author Ephemera
+	 * @reason 6-plane p-vertex-only FMA test (skips the 6 n-vertex tests vanilla does via intersectAab).
+	 */
+	@Overwrite
+	public boolean isVisible(AABB box) {
+		return ephemera$isVisible(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+	}
+
+	/**
+	 * @author Ephemera
 	 * @reason Inline FMA 6-plane AABB classification with lazy n-vertex checks (exact JOML return codes).
 	 */
 	@Overwrite
-	private int cubeInFrustum(double x0, double y0, double z0, double x1, double y1, double z1) {
+	public int cubeInFrustum(double x0, double y0, double z0, double x1, double y1, double z1) {
 		float minX = (float) (x0 - this.camX);
 		float minY = (float) (y0 - this.camY);
 		float minZ = (float) (z0 - this.camZ);

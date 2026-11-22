@@ -106,6 +106,18 @@ public final class BiomePrefixBlender {
 		}
 	}
 
+	/**
+	 * Blends {@code colors} into {@code out} with opaque alpha ({@code 0xFFRRGGBB}),
+	 * matching {@code net.minecraft.util.ARGB.color(r, g, b)} bit-for-bit.
+	 */
+	public void blendOpaqueArgb(int[] colors, int width, int height, int radius, int[] out) {
+		blend(colors, width, height, radius, out);
+		int total = (width - 2 * radius) * (height - 2 * radius);
+		for (int i = 0; i < total; i++) {
+			out[i] |= 0xFF000000;
+		}
+	}
+
 	/** Reference O(r^2)-per-cell implementation, used for verification. */
 	public static int blendNaive(int[] colors, int width, int innerX, int innerZ, int radius) {
 		int r = 0;

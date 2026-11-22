@@ -16,11 +16,15 @@ public final class VulkanMeshSectionHandle {
 	public final int cutoutMeshletCount;
 	public final int solidTaskChunks;
 	public final int cutoutTaskChunks;
+	public final int sectionX;
+	public final int sectionY;
+	public final int sectionZ;
 	public float lastVisibility;
 	public boolean released;
 
 	VulkanMeshSectionHandle(int arenaEpoch, int slot, long quadHandle, long meshletHandle,
-							int layerMask, int solidMeshletCount, int cutoutMeshletCount, float lastVisibility) {
+							int layerMask, int solidMeshletCount, int cutoutMeshletCount,
+							int sectionX, int sectionY, int sectionZ, float lastVisibility) {
 		this.arenaEpoch = arenaEpoch;
 		this.slot = slot;
 		this.slotPrefix = slot << 8;
@@ -31,6 +35,9 @@ public final class VulkanMeshSectionHandle {
 		this.cutoutMeshletCount = cutoutMeshletCount;
 		this.solidTaskChunks = solidMeshletCount > 0 ? (solidMeshletCount + 127) >>> 7 : 0;
 		this.cutoutTaskChunks = cutoutMeshletCount > 0 ? (cutoutMeshletCount + 127) >>> 7 : 0;
+		this.sectionX = sectionX;
+		this.sectionY = sectionY;
+		this.sectionZ = sectionZ;
 		this.lastVisibility = lastVisibility;
 	}
 }

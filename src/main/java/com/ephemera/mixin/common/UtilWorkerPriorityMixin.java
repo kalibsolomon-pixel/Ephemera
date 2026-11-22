@@ -1,10 +1,11 @@
 package com.ephemera.mixin.common;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.util.Util;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.concurrent.ForkJoinPool;
@@ -24,7 +25,7 @@ import java.util.concurrent.ForkJoinWorkerThread;
  */
 @Mixin(Util.class)
 abstract class UtilWorkerPriorityMixin {
-	@Redirect(
+	@WrapOperation(
 		method = "makeExecutor",
 		at = @At(
 			value = "NEW",
@@ -35,7 +36,8 @@ abstract class UtilWorkerPriorityMixin {
 		int parallelism,
 		ForkJoinPool.ForkJoinWorkerThreadFactory factory,
 		Thread.UncaughtExceptionHandler handler,
-		boolean asyncMode
+		boolean asyncMode,
+		Operation<ForkJoinPool> original
 	) {
 		ForkJoinPool.ForkJoinWorkerThreadFactory wrapped = pool -> {
 			ForkJoinWorkerThread thread = factory.newThread(pool);
@@ -47,7 +49,7 @@ abstract class UtilWorkerPriorityMixin {
 			}
 			return thread;
 		};
-		return new ForkJoinPool(parallelism, wrapped, handler, asyncMode);
+		return original.call(parallelism, wrapped, handler, asyncMode);
 	}
 
 	@Inject(method = "maxAllowedExecutorThreads", at = @At("RETURN"), cancellable = true)

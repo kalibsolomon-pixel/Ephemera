@@ -47,7 +47,7 @@ abstract class ClimateRTreeNodeFastMixin {
 	 * @reason Unrolled inline primitive-field 7D AABB squared distance (zero Parameter[] object chasing).
 	 */
 	@Overwrite
-	protected long distance(long[] values) {
+	public long distance(long[] values) {
 		long d0 = ephemera$axisDist(values[0], this.ep$min0, this.ep$max0);
 		long dist = d0 * d0;
 		long d1 = ephemera$axisDist(values[1], this.ep$min1, this.ep$max1);

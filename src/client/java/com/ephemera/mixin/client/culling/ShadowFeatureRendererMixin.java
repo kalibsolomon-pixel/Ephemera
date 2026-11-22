@@ -2,6 +2,8 @@ package com.ephemera.mixin.client.culling;
 
 import com.ephemera.render.culling.FastShadowCache;
 import com.ephemera.render.fastwrite.FastShadowWriter;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.renderer.feature.ShadowFeatureRenderer;
 import net.minecraft.world.phys.AABB;
@@ -9,7 +11,6 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ShadowFeatureRenderer.class)
@@ -21,6 +22,9 @@ public abstract class ShadowFeatureRendererMixin {
         }
     }
 
-    @Redirect(method = "prepare", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/phys/shapes/VoxelShape;bounds()Lnet/minecraft/world/phys/AABB;"))
-    private AABB ephemera$bounds(VoxelShape shape) { return FastShadowCache.bounds(shape); }
+    @WrapOperation(method = "prepare", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/phys/shapes/VoxelShape;bounds()Lnet/minecraft/world/phys/AABB;"))
+    private AABB ephemera$bounds(VoxelShape shape, Operation<AABB> original) {
+        AABB cached = FastShadowCache.cachedFullCubeBounds(shape);
+        return cached != null ? cached : original.call(shape);
+    }
 }

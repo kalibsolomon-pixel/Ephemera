@@ -60,6 +60,13 @@ public final class DynamicLightTracker {
 		return GRID.size();
 	}
 
+	/** Releases the pinned level reference and spatial grid on world unload. */
+	public static void clear() {
+		lastLevel = null;
+		lastRebuildNs = 0L;
+		GRID.clear();
+	}
+
 	private static void refresh(ClientLevel level) {
 		long now = System.nanoTime();
 		long interval = Math.max(MIN_REBUILD_NS, VisualsRuntime.cfg().visualDynamicLightsUpdateIntervalMs * 1_000_000L);

@@ -54,7 +54,7 @@ public final class EphemeraConfig {
 	public boolean guiFontAtlasResizing = true;
 	public int guiFontAtlasSize = 1024;
 	public boolean guiAnimatedItemBaking = true;
-	public boolean guiGlintRateLimit = false;
+	public boolean guiGlintRateLimit = true;
 	public int guiGlintFps = 60;
 	public boolean guiSkipTextTranslucencySort = true;
 	public boolean guiHudFrameCache = false; // opt-in
@@ -70,6 +70,9 @@ public final class EphemeraConfig {
 	public boolean memoryCompactBlockStates = true;
 	public boolean memoryFreeSpriteMipmaps = true;
 	public boolean memoryDeduplicateShapes = true;
+	public boolean memoryDeduplicateModels = true;
+	public boolean memoryLeakGuard = true;
+	public boolean memoryTrimNativeBuffers = true;
 	public boolean loadingNonBlockingReload = true;
 	public boolean loadingSkipTitleFade = true;
 	public boolean loadingSkipLevelLoadDelay = true;
@@ -77,6 +80,8 @@ public final class EphemeraConfig {
 	public boolean engineFastMath = true;
 	public boolean engineFastLighting = true;
 	public boolean engineFastChunkLookup = true;
+	public boolean engineFastCollisions = true;
+	public boolean engineFastEntityLookup = true;
 	public boolean engineFastPalettedStorage = true;
 	public boolean engineFastWorldgenNoise = true;
 	public boolean engineFastBiomeLookup = true;
@@ -86,6 +91,13 @@ public final class EphemeraConfig {
 	public boolean engineDebugHudCache = true;
 	public boolean engineIdleShortCircuits = true;
 	public boolean networkFlushConsolidation = true;
+	public boolean networkFastVarInt = true;
+
+	// --- Frame Pacing & Consistency (cooperates automatically with Aurora Client) ---
+	public boolean framePacerEnabled = true;
+	public boolean framePacerLowLatency = true;
+	public boolean framePacerAdaptiveUploadBudget = true;
+	public int framePacerSpinTailMicros = 500;
 	public boolean unfocusedFpsLimitEnabled = false;
 	public int unfocusedFpsLimit = 30;
 

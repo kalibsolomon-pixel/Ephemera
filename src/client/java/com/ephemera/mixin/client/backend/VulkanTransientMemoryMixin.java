@@ -1,7 +1,8 @@
 package com.ephemera.mixin.client.backend;
 
 import com.ephemera.render.backend.VulkanModernCapabilities;
-import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vulkan.VulkanTransientMemory;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.EXTMeshShader;
@@ -14,7 +15,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -61,13 +61,13 @@ abstract class VulkanTransientMemoryMixin {
 		}
 	}
 
-	@Redirect(
+	@WrapOperation(
 		method = "endSubmit",
 		at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/vulkan/VulkanCommandEncoder;memoryBarrier(Lorg/lwjgl/vulkan/VkCommandBuffer;Lorg/lwjgl/system/MemoryStack;)V")
 	)
-	private void ephemera$narrowTransientBarrier(VkCommandBuffer cmd, MemoryStack stack) {
+	private void ephemera$narrowTransientBarrier(VkCommandBuffer cmd, MemoryStack stack, Operation<Void> original) {
 		if (!VulkanModernCapabilities.modernSyncActive()) {
-			VulkanCommandEncoder.memoryBarrier(cmd, stack);
+			original.call(cmd, stack);
 			return;
 		}
 		long dstStage = KHRSynchronization2.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT_KHR

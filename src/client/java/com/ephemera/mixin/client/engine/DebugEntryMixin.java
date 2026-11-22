@@ -2,6 +2,8 @@ package com.ephemera.mixin.client.engine;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.engine.client.DebugEntryText;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import java.util.IdentityHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.DebugScreenOverlay;
@@ -30,11 +32,11 @@ abstract class DebugEntryMixin {
         ephemera$serverChunk = null;
     }
 
-    @Redirect(method = "extractRenderState", at = @At(value = "INVOKE",
+    @WrapOperation(method = "extractRenderState", at = @At(value = "INVOKE",
             target = "Lnet/minecraft/client/gui/components/debug/DebugScreenEntry;display(Lnet/minecraft/client/gui/components/debug/DebugScreenDisplayer;Lnet/minecraft/world/level/Level;Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/world/level/chunk/LevelChunk;)V"))
-    private void ephemera$entry(DebugScreenEntry entry, DebugScreenDisplayer output, Level level, LevelChunk client, LevelChunk server) {
+    private void ephemera$entry(DebugScreenEntry entry, DebugScreenDisplayer output, Level level, LevelChunk client, LevelChunk server, Operation<Void> original) {
         if (!EphemeraCommon.config().engineDebugHudCache) {
-            entry.display(output, level, client, server);
+            original.call(entry, output, level, client, server);
             return;
         }
         long now = System.nanoTime();
@@ -51,7 +53,7 @@ abstract class DebugEntryMixin {
         DebugEntryText text = ephemera$text.get(entry);
         if (text == null) {
             text = new DebugEntryText();
-            entry.display(text, level, client, server);
+            original.call(entry, text, level, client, server);
             ephemera$text.put(entry, text);
         }
         text.replay(output);

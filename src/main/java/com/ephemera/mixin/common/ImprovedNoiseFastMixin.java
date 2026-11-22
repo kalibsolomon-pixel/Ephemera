@@ -42,7 +42,7 @@ abstract class ImprovedNoiseFastMixin {
 	 * @reason Branch-table gradDot also accelerates sampleWithDerivative.
 	 */
 	@Overwrite
-	private static double gradDot(int hash, double x, double y, double z) {
+	public static double gradDot(int hash, double x, double y, double z) {
 		return FastNoiseMath.gradDot(hash, x, y, z);
 	}
 }

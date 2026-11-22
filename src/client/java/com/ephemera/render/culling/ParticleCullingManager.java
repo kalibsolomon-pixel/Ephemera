@@ -93,6 +93,15 @@ public final class ParticleCullingManager {
         frameOcclusionReady = false;
         Arrays.fill(SHEETS, null);
     }
+    public static void reset() {
+        endFrame();
+        lightEpoch++;
+        Arrays.fill(SHEET_COUNTS, 0);
+        lastQuadClass = null;
+        lastQuadStandard = false;
+        lastSheetLayer = null;
+        lastSheetIdx = -1;
+    }
     public static void invalidateLight() { lightEpoch++; }
     public static boolean isCullingEnabled() {
         return extracting ? frameCulling : EphemeraCommon.config().particleCulling;
@@ -105,8 +114,12 @@ public final class ParticleCullingManager {
         return standard;
     }
     public static Quaternionf rotation(SingleQuadParticle particle) {
+        Quaternionf reused = tryReuseRotation(particle);
+        return reused != null ? reused : new Quaternionf();
+    }
+    public static Quaternionf tryReuseRotation(SingleQuadParticle particle) {
         if (!isCullingEnabled() || !isStandardQuad(particle.getClass())) {
-            return new Quaternionf();
+            return null;
         }
         Thread cur = Thread.currentThread();
         if (cur == renderThread) {

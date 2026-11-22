@@ -251,10 +251,12 @@ public final class FastSectionCompiler {
 		/** Publishes the recorded sprites onto the compile results. */
 		public void finish(SectionCompiler.@Nullable Results results) {
 			region = null;
-			if (!trackSprites) {
+			blockModels = null;
+			VisibleSpriteTracker.Generation g = generation;
+			generation = null;
+			if (!trackSprites || g == null) {
 				return;
 			}
-			VisibleSpriteTracker.Generation g = generation;
 			int[] ids = spriteCount == 0 ? EMPTY : Arrays.copyOf(spriteIds, spriteCount);
 			for (int id : ids) {
 				if (id < g.count) {

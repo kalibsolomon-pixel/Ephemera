@@ -50,16 +50,19 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
 		return switch (simpleName) {
-			case "BlockStateCacheMixin", "BlockStateMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
-			case "BlockShapeMixin" -> cfg.memoryDeduplicateShapes;
+			case "BlockStateCacheMixin", "BlockStateMixin", "StateHolderMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
+			case "BlockShapeMixin", "ArrayVoxelShapeMixin" -> cfg.memoryDeduplicateShapes;
 			case "CompactTrigMixin" -> cfg.engineFastMath;
-			case "ChunkModuloMixin", "LevelChunkIndexMixin", "PaletteIndexAccessor", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin" -> cfg.engineFastChunkLookup;
+			case "ChunkModuloMixin", "LevelChunkIndexMixin", "PaletteIndexAccessor", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin", "ServerChunkCacheFastMixin" -> cfg.engineFastChunkLookup;
+			case "CubeVoxelShapeFastMixin", "BlockCollisionsFastMixin" -> cfg.engineFastCollisions;
+			case "EntitySectionStorageFastMixin", "TrackedEntityFastMixin" -> cfg.engineFastEntityLookup;
 			case "SimpleBitStorageFastMixin", "LinearPaletteFastMixin", "PalettedContainerFastMixin" -> cfg.engineFastPalettedStorage;
-			case "ImprovedNoiseFastMixin", "PerlinNoiseFastMixin", "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess" -> cfg.engineFastWorldgenNoise;
+			case "ImprovedNoiseFastMixin", "PerlinNoiseFastMixin", "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess", "SurfaceRulesSequenceFastMixin" -> cfg.engineFastWorldgenNoise;
 			case "BiomeManagerFastMixin", "ClimateRTreeFastMixin", "ClimateRTreeNodeFastMixin" -> cfg.engineFastBiomeLookup;
 			case "UtilWorkerPriorityMixin" -> cfg.engineWorkerPriorityIsolation;
 			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin" -> cfg.engineFastLighting;
 			case "ConnectionFlushMixin" -> cfg.networkFlushConsolidation;
+			case "VarIntFastMixin", "VarLongFastMixin" -> cfg.networkFastVarInt;
 			default -> true;
 		};
 	}
@@ -68,31 +71,42 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 	public void onLoad(String mixinPackage) {
 		registerYield("BlockStateCacheMixin", "ferritecore");
 		registerYield("BlockStateMixin", "ferritecore");
-		registerYield("BlockShapeMixin", "ferritecore", "lithium");
-		registerYield("CompactTrigMixin", "lithium");
-		registerYield("ChunkModuloMixin", "lithium");
-		registerYield("LevelChunkIndexMixin", "lithium");
-		registerYield("PaletteIndexAccessor", "lithium");
-		registerYield("SectionStateMixin", "lithium");
-		registerYield("FluidAccess", "lithium");
-		registerYield("FluidStateFastMixin", "lithium");
-		registerYield("SimpleBitStorageFastMixin", "lithium", "c2me");
-		registerYield("LinearPaletteFastMixin", "lithium", "c2me");
-		registerYield("PalettedContainerFastMixin", "lithium", "c2me");
+		registerYield("StateHolderMixin", "ferritecore");
+		registerYield("ArrayVoxelShapeMixin", "ferritecore");
+		registerYield("BlockShapeMixin", "ferritecore", "lithium", "radium", "canary");
+		registerYield("CompactTrigMixin", "lithium", "radium", "canary");
+		registerYield("ChunkModuloMixin", "lithium", "radium", "canary");
+		registerYield("LevelChunkIndexMixin", "lithium", "radium", "canary");
+		registerYield("PaletteIndexAccessor", "lithium", "radium", "canary");
+		registerYield("SectionStateMixin", "lithium", "radium", "canary");
+		registerYield("FluidAccess", "lithium", "radium", "canary");
+		registerYield("FluidStateFastMixin", "lithium", "radium", "canary");
+		registerYield("CubeVoxelShapeFastMixin", "lithium", "radium", "canary");
+		registerYield("BlockCollisionsFastMixin", "lithium", "radium", "canary");
+		registerYield("EntitySectionStorageFastMixin", "lithium", "radium", "canary", "vmp");
+		registerYield("TrackedEntityFastMixin", "lithium", "radium", "canary", "vmp");
+		registerYield("ServerChunkCacheFastMixin", "lithium", "radium", "canary", "vmp", "c2me");
+		registerYield("SurfaceRulesSequenceFastMixin", "c2me", "noisium", "lithium", "radium", "canary", "vmp");
+		registerYield("SimpleBitStorageFastMixin", "lithium", "radium", "canary", "c2me");
+		registerYield("LinearPaletteFastMixin", "lithium", "radium", "canary", "c2me");
+		registerYield("PalettedContainerFastMixin", "lithium", "radium", "canary", "c2me");
 		registerYield("ImprovedNoiseFastMixin", "c2me", "noisium");
 		registerYield("PerlinNoiseFastMixin", "c2me", "noisium");
-		registerYield("BeardifierFastMixin", "c2me", "lithium");
+		registerYield("BeardifierFastMixin", "c2me", "lithium", "radium", "canary");
 		registerYield("NoiseChunkFastMixin", "c2me", "noisium");
 		registerYield("NoiseInterpolatorAccess", "c2me", "noisium");
-		registerYield("BiomeManagerFastMixin", "c2me", "lithium");
-		registerYield("ClimateRTreeFastMixin", "c2me", "lithium");
-		registerYield("ClimateRTreeNodeFastMixin", "c2me", "lithium");
+		registerYield("BiomeManagerFastMixin", "c2me", "lithium", "radium", "canary");
+		registerYield("ClimateRTreeFastMixin", "c2me", "lithium", "radium", "canary");
+		registerYield("ClimateRTreeNodeFastMixin", "c2me", "lithium", "radium", "canary");
 		registerYield("UtilWorkerPriorityMixin", "c2me");
-		registerYield("LightChunkCacheMixin", "scalablelux", "lithium");
-		registerYield("LightSectionCacheMixin", "scalablelux", "lithium");
-		registerYield("LightWorkMixin", "scalablelux", "lithium");
-		registerYield("DataLayerMixin", "scalablelux", "lithium");
+		registerYield("LightChunkCacheMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
+		registerYield("LightSectionCacheMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
+		registerYield("LightWorkMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
+		registerYield("DataLayerMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
 		registerYield("ConnectionFlushMixin", "krypton");
+		registerYield("VarIntFastMixin", "krypton");
+		registerYield("VarLongFastMixin", "krypton");
+		registerYield("ProfilerFastMixin", "badoptimizations");
 	}
 
 	@Override

@@ -78,6 +78,19 @@ public final class AnisotropyService {
 		}
 	}
 
+	/** Closes and drops cached GPU samplers (called on resource reload / device reset). */
+	public static void clearCache() {
+		if (CACHE.isEmpty()) {
+			return;
+		}
+		for (GpuSampler sampler : CACHE.values()) {
+			try {
+				sampler.close();
+			} catch (Throwable ignored) {}
+		}
+		CACHE.clear();
+	}
+
 	private static GpuSampler vanilla() {
 		return RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
 	}

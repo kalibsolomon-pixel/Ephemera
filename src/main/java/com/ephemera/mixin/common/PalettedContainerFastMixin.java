@@ -25,7 +25,7 @@ abstract class PalettedContainerFastMixin<T> {
 	 * @reason Monomorphic type-guarded fast paths avoid megamorphic Palette/BitStorage itable dispatch.
 	 */
 	@Overwrite
-	protected T get(int index) {
+	public T get(int index) {
 		PalettedContainer.Data<T> d = this.data;
 		Palette<T> pal = d.palette();
 		if (pal instanceof SingleValuePalette<T> svp) {
@@ -51,7 +51,7 @@ abstract class PalettedContainerFastMixin<T> {
 	 * @reason Avoids redundant 3rd volatile data load and devirtualizes common SimpleBitStorage/LinearPalette writes.
 	 */
 	@Overwrite
-	private T getAndSet(int index, T value) {
+	public T getAndSet(int index, T value) {
 		@SuppressWarnings("unchecked")
 		PalettedContainer<T> self = (PalettedContainer<T>) (Object) this;
 		int id = this.data.palette().idFor(value, self);

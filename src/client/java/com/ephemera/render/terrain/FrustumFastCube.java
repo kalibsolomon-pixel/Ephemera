@@ -10,4 +10,10 @@ public interface FrustumFastCube {
 	 * against all 6 Gribb-Hartmann planes.
 	 */
 	boolean ephemera$intersectsCube(double cx, double cy, double cz, double radius);
+
+	/**
+	 * Zero-allocation 6-plane p-vertex frustum visibility check for an axis-aligned bounding box
+	 * specified by primitive coordinates.
+	 */
+	boolean ephemera$isVisible(double minX, double minY, double minZ, double maxX, double maxY, double maxZ);
 }

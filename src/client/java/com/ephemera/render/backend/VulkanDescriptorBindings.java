@@ -2,6 +2,8 @@ package com.ephemera.render.backend;
 
 import com.ephemera.render.backend.RenderPassTextureBinding.Vulkan;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.systems.RenderSystem;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,10 +35,43 @@ public final class VulkanDescriptorBindings {
 		}
 	}
 
+	private static final int POOL_CAP = 4;
+	private static final VulkanDescriptorBindings[] POOL = new VulkanDescriptorBindings[POOL_CAP];
+	private static int poolSize;
+
 	private final GpuBufferSlice[] uniforms = new GpuBufferSlice[MAX_SLOTS];
 	private final Vulkan[] textures = new Vulkan[MAX_SLOTS];
 
+	public static VulkanDescriptorBindings acquire(Map<String, GpuBufferSlice> uniforms, Map<String, ?> textures) {
+		VulkanDescriptorBindings bindings = null;
+		if (RenderSystem.isOnRenderThread() && poolSize > 0) {
+			bindings = POOL[--poolSize];
+			POOL[poolSize] = null;
+		}
+		if (bindings == null) {
+			return new VulkanDescriptorBindings(uniforms, textures);
+		}
+		bindings.seed(uniforms, textures);
+		return bindings;
+	}
+
+	public static void release(VulkanDescriptorBindings bindings) {
+		if (bindings == null || !RenderSystem.isOnRenderThread()) {
+			return;
+		}
+		int limit = Math.min(MAX_SLOTS, NEXT_SLOT.get());
+		Arrays.fill(bindings.uniforms, 0, limit, null);
+		Arrays.fill(bindings.textures, 0, limit, null);
+		if (poolSize < POOL_CAP) {
+			POOL[poolSize++] = bindings;
+		}
+	}
+
 	public VulkanDescriptorBindings(Map<String, GpuBufferSlice> uniforms, Map<String, ?> textures) {
+		seed(uniforms, textures);
+	}
+
+	private void seed(Map<String, GpuBufferSlice> uniforms, Map<String, ?> textures) {
 		// A live config change can enable the cache after vanilla has populated these maps.
 		if (!uniforms.isEmpty()) {
 			for (Map.Entry<String, GpuBufferSlice> e : uniforms.entrySet()) {

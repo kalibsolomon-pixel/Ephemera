@@ -4,10 +4,12 @@ package com.ephemera.core.culling;
 public final class ParticleCellOcclusion {
     private static final double EPSILON = 1.0e-7;
     private final OpaqueLayerSweep.Solidity solidity;
-    private final int[] xs = new int[4096], ys = new int[4096], zs = new int[4096];
-    private final long[] epochs = new long[4096];
-    private final boolean[] hidden = new boolean[4096];
+    // Packed cell key (26-bit x | 26-bit z | 12-bit y) + packed (epoch << 1 | hidden) = 2 cache lines vs 5.
+    private final long[] keys = new long[4096];
+    private final long[] states = new long[4096];
     private long epoch = 1, frame = Long.MIN_VALUE, stamp;
+    private long lastEpoch = -1L, lastKey;
+    private boolean lastHidden;
     private double cameraX, cameraY, cameraZ;
     private boolean cameraValid;
 
@@ -26,6 +28,7 @@ public final class ParticleCellOcclusion {
         if (stamp != terrainStamp || cameraX != cx || cameraY != cy || cameraZ != cz) {
             this.frame = frame; stamp = terrainStamp; cameraX = cx; cameraY = cy; cameraZ = cz;
             epoch++;
+            lastEpoch = -1L;
         }
         return true;
     }
@@ -33,19 +36,30 @@ public final class ParticleCellOcclusion {
     /** Fast per-particle probe after {@link #prepareFrame}; caller already verified finite coordinates. */
     public boolean isOccludedFast(double x, double y, double z, double radius) {
         if (!cameraValid || !(radius >= 0 && radius <= .5)
-                || Math.abs(x) >= 30_000_064 || Math.abs(y) >= 30_000_064 || Math.abs(z) >= 30_000_064) return false;
+                || Math.abs(x) >= 30_000_064 || Math.abs(y) >= 2048 || Math.abs(z) >= 30_000_064) return false;
         double cx = cameraX, cy = cameraY, cz = cameraZ;
         double dx = x - cx, dy = y - cy, dz = z - cz;
         if (dx * dx + dy * dy + dz * dz < 9) return false;
         int bx = fastFloor(x), by = fastFloor(y), bz = fastFloor(z);
+        long key = (((long) bx & 0x3FFFFFFL) << 38) | (((long) bz & 0x3FFFFFFL) << 12) | ((long) by & 0xFFFL);
+        if (lastEpoch == epoch && lastKey == key) {
+            return lastHidden;
+        }
         int slot = (bx * 73428767 ^ by * 912931 ^ bz * 438289) & 4095;
-        if (epochs[slot] == epoch && xs[slot] == bx && ys[slot] == by && zs[slot] == bz) return hidden[slot];
+        long st = states[slot];
+        if ((st >>> 1) == epoch && keys[slot] == key) {
+            boolean h = (st & 1L) != 0L;
+            lastEpoch = epoch; lastKey = key; lastHidden = h;
+            return h;
+        }
         double ax = Math.abs(bx + .5 - cx), ay = Math.abs(by + .5 - cy), az = Math.abs(bz + .5 - cz);
         boolean result;
         if (ax >= ay && ax >= az) result = probe(0, cx, cy, cz, bx, by, bz);
         else if (ay >= az) result = probe(1, cy, cx, cz, by, bx, bz);
         else result = probe(2, cz, cx, cy, bz, bx, by);
-        xs[slot] = bx; ys[slot] = by; zs[slot] = bz; epochs[slot] = epoch; hidden[slot] = result;
+        keys[slot] = key;
+        states[slot] = (epoch << 1) | (result ? 1L : 0L);
+        lastEpoch = epoch; lastKey = key; lastHidden = result;
         return result;
     }
 

@@ -1,5 +1,7 @@
 package com.ephemera.render.terrain.vulkan;
 
+import com.ephemera.EphemeraCommon;
+import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.core.terrain.BakedSectionMeshlets;
 import com.ephemera.core.terrain.MeshletBaker;
 import com.ephemera.core.terrain.MeshletSlabAllocator;
@@ -92,9 +94,12 @@ final class VulkanMeshArena {
 
 	private int ringSlot;
 	private long stagingOffset;
+	private final long[] stagingLastUsage = new long[RING_FRAMES];
+	private final int[] stagingIdleFrames = new int[RING_FRAMES];
+	private boolean pendingStagingShrinkOnReset;
 
-	private final MeshletSlabAllocator quadAlloc = new MeshletSlabAllocator(INITIAL_QUADS);
-	private final MeshletSlabAllocator meshletAlloc = new MeshletSlabAllocator(INITIAL_MESHLETS);
+	private MeshletSlabAllocator quadAlloc = new MeshletSlabAllocator(INITIAL_QUADS);
+	private MeshletSlabAllocator meshletAlloc = new MeshletSlabAllocator(INITIAL_MESHLETS);
 	private int sectionCapacity = INITIAL_SECTIONS;
 	private int[] freeSlots = new int[INITIAL_SECTIONS];
 	private int freeSlotCount;
@@ -147,11 +152,43 @@ final class VulkanMeshArena {
 	GpuBuf cullParamsBuf() { return cullParamsRing[ringSlot]; }
 	GpuBuf meshFrameBuf() { return meshFrameRing[ringSlot]; }
 
-	/** Advances the 3-frame ring and reclaims section allocations retired >= 4 frames ago. */
-	void beginFrame() {
+	/** Advances the 3-frame ring, reclaims retired section allocations, and shrinks oversized staging rings. */
+	void beginFrame(VulkanCommandEncoder encoder) {
+		stagingLastUsage[ringSlot] = stagingOffset;
 		frameCounter++;
 		ringSlot = (ringSlot + 1) % RING_FRAMES;
 		stagingOffset = 0L;
+
+		if (EphemeraCommon.config().memoryTrimNativeBuffers) {
+			GpuBuf cur = stagingRing[ringSlot];
+			if (cur != null && cur.byteSize > INITIAL_STAGING_BYTES) {
+				if (pendingStagingShrinkOnReset || stagingLastUsage[ringSlot] <= INITIAL_STAGING_BYTES / 2L) {
+					if (pendingStagingShrinkOnReset || ++stagingIdleFrames[ringSlot] >= 120) {
+						long oldBytes = cur.byteSize;
+						long oldBuf = cur.buffer;
+						long oldAlloc = cur.allocation;
+						stagingRing[ringSlot] = createStagingBuffer(INITIAL_STAGING_BYTES);
+						stagingIdleFrames[ringSlot] = 0;
+						encoder.queueForDestroy(() -> Vma.vmaDestroyBuffer(vma, oldBuf, oldAlloc));
+						MemoryPressurePolicy.recordNativeReclaimed(oldBytes - INITIAL_STAGING_BYTES);
+					}
+				} else {
+					stagingIdleFrames[ringSlot] = 0;
+				}
+			}
+			if (pendingStagingShrinkOnReset) {
+				boolean anyLeft = false;
+				for (int i = 0; i < RING_FRAMES; i++) {
+					if (stagingRing[i] != null && stagingRing[i].byteSize > INITIAL_STAGING_BYTES) {
+						anyLeft = true;
+						break;
+					}
+				}
+				if (!anyLeft) {
+					pendingStagingShrinkOnReset = false;
+				}
+			}
+		}
 
 		DeferredFreeQueue reclaim = deferRings[frameCounter % DEFER_FRAMES];
 		for (int i = 0; i < reclaim.count; i++) {
@@ -255,6 +292,8 @@ final class VulkanMeshArena {
 		MemoryUtil.memPutInt(sPtr + 56L, meshletBase + baked.solidMeshletCount);
 		MemoryUtil.memPutInt(sPtr + 60L, baked.cutoutMeshletCount);
 
+		Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, totalStage);
+
 		VkCommandBuffer cmd = bridge.ephemera$commandBuffer();
 		copyRegion(cmd, stage.buffer, stageBase, quadBuf.buffer, (long) quadBase * MeshletBaker.BYTES_PER_QUAD, quadBytes);
 		copyRegion(cmd, stage.buffer, mStageOff, meshletBuf.buffer, (long) meshletBase * MeshletBaker.BYTES_PER_MESHLET, meshletBytes);
@@ -263,7 +302,8 @@ final class VulkanMeshArena {
 
 		return new VulkanMeshSectionHandle(
 			arenaEpoch, slot, qHandle, mHandle, baked.layerMask,
-			baked.solidMeshletCount, baked.cutoutMeshletCount, initialVisibility
+			baked.solidMeshletCount, baked.cutoutMeshletCount,
+			baked.sectionX, baked.sectionY, baked.sectionZ, initialVisibility
 		);
 	}
 
@@ -283,6 +323,7 @@ final class VulkanMeshArena {
 		for (int i = 0; i < count; i++) {
 			MemoryUtil.memPutFloat(ptr + ((long) i << 2), values[i]);
 		}
+		Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, bytes);
 		VkCommandBuffer cmd = bridge.ephemera$commandBuffer();
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			int off = 0;
@@ -348,10 +389,27 @@ final class VulkanMeshArena {
 		deferRings[frameCounter % DEFER_FRAMES].add(handle.slot, handle.quadHandle, handle.meshletHandle);
 	}
 
-	void resetAllSections() {
+	void resetAllSections(VulkanCommandEncoder encoder) {
 		arenaEpoch++;
-		quadAlloc.clear();
-		meshletAlloc.clear();
+		if (!closed && encoder != null) {
+			// Replace persistent VRAM pools with fresh initial-size buffers and queue the old ones
+			// for deferred destruction so in-flight GPU submissions can never observe overwritten
+			// SectionMeta/Meshlet/Quad memory while still rendering the previous frame.
+			int ssboFlags = VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+				| VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+			replaceDeviceBuffer(encoder, quadBuf, (long) INITIAL_QUADS * MeshletBaker.BYTES_PER_QUAD, ssboFlags);
+			replaceDeviceBuffer(encoder, meshletBuf, (long) INITIAL_MESHLETS * MeshletBaker.BYTES_PER_MESHLET, ssboFlags);
+			replaceDeviceBuffer(encoder, sectionMetaBuf, (long) INITIAL_SECTIONS * SECTION_META_BYTES, ssboFlags);
+			quadAlloc = new MeshletSlabAllocator(INITIAL_QUADS);
+			meshletAlloc = new MeshletSlabAllocator(INITIAL_MESHLETS);
+			sectionCapacity = INITIAL_SECTIONS;
+			if (freeSlots.length != INITIAL_SECTIONS) {
+				freeSlots = new int[INITIAL_SECTIONS];
+			}
+		} else {
+			quadAlloc.clear();
+			meshletAlloc.clear();
+		}
 		freeSlotCount = sectionCapacity;
 		for (int i = 0; i < sectionCapacity; i++) {
 			freeSlots[i] = sectionCapacity - 1 - i;
@@ -360,6 +418,20 @@ final class VulkanMeshArena {
 			q.count = 0;
 		}
 		Arrays.fill(ringTasksVersion, 0L);
+		Arrays.fill(stagingIdleFrames, 0);
+		pendingStagingShrinkOnReset = true;
+	}
+
+	private void replaceDeviceBuffer(VulkanCommandEncoder encoder, GpuBuf target, long newBytes, int usage) {
+		GpuBuf fresh = createDeviceBuffer(newBytes, usage);
+		long oldBuf = target.buffer;
+		long oldAlloc = target.allocation;
+		target.buffer = fresh.buffer;
+		target.allocation = fresh.allocation;
+		target.byteSize = fresh.byteSize;
+		if (oldBuf != 0L) {
+			encoder.queueForDestroy(() -> Vma.vmaDestroyBuffer(vma, oldBuf, oldAlloc));
+		}
 	}
 
 	void destroy(VulkanCommandEncoder encoder) {
@@ -445,7 +517,10 @@ final class VulkanMeshArena {
 		GpuBuf grown = createDeviceBuffer(newBytes, ssboFlags);
 		bridge.ephemera$flushBarriers();
 		copyRegion(bridge.ephemera$commandBuffer(), target.buffer, 0L, grown.buffer, 0L, target.byteSize);
+		// Flush immediately so subsequent section uploads into coalesced free holes (< target.byteSize)
+		// cannot race with the old->grown copy on the same command buffer (WAW transfer hazard).
 		bridge.ephemera$markTransferWrite();
+		bridge.ephemera$flushBarriers();
 		long oldBuf = target.buffer;
 		long oldAlloc = target.allocation;
 		target.buffer = grown.buffer;

@@ -22,6 +22,8 @@ public final class FastVertexBuffer {
 	private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
 
 	private static volatile Backend activeBackend = new Backend(null, 0);
+	private static EphemeraConfig cachedConfig;
+	private static boolean cachedFastEnabled;
 
 	private FastVertexBuffer() {}
 
@@ -48,7 +50,15 @@ public final class FastVertexBuffer {
 
 	private static boolean enabled() {
 		EphemeraConfig config = EphemeraCommon.config();
+		if (config.backendGlDispatchCache && config.backendVulkanDispatchCache) {
+			return true;
+		}
+		if (config == cachedConfig && config.backendGlDispatchCache == config.backendVulkanDispatchCache) {
+			return cachedFastEnabled;
+		}
 		if (config.backendGlDispatchCache == config.backendVulkanDispatchCache) {
+			cachedConfig = config;
+			cachedFastEnabled = config.backendGlDispatchCache;
 			return config.backendGlDispatchCache;
 		}
 		GpuDevice device = RenderSystem.tryGetDevice();

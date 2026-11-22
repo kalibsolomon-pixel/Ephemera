@@ -261,7 +261,7 @@ final class VulkanMeshShaders {
 		    uint meshletIdx = payload.meshlets[gl_WorkGroupID.x];
 		    uvec4 desc = meshlets[meshletIdx];
 		    uint firstQuad = desc.x;
-		    uint quadCount = desc.y & 0x3Fu;
+		    uint quadCount = min(desc.y & 0x3Fu, 32u);
 
 		    SetMeshOutputsEXT(quadCount * 4u, quadCount * 2u);
 
@@ -495,7 +495,7 @@ final class VulkanMeshShaders {
 		    uint meshletIdx = visibleMeshlets[visibleOffset + wg];
 		    uvec4 desc = meshlets[meshletIdx];
 		    uint firstQuad = desc.x;
-		    uint quadCount = desc.y & 0x3Fu;
+		    uint quadCount = min(desc.y & 0x3Fu, 32u);
 		    uint sectionSlot = desc.y >> 10u;
 
 		    SetMeshOutputsEXT(quadCount * 4u, quadCount * 2u);

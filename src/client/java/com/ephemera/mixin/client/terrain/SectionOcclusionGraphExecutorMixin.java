@@ -1,11 +1,12 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.renderer.SectionOcclusionGraph;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -27,15 +28,15 @@ abstract class SectionOcclusionGraphExecutorMixin {
 		return t;
 	});
 
-	@Redirect(
+	@WrapOperation(
 		method = "scheduleFullUpdate",
 		at = @At(
 			value = "INVOKE",
 			target = "Ljava/util/concurrent/CompletableFuture;runAsync(Ljava/lang/Runnable;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;"
 		)
 	)
-	private CompletableFuture<Void> ephemera$runOnDedicatedOcclusionThread(Runnable task, Executor fallback) {
+	private CompletableFuture<Void> ephemera$runOnDedicatedOcclusionThread(Runnable task, Executor fallback, Operation<CompletableFuture<Void>> original) {
 		Executor exec = EphemeraCommon.config().terrainAsyncGraphUpdates ? EPHEMERA$OCCLUSION_EXECUTOR : fallback;
-		return CompletableFuture.runAsync(task, exec);
+		return original.call(task, exec);
 	}
 }

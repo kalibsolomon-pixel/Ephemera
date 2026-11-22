@@ -3,7 +3,9 @@ package com.ephemera.ui;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.diagnostics.FrameMetrics;
 import com.ephemera.core.diagnostics.MixinHealth;
+import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.api.EphemeraVisibilityProvider;
+import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.visuals.DynamicLightTracker;
 import com.ephemera.visuals.VisualsDiagnostics;
 import com.ephemera.visuals.VisualsRuntime;
@@ -92,13 +94,17 @@ enum SettingsTab {
 
 	private static void engine(List<SettingRow> r, EphemeraConfig c) {
 		r.add(new SettingRow.Header("ephemera.section.memory"));
-		toggles(r, c, "memoryCompactBlockStates", "memoryFreeSpriteMipmaps", "memoryDeduplicateShapes");
+		toggles(r, c, "memoryCompactBlockStates", "memoryFreeSpriteMipmaps", "memoryDeduplicateShapes",
+			"memoryDeduplicateModels", "memoryLeakGuard", "memoryTrimNativeBuffers");
 		r.add(new SettingRow.Header("ephemera.section.loading"));
 		toggles(r, c, "loadingNonBlockingReload", "loadingSkipTitleFade", "loadingSkipLevelLoadDelay", "loadingFastIpPing");
 		r.add(new SettingRow.Header("ephemera.section.engine"));
-		toggles(r, c, "engineFastMath", "engineFastLighting", "engineFastChunkLookup", "engineLightmapCaching",
-			"engineSoundListenerThrottle", "engineDebugHudCache", "engineIdleShortCircuits", "networkFlushConsolidation");
+		toggles(r, c, "engineFastMath", "engineFastLighting", "engineFastChunkLookup", "engineFastCollisions",
+			"engineFastEntityLookup", "engineLightmapCaching", "engineSoundListenerThrottle", "engineDebugHudCache",
+			"engineIdleShortCircuits", "networkFlushConsolidation", "networkFastVarInt");
 		r.add(new SettingRow.Header("ephemera.section.pacing"));
+		toggles(r, c, "framePacerEnabled", "framePacerLowLatency", "framePacerAdaptiveUploadBudget");
+		r.add(new SettingRow.Slider(c, "framePacerSpinTailMicros", 100, 3000, 50, v -> v.intValue() + " us"));
 		toggles(r, c, "unfocusedFpsLimitEnabled");
 		r.add(new SettingRow.Slider(c, "unfocusedFpsLimit", 5, 240, 5, v -> v.intValue() + " fps"));
 		r.add(new SettingRow.Header("ephemera.section.compat"));
@@ -138,6 +144,13 @@ enum SettingsTab {
 		r.add(new SettingRow.Stat("ephemera.stat.pointOnePercentLow", () -> fps(VisualsDiagnostics.snapshot().pointOnePercentLowFps()),
 			() -> lowColor(VisualsDiagnostics.snapshot().pointOnePercentLowFps())));
 		r.add(new SettingRow.Stat("ephemera.stat.p99", () -> ms(VisualsDiagnostics.snapshot().p99Ms()), () -> UiTheme.TEXT));
+		r.add(new SettingRow.Stat("ephemera.stat.pacer", EphemeraPacerRuntime::statusLine, () -> UiTheme.ACCENT));
+		r.add(new SettingRow.Stat("ephemera.stat.memorySaved", () -> {
+			MemoryPressurePolicy.Snapshot mem = MemoryPressurePolicy.snapshot();
+			double mb = (mem.reclaimedNativeBytes() + mem.reclaimedHeapEstimateBytes()) / (1024.0 * 1024.0);
+			return String.format(Locale.ROOT, "%.1f MB · %,d dedup · %d sweeps", mb, mem.dedupSavedObjects(),
+				mem.worldUnloadSweeps() + mem.resourceReloadSweeps());
+		}, () -> UiTheme.GOOD));
 		r.add(new SettingRow.Header("ephemera.section.culling"));
 		r.add(new SettingRow.Stat("ephemera.stat.visibleSections", () -> count(provider() == null ? -1 : provider().visibleSectionCount()), () -> UiTheme.TEXT));
 		r.add(new SettingRow.Stat("ephemera.stat.occludedEntities", () -> count(provider() == null ? -1 : provider().occludedEntityCount()), () -> UiTheme.TEXT));
