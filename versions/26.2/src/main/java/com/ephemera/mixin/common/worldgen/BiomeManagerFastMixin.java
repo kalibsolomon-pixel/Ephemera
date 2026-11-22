@@ -1,4 +1,4 @@
-package com.ephemera.mixin.common;
+package com.ephemera.mixin.common.worldgen;
 
 import com.ephemera.core.math.FastNoiseMath;
 import net.minecraft.core.BlockPos;

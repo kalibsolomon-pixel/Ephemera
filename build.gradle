@@ -6,6 +6,24 @@ plugins {
 evaluationDependsOn(':api')
 evaluationDependsOn(':core')
 
+// One jar per Minecraft version: -Pephemera.minecraft=<ver> picks an entry from
+// gradle/minecraft-versions.json. src/ is shared; versions/<ver>/src/<set>/{java,resources}
+// overlays hold the version-specific copies of mixins/glue that diverge. The default version
+// (gradle.properties) keeps build/ so bench tooling and the release workflow are unchanged.
+def supportedVersions = new groovy.json.JsonSlurper().parse(file('gradle/minecraft-versions.json'))
+def defaultMinecraft = project.minecraft_version
+def selectedMinecraft = providers.gradleProperty('ephemera.minecraft').getOrElse(defaultMinecraft)
+def selectedVersion = supportedVersions[selectedMinecraft]
+if (selectedVersion == null) {
+	throw new GradleException("Unsupported Minecraft ${selectedMinecraft}; choose one of ${supportedVersions.keySet()}")
+}
+ext.minecraft_version = selectedMinecraft
+ext.fabric_api_version = selectedVersion.fabricApi
+if (selectedMinecraft != defaultMinecraft) {
+	layout.buildDirectory = file("build/minecraft-${selectedMinecraft}")
+}
+def versionOverlay = file("versions/${selectedMinecraft}/src")
+
 version = project.mod_version
 group = project.maven_group
 
@@ -23,6 +41,11 @@ repositories {
 
 loom {
 	splitEnvironmentSourceSets()
+	['main', 'client'].each { name ->
+		def set = sourceSets.getByName(name)
+		set.java.srcDir(new File(versionOverlay, "${name}/java"))
+		set.resources.srcDir(new File(versionOverlay, "${name}/resources"))
+	}
 	accessWidenerPath = file('src/main/resources/ephemera.accesswidener')
 	enableTransitiveAccessWideners = true
 
