@@ -1,6 +1,14 @@
-# Ephemera
+<p align="center">
+  <img src="docs/assets/ephemera-logo.svg" alt="Ephemera Logo" width="128" height="128" />
+</p>
 
-Clean-room, MIT-licensed Minecraft performance engine for Fabric (`environment: "*"`, Java 25, Minecraft 26.2+) supporting both **native Vulkan** and **OpenGL 3.3 Core**. Built as a standalone Fabric mod and the default managed performance engine bundled by [Aurora Launcher](https://github.com/kalibsolomon-pixel/Aurora-Launcher) alongside [Aurora Client](https://github.com/kalibsolomon-pixel/Aurora-Client).
+<h1 align="center">Ephemera</h1>
+
+<p align="center">
+  Clean-room, MIT-licensed Minecraft performance engine for Fabric (<code>environment: "*"</code>, Java 25, Minecraft 26.2+) supporting both <strong>native Vulkan</strong> and <strong>OpenGL 3.3 Core</strong>.
+</p>
+
+Built as a standalone Fabric mod and the default managed performance engine bundled by [Aurora Launcher](https://github.com/kalibsolomon-pixel/Aurora-Launcher) alongside [Aurora Client](https://github.com/kalibsolomon-pixel/Aurora-Client).
 
 ## Architecture
 

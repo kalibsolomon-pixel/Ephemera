@@ -196,10 +196,11 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 		UiTheme.frame(g, px, py, pw, ph, UiTheme.PANEL_EDGE);
 		g.fill(px + 1, py + 1, px + pw - 1, py + HEADER_H, UiTheme.HEADER);
 
+		UiTheme.drawLogo(g, px + PAD + 2, py + 7, 20);
 		Component title = Component.translatable("ephemera.settings.title");
-		g.text(font, title, px + PAD + 2, py + 9, UiTheme.TEXT, true);
+		g.text(font, title, px + PAD + 28, py + 8, UiTheme.TEXT, true);
 		Component subtitle = Component.translatable(tab.titleKey());
-		g.text(font, subtitle, px + PAD + 2, py + 21, UiTheme.TEXT_DIM, true);
+		g.text(font, subtitle, px + PAD + 28, py + 20, UiTheme.TEXT_DIM, true);
 		String backend = VisualsDiagnostics.backendName();
 		int chipW = font.width(backend) + 14;
 		int chipX = px + pw - chipW - PAD;

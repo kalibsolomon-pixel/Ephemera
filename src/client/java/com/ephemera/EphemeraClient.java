@@ -29,7 +29,7 @@ public final class EphemeraClient implements ClientModInitializer {
 		String version = FabricLoader.getInstance()
 			.getModContainer(EphemeraCommon.MOD_ID)
 			.map(c -> c.getMetadata().getVersion().getFriendlyString())
-			.orElse("0.1.0");
+			.orElse("1.0.0");
 
 		EphemeraSettingsBridge settingsBridge = EphemeraClientBridge.register(version, EphemeraClient::resolveBackend);
 

@@ -13,6 +13,7 @@
     "issues": "https://github.com/kalibsolomon-pixel/Ephemera/issues"
   },
   "license": "MIT",
+  "icon": "assets/ephemera/icon.png",
   "environment": "*",
   "entrypoints": {
     "main": [
@@ -33,7 +34,6 @@
   "depends": {
     "fabricloader": ">=0.20.0",
     "minecraft": "~${minecraft_version}",
-    "java": ">=25",
-    "fabric-api": "*"
+    "java": ">=25"
   }
 }

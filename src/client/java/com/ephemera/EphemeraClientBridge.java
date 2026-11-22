@@ -45,6 +45,8 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 	static final String SHARE_FRAME_PACER = "ephemera:frame_pacer";
 	static final String SHARE_SETTINGS = "ephemera:settings";
 
+	private static final EphemeraConfig DEFAULTS = new EphemeraConfig();
+
 	private final String version;
 	private final Supplier<String> backendSupplier;
 
@@ -177,15 +179,23 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			m.put("description", opt.description());
 			m.put("category", opt.category());
 			m.put("value", opt.value());
+			m.put("defaultValue", defaultBoolean(opt.key()));
 			m.put("requiresRestart", opt.requiresRestart());
 			out.add(Map.copyOf(m));
 		}
 		return List.copyOf(out);
 	}
 
+	private static boolean defaultBoolean(String key) {
+		return readBoolean(DEFAULTS, key);
+	}
+
 	@Override
 	public boolean getBoolean(String key) {
-		EphemeraConfig c = EphemeraCommon.config();
+		return readBoolean(EphemeraCommon.config(), key);
+	}
+
+	private static boolean readBoolean(EphemeraConfig c, String key) {
 		return switch (key) {
 			case "terrainEngineEnabled" -> c.terrainEngineEnabled;
 			case "terrainVulkanMeshShaders" -> c.terrainVulkanMeshShaders;

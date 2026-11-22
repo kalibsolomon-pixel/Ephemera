@@ -42,11 +42,15 @@ public final class DiagnosticsHud {
 			: String.format(Locale.ROOT, "Sections %d  Occluded E %d  BE %d", vis.visibleSectionCount(), vis.occludedEntityCount(), vis.occludedBlockEntityCount());
 
 		Font font = mc.font;
+		int logoSize = 9;
+		int logoGap = 3;
 		int width = 0;
 		int count = 0;
-		for (String line : lines) {
+		for (int i = 0; i < lines.length; i++) {
+			String line = lines[i];
 			if (!line.isEmpty()) {
-				width = Math.max(width, font.width(line));
+				int lineW = font.width(line) + (i == 0 ? logoSize + logoGap : 0);
+				width = Math.max(width, lineW);
 				count++;
 			}
 		}
@@ -58,7 +62,12 @@ public final class DiagnosticsHud {
 				continue;
 			}
 			int color = i == 0 ? UiTheme.ACCENT : i == 1 ? lowColor(s.onePercentLowFps()) : UiTheme.TEXT;
-			g.text(font, lines[i], MARGIN + PAD, y, color, true);
+			int textX = MARGIN + PAD;
+			if (i == 0) {
+				UiTheme.drawLogo(g, textX, y, logoSize);
+				textX += logoSize + logoGap;
+			}
+			g.text(font, lines[i], textX, y, color, true);
 			y += lineH;
 		}
 	}
