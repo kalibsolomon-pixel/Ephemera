@@ -224,6 +224,195 @@ final class VulkanMeshShaders {
 		""";
 
 	/**
+	 * Subgroup-ballot variant of {@link #TERRAIN_TASK_GLSL}, selected when the device reports
+	 * {@code subgroupSize >= 32} with ballot ops in the Task stage. The 32-lane workgroup fits in a
+	 * single subgroup, so {@code subgroupBallot} + {@code subgroupBallotExclusiveBitCount} compacts
+	 * surviving meshlets in one instruction per batch with zero shared-memory atomics.
+	 */
+	static final String TERRAIN_TASK_BALLOT_GLSL = """
+		#version 450
+		#extension GL_EXT_mesh_shader : require
+		#extension GL_KHR_shader_subgroup_ballot : require
+
+		layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+		struct SectionMeta {
+		    ivec4 originAndFlags;         // xyz = section block origin, w = flags
+		    vec4 visibilityAndPlanes012;  // x = visibility, y = DOWN, z = UP, w = NORTH
+		    vec4 planes345AndPad;         // x = SOUTH, y = WEST, z = EAST, w = 0
+		    uvec4 layerMeshletRanges;     // x = solidFirst, y = solidCount, z = cutoutFirst, w = cutoutCount
+		};
+
+		struct TaskPayload {
+		    mat4 mvp;
+		    vec3 secBase;
+		    float visibility;
+		    uint meshlets[128];
+		};
+
+		taskPayloadSharedEXT TaskPayload payload;
+
+		layout(push_constant) uniform PushConstants {
+		    uint taskOffset;
+		    uint layerIdx;
+		};
+
+		layout(set = 0, binding = 0, std140) uniform Projection {
+		    mat4 ProjMat;
+		};
+
+		layout(set = 0, binding = 3, std140) uniform MeshFrame {
+		    mat4 ModelViewMat;
+		    ivec2 TextureSize;
+		    ivec2 _pad;
+		};
+
+		layout(set = 0, binding = 10, std140) uniform CullParams {
+		    vec4 frustumPlanes[6];
+		    ivec4 camBlockPosAndCount;    // xyz = CameraBlockPos, w = unused
+		    vec4 camOffsetAndEnvEnd;      // xyz = CameraOffset, w = envFogEnd
+		    vec4 fogAndFlags;             // x = rdFogEnd, y = fogCullEnabled, z = dirCullEnabled, w = cullMargin
+		    uvec4 limits;                 // x = unused, y = frustumCullEnabled, z = 0, w = 0
+		};
+
+		layout(set = 0, binding = 7, std430) readonly buffer MeshletBuf {
+		    uvec4 meshlets[];
+		};
+		layout(set = 0, binding = 8, std430) readonly buffer SectionBuf {
+		    SectionMeta sections[];
+		};
+		layout(set = 0, binding = 9, std430) readonly buffer VisibleTaskBuf {
+		    uint visibleTasks[];
+		};
+
+		shared bool sVisible;
+		shared uint sBucketMask;
+		shared vec3 sSecRel;
+		shared uint sStartMeshlet;
+		shared uint sMeshletCount;
+
+		bool boxInFrustum(vec3 bMin, vec3 bMax) {
+		    for (int i = 0; i < 6; i++) {
+		        vec4 p = frustumPlanes[i];
+		        vec3 pv = vec3(
+		            p.x >= 0.0 ? bMax.x : bMin.x,
+		            p.y >= 0.0 ? bMax.y : bMin.y,
+		            p.z >= 0.0 ? bMax.z : bMin.z
+		        );
+		        if (dot(p.xyz, pv) + p.w < 0.0) {
+		            return false;
+		        }
+		    }
+		    return true;
+		}
+
+		bool meshletVisible(uvec4 desc, uint mask, vec3 secRel, bool doFrustum) {
+		    uint bucket = (desc.y >> 6u) & 7u;
+		    if ((mask & (1u << bucket)) == 0u) {
+		        return false;
+		    }
+		    if (!doFrustum) {
+		        return true;
+		    }
+		    const float AABB_SCALE = 20.0 / 255.0;
+		    const float AABB_BIAS = -2.0;
+		    vec3 bMin = secRel + vec3(
+		        float(desc.z & 0xFFu),
+		        float((desc.z >> 8u) & 0xFFu),
+		        float((desc.z >> 16u) & 0xFFu)
+		    ) * AABB_SCALE + AABB_BIAS;
+		    vec3 bMax = secRel + vec3(
+		        float((desc.z >> 24u) & 0xFFu),
+		        float(desc.w & 0xFFu),
+		        float((desc.w >> 8u) & 0xFFu)
+		    ) * AABB_SCALE + AABB_BIAS;
+		    return boxInFrustum(bMin, bMax);
+		}
+
+		void main() {
+		    uint tid = gl_LocalInvocationID.x;
+		    if (tid == 0u) {
+		        uint packedTask = visibleTasks[taskOffset + gl_WorkGroupID.x];
+		        uint slot = packedTask >> 8u;
+		        uint chunkBase = (packedTask & 0xFFu) * 128u;
+		        SectionMeta meta = sections[slot];
+
+		        vec3 secRel = vec3(meta.originAndFlags.xyz - camBlockPosAndCount.xyz) + camOffsetAndEnvEnd.xyz;
+		        bool vis = true;
+		        if (fogAndFlags.y > 0.5) {
+		            vec3 cl = clamp(vec3(0.0), secRel - 1.0, secRel + 17.0);
+		            float sph = length(cl);
+		            float cyl = max(length(cl.xz), abs(cl.y));
+		            if (sph >= camOffsetAndEnvEnd.w || cyl >= fogAndFlags.x) {
+		                vis = false;
+		            }
+		        }
+
+		        uint firstM = layerIdx == 0u ? meta.layerMeshletRanges.x : meta.layerMeshletRanges.z;
+		        uint totalM = layerIdx == 0u ? meta.layerMeshletRanges.y : meta.layerMeshletRanges.w;
+		        uint remain = totalM > chunkBase ? min(128u, totalM - chunkBase) : 0u;
+		        if (remain == 0u) {
+		            vis = false;
+		        }
+
+		        uint mask = 0x7Fu;
+		        if (vis && fogAndFlags.z > 0.5) {
+		            vec3 camLocal = -secRel;
+		            float m = fogAndFlags.w;
+		            mask = 1u << 6u;
+		            mask |= (camLocal.y < meta.visibilityAndPlanes012.y + m ? 1u : 0u) << 0u;
+		            mask |= (camLocal.y > meta.visibilityAndPlanes012.z - m ? 1u : 0u) << 1u;
+		            mask |= (camLocal.z < meta.visibilityAndPlanes012.w + m ? 1u : 0u) << 2u;
+		            mask |= (camLocal.z > meta.planes345AndPad.x        - m ? 1u : 0u) << 3u;
+		            mask |= (camLocal.x < meta.planes345AndPad.y        + m ? 1u : 0u) << 4u;
+		            mask |= (camLocal.x > meta.planes345AndPad.z        - m ? 1u : 0u) << 5u;
+		        }
+
+		        sVisible = vis;
+		        sBucketMask = mask;
+		        sSecRel = secRel;
+		        sStartMeshlet = firstM + chunkBase;
+		        sMeshletCount = remain;
+		        if (vis) {
+		            payload.mvp = ProjMat * ModelViewMat;
+		            payload.secBase = secRel;
+		            payload.visibility = meta.visibilityAndPlanes012.x;
+		        }
+		    }
+		    barrier();
+
+		    if (!sVisible) {
+		        EmitMeshTasksEXT(0u, 0u, 0u);
+		        return;
+		    }
+
+		    uint count = sMeshletCount;
+		    uint startM = sStartMeshlet;
+		    uint mask = sBucketMask;
+		    vec3 secRel = sSecRel;
+		    bool doFrustum = limits.y != 0u;
+
+		    // count is workgroup-uniform, so every lane runs every iteration and votes in
+		    // subgroupBallot; outCount stays uniform because each lane adds the same bit count
+		    uint outCount = 0u;
+		    for (uint batch = 0u; batch < count; batch += 32u) {
+		        uint localIdx = batch + tid;
+		        uint mIdx = startM + localIdx;
+		        bool mVis = (localIdx < count) && meshletVisible(meshlets[mIdx], mask, secRel, doFrustum);
+		        uvec4 ballot = subgroupBallot(mVis);
+		        if (mVis) {
+		            uint dst = outCount + subgroupBallotExclusiveBitCount(ballot);
+		            payload.meshlets[dst] = mIdx;
+		        }
+		        outCount += subgroupBallotBitCount(ballot);
+		    }
+		    barrier();
+
+		    EmitMeshTasksEXT(outCount, 1u, 1u);
+		}
+		""";
+
+	/**
 	 * Ultra-lean Task-fed Mesh Shader (1 AMD Wave32 / 1 NVIDIA Warp32, 32 quads = 128 verts / 64 tris).
 	 * Zero texture fetches, zero {@code mat4 * mat4}, zero {@code SectionMeta} reads, zero index buffer:
 	 * purely coalesced 16-byte {@code uvec4} loads + FMA + primitive export!

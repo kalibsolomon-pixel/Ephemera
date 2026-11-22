@@ -11,6 +11,8 @@ import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.GpuBackend;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import static org.lwjgl.glfw.GLFW.GLFW_CONTEXT_NO_ERROR;
 import static org.lwjgl.glfw.GLFW.GLFW_FALSE;
@@ -19,6 +21,11 @@ import static org.lwjgl.glfw.GLFW.glfwWindowHint;
 
 @Mixin(Window.class)
 abstract class WindowGlNoErrorMixin {
+	@Inject(method = "createGlfwWindow", at = @At("HEAD"))
+	private static void ephemera$clearNoErrorContext(CallbackInfoReturnable<Long> cir) {
+		GlNoErrorContext.clearActive();
+	}
+
 	@WrapOperation(method = "createGlfwWindow", at = @At(value = "INVOKE",
 		target = "Lorg/lwjgl/glfw/GLFW;glfwCreateWindow(IILjava/lang/CharSequence;JJ)J"))
 	private static long ephemera$createNoErrorWindow(int width, int height, CharSequence title, long monitor,
@@ -33,6 +40,7 @@ abstract class WindowGlNoErrorMixin {
 				glfwWindowHint(GLFW_CONTEXT_NO_ERROR, GLFW_FALSE);
 			}
 			if (handle != 0) {
+				GlNoErrorContext.markActive();
 				return handle;
 			}
 		}

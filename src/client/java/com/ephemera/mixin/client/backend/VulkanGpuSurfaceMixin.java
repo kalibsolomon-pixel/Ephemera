@@ -16,18 +16,24 @@ import com.mojang.blaze3d.vulkan.VulkanUtils;
 import com.mojang.blaze3d.vulkan.checkpoints.CheckpointExtension;
 import it.unimi.dsi.fastutil.longs.LongList;
 import java.util.List;
+import java.util.Set;
+import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.KHRSwapchain;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
 import org.lwjgl.vulkan.VkQueue;
+import org.lwjgl.vulkan.VkSemaphoreSubmitInfo;
+import org.lwjgl.vulkan.VkSubmitInfo2;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -58,6 +64,7 @@ abstract class VulkanGpuSurfaceMixin {
 	@Shadow private SurfaceException eatenException;
 	@Shadow private boolean swapchainSuboptimal;
 	@Shadow private boolean swapchainOutOfDate;
+	@Shadow @Final private Set<GpuSurface.PresentMode> supportedPresentModes;
 
 	@Unique private long ephemera$t0;
 	@Unique private boolean ephemera$uncappedMode;
@@ -65,9 +72,45 @@ abstract class VulkanGpuSurfaceMixin {
 	@Unique private boolean ephemera$deferredAcquire;
 	@Unique private boolean ephemera$skipPresent;
 
+	/**
+	 * Vanilla allocates only 2 binary acquire semaphores, which is tight when 2 GPU frames are in
+	 * flight plus 1 pre-acquired next-frame image. Expanding to 4 eliminates any binary-semaphore
+	 * reuse hazard; {@code <init>} and {@code close()} already iterate over {@code acquireSemaphores.length}.
+	 */
+	@ModifyConstant(method = "<init>", constant = @Constant(intValue = 2, ordinal = 0))
+	private int ephemera$expandAcquireSemaphoreRing(int vanillaCount) {
+		return 4;
+	}
+
+	// Swapchain destroy / close on the render thread drains every queued submit + present job first,
+	// and consumes any already-signaled pre-acquired binary semaphore so it is never re-passed to
+	// vkAcquireNextImageKHR while still signaled (VUID-vkAcquireNextImageKHR-semaphore-01286/-01779).
 	@Inject(method = {"destroySwapchain", "close"}, at = @At("HEAD"))
 	private void ephemera$drainAsyncBeforeDestroy(CallbackInfo ci) {
+		boolean consumeAcquire = false;
+		if (ephemera$preAcquirePending) {
+			VulkanAsyncPresenter.harvest();
+			int acqRes = VulkanAsyncPresenter.acquireResult();
+			consumeAcquire = VulkanAsyncPresenter.acquired()
+				&& (acqRes == VK12.VK_SUCCESS || acqRes == KHRSwapchain.VK_SUBOPTIMAL_KHR);
+		}
 		VulkanAsyncPresenter.awaitAndReset();
+		if (consumeAcquire && currentAcquireSemaphore >= 0 && currentAcquireSemaphore < acquireSemaphores.length) {
+			long sem = acquireSemaphores[currentAcquireSemaphore];
+			if (sem != 0L) {
+				try (MemoryStack stack = MemoryStack.stackPush()) {
+					VkSemaphoreSubmitInfo.Buffer waitInfo = VkSemaphoreSubmitInfo.calloc(1, stack)
+						.sType$Default()
+						.semaphore(sem)
+						.value(0L)
+						.stageMask(KHRSynchronization2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR);
+					VkSubmitInfo2.Buffer submitInfo = VkSubmitInfo2.calloc(1, stack)
+						.sType$Default()
+						.pWaitSemaphoreInfos(waitInfo);
+					KHRSynchronization2.vkQueueSubmit2KHR(device.graphicsQueue().vkQueue(), submitInfo, 0L);
+				}
+			}
+		}
 		ephemera$preAcquirePending = false;
 		ephemera$deferredAcquire = false;
 		ephemera$skipPresent = false;
@@ -77,8 +120,9 @@ abstract class VulkanGpuSurfaceMixin {
 	private void ephemera$noteConfigure(GpuSurface.Configuration config, CallbackInfo ci) {
 		GpuSurface.PresentMode mode = config.presentMode();
 		ephemera$uncappedMode = mode == GpuSurface.PresentMode.IMMEDIATE || mode == GpuSurface.PresentMode.MAILBOX;
+		VulkanAsyncPresenter.setUncappedPresent(ephemera$uncappedMode);
 		if (VulkanDiagTracker.ENABLED) {
-			VulkanDiagTracker.notePresentMode(String.valueOf(mode), swapchainImages.size());
+			VulkanDiagTracker.notePresentMode(String.valueOf(mode), swapchainImages.size(), "supported=" + supportedPresentModes);
 		}
 	}
 
@@ -112,12 +156,14 @@ abstract class VulkanGpuSurfaceMixin {
 														  GpuTextureView source, CallbackInfo ci) {
 		if (VulkanDiagTracker.ENABLED) ephemera$t0 = System.nanoTime();
 		if (!ephemera$deferredAcquire) {
-			VulkanAsyncPresenter.awaitIdle();
+			// blitFromTexture only records a transient command buffer and appends to the encoder's
+			// submission; it never touches VkQueue / VkSwapchainKHR, so queued jobs may keep running.
 			return;
 		}
 		ephemera$deferredAcquire = false;
 		ephemera$preAcquirePending = false;
 
+		// Waits only for the queued present + pre-acquire, not for any later queued submit.
 		VulkanAsyncPresenter.harvest();
 		int presRes = VulkanAsyncPresenter.presentResult();
 		if (presRes == KHRSwapchain.VK_ERROR_OUT_OF_DATE_KHR) {
@@ -188,12 +234,14 @@ abstract class VulkanGpuSurfaceMixin {
 			currentAcquireSemaphore = nextAcqIdx;
 			long nextAcqSem = acquireSemaphores[nextAcqIdx];
 
+			// Non-blocking: queued FIFO right behind this frame's vkQueueSubmit2KHR job.
 			VulkanAsyncPresenter.dispatch(device.vkDevice(), presentQueue, swapchain, presentSem, imgIdx, true, nextAcqSem);
 			ephemera$preAcquirePending = true;
 			if (VulkanDiagTracker.ENABLED) VulkanDiagTracker.recordPresent(System.nanoTime() - ephemera$t0);
 			ci.cancel();
 			return;
 		}
+		// VSync / fallback: vanilla vkQueuePresentKHR runs here, so drain queued submits first.
 		VulkanAsyncPresenter.awaitIdle();
 	}
 
@@ -211,6 +259,17 @@ abstract class VulkanGpuSurfaceMixin {
 			? KHRSynchronization2.VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR
 			: stageMask;
 		original.call(encoder, sem, value, narrowed);
+	}
+
+	@WrapOperation(
+		method = "blitFromTexture",
+		at = @At(value = "INVOKE", target = "Lorg/lwjgl/vulkan/VkImageMemoryBarrier2$Buffer;srcStageMask(J)Lorg/lwjgl/vulkan/VkImageMemoryBarrier2$Buffer;", ordinal = 0)
+	)
+	private VkImageMemoryBarrier2.Buffer ephemera$chainAcquireTransitionSrcStage(VkImageMemoryBarrier2.Buffer barrier, long srcStage, Operation<VkImageMemoryBarrier2.Buffer> original) {
+		// Chains the UNDEFINED -> TRANSFER_DST layout transition after our TRANSFER acquire-semaphore wait.
+		return original.call(barrier, VulkanModernCapabilities.modernSyncActive()
+			? KHRSynchronization2.VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR
+			: srcStage);
 	}
 
 	@WrapOperation(

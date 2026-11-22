@@ -54,6 +54,9 @@ public final class EphemeraFramePacer {
 
 	private int activeFps;
 	private HookPoint activeOwner = HookPoint.NONE;
+	// Deadlines are kept relative to originNs so the double keeps sub-nanosecond precision even
+	// after multi-day uptime, where raw System.nanoTime() values exceed the 2^53 exact range.
+	private long originNs;
 	private double nextDeadlineNs;
 	private boolean headWaitedThisFrame;
 
@@ -74,6 +77,7 @@ public final class EphemeraFramePacer {
 	public void reset() {
 		activeFps = 0;
 		activeOwner = HookPoint.NONE;
+		originNs = 0L;
 		nextDeadlineNs = 0.0;
 		headWaitedThisFrame = false;
 	}
@@ -109,8 +113,9 @@ public final class EphemeraFramePacer {
 	public boolean pacePostSwap(int targetFps, int configuredSpinTailMicros) {
 		if (activeOwner == HookPoint.FRAME_HEAD) {
 			if (targetFps > 0 && activeFps <= targetFps) {
-				// Keep armed deadline intact when headWaitedThisFrame is false (frame 1 arming).
-				return headWaitedThisFrame;
+				// Frame-head owns this frame's cadence even when it only armed or re-anchored after a
+				// hitch (headWaitedThisFrame == false); letting vanilla sleep here would double-wait.
+				return true;
 			}
 			// A tighter native restriction appeared mid-frame (e.g. minimized); let it take effect.
 			reset();
@@ -138,19 +143,22 @@ public final class EphemeraFramePacer {
 		if (owner != activeOwner || fps != activeFps) {
 			activeOwner = owner;
 			activeFps = fps;
-			nextDeadlineNs = nowNs + periodNs;
+			originNs = nowNs;
+			nextDeadlineNs = periodNs;
 			return 0L;
 		}
-		if (nextDeadlineNs == 0.0 || nowNs > nextDeadlineNs + periodNs * 0.75) {
+		double relNowNs = nowNs - originNs;
+		if (nextDeadlineNs == 0.0 || relNowNs > nextDeadlineNs + periodNs * 0.75) {
 			// First frame or genuine hitch: re-anchor cleanly without burst catch-up.
-			nextDeadlineNs = nowNs + periodNs;
+			originNs = nowNs;
+			nextDeadlineNs = periodNs;
 			return 0L;
 		}
-		long target = Math.round(nextDeadlineNs);
+		long target = originNs + Math.round(nextDeadlineNs);
 		if (nowNs > target) {
 			// Mildly late frame (0 < lateness <= 0.75 * period): damp phase smoothly to prevent
 			// long-short sawtooth oscillation while keeping average framerate steady.
-			double lateness = nowNs - nextDeadlineNs;
+			double lateness = relNowNs - nextDeadlineNs;
 			nextDeadlineNs = nextDeadlineNs + periodNs + lateness * 0.5;
 		} else {
 			nextDeadlineNs += periodNs;

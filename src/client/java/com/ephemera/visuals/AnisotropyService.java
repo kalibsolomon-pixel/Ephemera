@@ -2,6 +2,7 @@ package com.ephemera.visuals;
 
 import com.ephemera.EphemeraClient;
 import com.ephemera.mixin.client.visuals.AbstractTextureAccessor;
+import com.mojang.blaze3d.opengl.GlSampler;
 import com.mojang.blaze3d.systems.GpuDevice;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
@@ -20,6 +21,8 @@ import java.util.Map;
  */
 public final class AnisotropyService {
 	private static final Map<String, GpuSampler> CACHE = new HashMap<>();
+	private static GpuDevice cacheDevice;
+	private static GpuSampler activeSampler;
 	private static boolean failureLogged;
 
 	private AnisotropyService() {}
@@ -32,18 +35,25 @@ public final class AnisotropyService {
 			if (device == null || current == null) {
 				return current;
 			}
-			if (requested <= 1) {
+			if (device != cacheDevice) {
+				CACHE.clear();
+				activeSampler = null;
+				cacheDevice = device;
+			}
+			if (requested <= 1 || device.getDeviceInfo().hintsAndWorkarounds().anisotropyHasKnownIssues()) {
+				activeSampler = null;
 				return vanilla();
 			}
 			int level = Math.max(1, Math.min(requested, device.getDeviceInfo().limits().maxAnisotropy()));
 			if (level <= 1) {
+				activeSampler = null;
 				return vanilla();
 			}
 			// Anisotropy only engages on a filtered, mipmapped minification path, so minify linearly
 			// while keeping magnification nearest for crisp close-up texels.
 			String key = level + "|" + current.getAddressModeU() + "|" + current.getAddressModeV() + "|" + current.getMagFilter() + "|" + current.getMaxLod();
 			GpuSampler cached = CACHE.get(key);
-			if (cached == null) {
+			if (cached == null || isSamplerClosed(cached)) {
 				cached = device.createSampler(
 					current.getAddressModeU(),
 					current.getAddressModeV(),
@@ -54,6 +64,7 @@ public final class AnisotropyService {
 				);
 				CACHE.put(key, cached);
 			}
+			activeSampler = cached;
 			return cached;
 		} catch (RuntimeException e) {
 			if (!failureLogged) {
@@ -78,17 +89,50 @@ public final class AnisotropyService {
 		}
 	}
 
-	/** Closes and drops cached GPU samplers (called on resource reload / device reset). */
+	/**
+	 * Closes and drops retired GPU samplers while preserving any sampler currently bound to the
+	 * live block atlas (AtlasManager uploads before ModelManager.apply triggers resource cleanup).
+	 */
+	@SuppressWarnings("deprecation")
 	public static void clearCache() {
 		if (CACHE.isEmpty()) {
 			return;
 		}
-		for (GpuSampler sampler : CACHE.values()) {
+		GpuDevice device = RenderSystem.tryGetDevice();
+		if (device != cacheDevice) {
+			CACHE.clear();
+			activeSampler = null;
+			cacheDevice = device;
+			return;
+		}
+		GpuSampler live = activeSampler;
+		try {
+			Minecraft mc = Minecraft.getInstance();
+			if (mc != null && mc.getTextureManager() != null) {
+				AbstractTexture atlas = mc.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+				if (atlas != null && atlas.getSampler() != null) {
+					live = atlas.getSampler();
+				}
+			}
+		} catch (Throwable ignored) {}
+
+		var it = CACHE.entrySet().iterator();
+		while (it.hasNext()) {
+			GpuSampler sampler = it.next().getValue();
+			if (sampler == live || sampler == activeSampler) {
+				continue;
+			}
+			it.remove();
 			try {
-				sampler.close();
+				if (!isSamplerClosed(sampler)) {
+					sampler.close();
+				}
 			} catch (Throwable ignored) {}
 		}
-		CACHE.clear();
+	}
+
+	private static boolean isSamplerClosed(GpuSampler sampler) {
+		return sampler instanceof GlSampler gl && gl.isClosed();
 	}
 
 	private static GpuSampler vanilla() {

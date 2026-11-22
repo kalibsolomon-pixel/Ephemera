@@ -2,13 +2,11 @@ package com.ephemera.mixin.client.backend;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.render.backend.DispatchSettings;
-import com.ephemera.render.backend.RenderPassTextureBinding;
 import com.ephemera.render.backend.VulkanDescriptorBindings;
 import com.ephemera.render.backend.VulkanDescriptorPlan;
 import com.ephemera.render.backend.VulkanRenderPassBridge;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.buffers.GpuBuffer;
@@ -21,6 +19,8 @@ import com.mojang.blaze3d.vulkan.VulkanBindGroupLayout;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
+import com.mojang.blaze3d.vulkan.VulkanGpuSampler;
+import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
 import java.util.HashMap;
@@ -45,6 +45,8 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 	@Shadow @Final protected HashMap<String, ?> textures;
 
 	@Unique private static final int EPHEMERA_TRACKED_VERTEX_SLOTS = 16;
+	@Unique private boolean ephemera$cacheEnabled;
+	@Unique private boolean ephemera$descriptorCacheEnabled;
 	@Unique private VulkanRenderPipeline ephemera$boundPipeline;
 	@Unique private VulkanDescriptorBindings ephemera$bindings;
 	@Unique private VulkanBindGroupLayout ephemera$descriptorLayout;
@@ -61,7 +63,7 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 
 	@WrapMethod(method = "setPipeline")
 	private void ephemera$bindPipeline(RenderPipeline requested, Operation<Void> original) {
-		if (!ephemera$descriptorDispatchEnabled()) {
+		if (!ephemera$descriptorCacheEnabled) {
 			ephemera$boundPipeline = null;
 			original.call(requested);
 			return;
@@ -75,32 +77,31 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 	}
 
 	@Inject(method = "bindTexture", at = @At("HEAD"), cancellable = true)
-	private void ephemera$unchangedTexture(String name, GpuTextureView view, GpuSampler sampler, CallbackInfo ci) {
+	private void ephemera$fastBindTexture(String name, GpuTextureView view, GpuSampler sampler, CallbackInfo ci) {
 		VulkanDescriptorBindings bindings = ephemera$activeBindings();
-		if (bindings == null || view == null || sampler == null) {
+		if (bindings == null) {
 			return;
 		}
 		int slot = VulkanDescriptorBindings.slot(name);
-		if (slot >= 0 && bindings.texture(slot) instanceof RenderPassTextureBinding.Vulkan previous
-				&& previous.ephemera$view() == view && previous.ephemera$sampler() == sampler) {
-			ci.cancel();
+		if (slot < 0) {
+			return;
 		}
-	}
-
-	@WrapOperation(method = "bindTexture", at = @At(value = "INVOKE",
-		target = "Ljava/util/HashMap;put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"))
-	private Object ephemera$storeTexture(HashMap<?, ?> map, Object key, Object value, Operation<Object> original) {
-		Object previous = original.call(map, key, value);
-		ephemera$recordTexture((String) key, value);
-		return previous;
-	}
-
-	@WrapOperation(method = "bindTexture", at = @At(value = "INVOKE",
-		target = "Ljava/util/HashMap;remove(Ljava/lang/Object;)Ljava/lang/Object;"))
-	private Object ephemera$removeTexture(HashMap<?, ?> map, Object key, Operation<Object> original) {
-		Object previous = original.call(map, key);
-		ephemera$recordTexture((String) key, null);
-		return previous;
+		if (view == null && sampler == null) {
+			bindings.clearTexture(slot);
+			ci.cancel();
+			return;
+		}
+		if (view == null || sampler == null) {
+			// Let vanilla throw IllegalArgumentException.
+			return;
+		}
+		VulkanGpuTextureView vkView = (VulkanGpuTextureView) view;
+		VulkanGpuSampler vkSampler = (VulkanGpuSampler) sampler;
+		if (bindings.textureView(slot) != vkView || bindings.textureSampler(slot) != vkSampler) {
+			bindings.setTexture(slot, vkView, vkSampler);
+			anyDescriptorDirty = true;
+		}
+		ci.cancel();
 	}
 
 	@Inject(method = "setUniform(Ljava/lang/String;Lcom/mojang/blaze3d/buffers/GpuBuffer;)V",
@@ -111,7 +112,8 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 			int slot = VulkanDescriptorBindings.slot(name);
 			if (slot >= 0) {
 				if (!DispatchSettings.sameSlice(bindings.uniform(slot), buffer, 0L, buffer.size())) {
-					ephemera$storeUniform(bindings, slot, name, buffer.slice());
+					bindings.uniform(slot, buffer.slice());
+					anyDescriptorDirty = true;
 				}
 				ci.cancel();
 			}
@@ -126,7 +128,8 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 			int slot = VulkanDescriptorBindings.slot(name);
 			if (slot >= 0) {
 				if (!DispatchSettings.sameSlice(bindings.uniform(slot), slice)) {
-					ephemera$storeUniform(bindings, slot, name, slice);
+					bindings.uniform(slot, slice);
+					anyDescriptorDirty = true;
 				}
 				ci.cancel();
 			}
@@ -153,7 +156,7 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 
 	@Unique
 	private VulkanDescriptorBindings ephemera$activeBindings() {
-		if (!ephemera$descriptorDispatchEnabled()) {
+		if (!ephemera$descriptorCacheEnabled) {
 			ephemera$releaseBindings();
 			return null;
 		}
@@ -163,26 +166,9 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 		return ephemera$bindings;
 	}
 
-	@Unique
-	private void ephemera$recordTexture(String name, Object binding) {
-		if (ephemera$bindings != null) {
-			int slot = VulkanDescriptorBindings.slot(name);
-			if (slot >= 0) {
-				ephemera$bindings.texture(slot, binding);
-			}
-		}
-	}
-
-	@Unique
-	private void ephemera$storeUniform(VulkanDescriptorBindings bindings, int slot, String name, GpuBufferSlice slice) {
-		uniforms.put(name, slice);
-		bindings.uniform(slot, slice);
-		anyDescriptorDirty = true;
-	}
-
 	@WrapMethod(method = "setVertexBuffer")
 	private void ephemera$bindVertexBuffer(int slot, GpuBufferSlice slice, Operation<Void> original) {
-		if (!EphemeraCommon.config().backendVulkanDispatchCache) {
+		if (!ephemera$cacheEnabled) {
 			ephemera$knownVertexSlots = 0;
 			original.call(slot, slice);
 			return;
@@ -212,7 +198,7 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 
 	@WrapMethod(method = "setIndexBuffer")
 	private void ephemera$bindIndexBuffer(GpuBuffer buffer, IndexType type, Operation<Void> original) {
-		if (!EphemeraCommon.config().backendVulkanDispatchCache
+		if (!ephemera$cacheEnabled
 				|| !(buffer instanceof VulkanGpuBuffer vulkanBuffer) || type == null) {
 			ephemera$indexType = null;
 			original.call(buffer, type);
@@ -230,6 +216,9 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$initialScissor(CallbackInfo ci, @Local(argsOnly = true) RenderPass.RenderArea area) {
+		ephemera$cacheEnabled = EphemeraCommon.config().backendVulkanDispatchCache;
+		ephemera$descriptorCacheEnabled = ephemera$cacheEnabled && !VulkanRenderPass.VALIDATION
+			&& ((Object) this).getClass() == VulkanRenderPass.class;
 		if (area != null) {
 			ephemera$rememberScissor(area.x(), area.y(), area.width(), area.height());
 		}
@@ -237,7 +226,7 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 
 	@WrapMethod(method = "enableScissor")
 	private void ephemera$setScissor(int x, int y, int width, int height, Operation<Void> original) {
-		if (!EphemeraCommon.config().backendVulkanDispatchCache || !ephemera$scissorKnown
+		if (!ephemera$cacheEnabled || !ephemera$scissorKnown
 				|| x != ephemera$scissorX || y != ephemera$scissorY
 				|| width != ephemera$scissorWidth || height != ephemera$scissorHeight) {
 			ephemera$scissorKnown = false;
@@ -253,11 +242,6 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 		ephemera$scissorWidth = width;
 		ephemera$scissorHeight = height;
 		ephemera$scissorKnown = true;
-	}
-
-	@Unique
-	private static boolean ephemera$descriptorDispatchEnabled() {
-		return EphemeraCommon.config().backendVulkanDispatchCache && !VulkanRenderPass.VALIDATION;
 	}
 
 	@Override

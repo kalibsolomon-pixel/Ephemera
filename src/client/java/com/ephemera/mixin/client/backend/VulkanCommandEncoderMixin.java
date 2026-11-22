@@ -1,17 +1,26 @@
 package com.ephemera.mixin.client.backend;
 
 import com.ephemera.render.backend.VulkanAsyncPresenter;
+import com.ephemera.render.backend.VulkanDescriptorPlan;
 import com.ephemera.render.backend.VulkanDiagTracker;
 import com.ephemera.render.backend.VulkanEncoderBridge;
 import com.ephemera.render.backend.VulkanModernCapabilities;
 import com.ephemera.render.backend.VulkanRenderPassBridge;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
+import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
+import com.mojang.blaze3d.vulkan.VulkanGpuTexture;
+import com.mojang.blaze3d.vulkan.VulkanQueue;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
+import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.EXTMeshShader;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK12;
@@ -33,6 +42,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * coalesced, stage-scoped Synchronization2 barriers (no redundant {@code MEMORY_READ} source
  * access flushes, and consecutive uploads coalesce into a single barrier before the next
  * render pass or dependent transfer).
+ *
+ * <p>Also hands {@code vkQueueSubmit2KHR} to {@link VulkanAsyncPresenter}'s FIFO worker and
+ * records barriers / semaphore polls through one preallocated off-heap scratch block per encoder
+ * (no {@code MemoryStack} push or struct setup per call on the render thread).
  */
 @Mixin(VulkanCommandEncoder.class)
 abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
@@ -69,6 +82,14 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 			| KHRSynchronization2.VK_ACCESS_2_TRANSFER_READ_BIT_KHR
 			| KHRSynchronization2.VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
 
+	// Scratch block layout: VkMemoryBarrier2 | VkDependencyInfo | uint64 semaphore counter value
+	@Unique
+	private static final int EPHEMERA$DEP_OFFSET = VkMemoryBarrier2.SIZEOF;
+	@Unique
+	private static final int EPHEMERA$SEM_VALUE_OFFSET = EPHEMERA$DEP_OFFSET + VkDependencyInfo.SIZEOF;
+	@Unique
+	private static final int EPHEMERA$SCRATCH_SIZE = (EPHEMERA$SEM_VALUE_OFFSET + 8 + 15) & ~15;
+
 	@Shadow @Final private VulkanDevice device;
 	@Shadow @Final private long submitSemaphore;
 	@Shadow private long currentSubmitIndex;
@@ -80,9 +101,12 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 
 	@Unique private boolean ephemera$pendingTransfer;
 	@Unique private boolean ephemera$pendingGraphics;
+	@Unique private final long[] ephemera$transferTargets = new long[8];
+	@Unique private int ephemera$transferTargetCount;
 	@Unique private long ephemera$zeroPollSubmitIndex = -1L;
 	@Unique private long ephemera$submitStartNs;
 	@Unique private long ephemera$waitStartNs;
+	@Unique private long ephemera$scratch;
 
 	@Override
 	public VulkanDevice ephemera$device() {
@@ -96,7 +120,18 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 
 	@Override
 	public void ephemera$markTransferWrite() {
+		ephemera$markUntrackedTransfer();
+	}
+
+	/**
+	 * A transfer write whose destination is not recorded (copies, clears, mesh-arena uploads):
+	 * saturates the target list so the next staging upload treats any destination as a WAW
+	 * hazard and flushes instead of coalescing.
+	 */
+	@Unique
+	private void ephemera$markUntrackedTransfer() {
 		ephemera$pendingTransfer = true;
+		ephemera$transferTargetCount = ephemera$transferTargets.length;
 	}
 
 	@Override
@@ -107,6 +142,7 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 		if (currentCommandBuffer == null) {
 			ephemera$pendingTransfer = false;
 			ephemera$pendingGraphics = false;
+			ephemera$transferTargetCount = 0;
 			return;
 		}
 		long srcStage = 0L;
@@ -115,6 +151,7 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 			srcStage |= EPHEMERA$STAGE_TRANSFER;
 			srcAccess |= EPHEMERA$ACCESS_TRANSFER_WRITE;
 			ephemera$pendingTransfer = false;
+			ephemera$transferTargetCount = 0;
 		}
 		if (ephemera$pendingGraphics) {
 			srcStage |= EPHEMERA$STAGE_ALL_GRAPHICS;
@@ -151,8 +188,37 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 			dstStage, EPHEMERA$ACCESS_ALL_CONSUMERS);
 	}
 
+	/** Render-thread-only scratch block (lazily allocated); 0 off the render thread or after destroy. */
 	@Unique
-	private static void ephemera$emitBarrier(VkCommandBuffer cmd, long srcStage, long srcAccess, long dstStage, long dstAccess) {
+	private long ephemera$scratch() {
+		long scratch = ephemera$scratch;
+		if (scratch != 0L || !RenderSystem.isOnRenderThread()) {
+			return scratch;
+		}
+		scratch = MemoryUtil.nmemCalloc(1, EPHEMERA$SCRATCH_SIZE);
+		if (scratch == 0L) {
+			return 0L;
+		}
+		long dep = scratch + EPHEMERA$DEP_OFFSET;
+		MemoryUtil.memPutInt(scratch + VkMemoryBarrier2.STYPE, KHRSynchronization2.VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR);
+		MemoryUtil.memPutInt(dep + VkDependencyInfo.STYPE, KHRSynchronization2.VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR);
+		MemoryUtil.memPutInt(dep + VkDependencyInfo.MEMORYBARRIERCOUNT, 1);
+		MemoryUtil.memPutAddress(dep + VkDependencyInfo.PMEMORYBARRIERS, scratch);
+		ephemera$scratch = scratch;
+		return scratch;
+	}
+
+	@Unique
+	private void ephemera$emitBarrier(VkCommandBuffer cmd, long srcStage, long srcAccess, long dstStage, long dstAccess) {
+		long scratch = ephemera$scratch();
+		if (scratch != 0L) {
+			MemoryUtil.memPutLong(scratch + VkMemoryBarrier2.SRCSTAGEMASK, srcStage);
+			MemoryUtil.memPutLong(scratch + VkMemoryBarrier2.SRCACCESSMASK, srcAccess);
+			MemoryUtil.memPutLong(scratch + VkMemoryBarrier2.DSTSTAGEMASK, dstStage);
+			MemoryUtil.memPutLong(scratch + VkMemoryBarrier2.DSTACCESSMASK, dstAccess);
+			KHRSynchronization2.nvkCmdPipelineBarrier2KHR(cmd, scratch + EPHEMERA$DEP_OFFSET);
+			return;
+		}
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			VkMemoryBarrier2.Buffer barrier = VkMemoryBarrier2.calloc(1, stack)
 				.sType$Default()
@@ -164,6 +230,22 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 				.sType$Default()
 				.pMemoryBarriers(barrier);
 			KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, dep);
+		}
+	}
+
+	/** Current {@code submitSemaphore} counter value, or -1 on failure. */
+	@Unique
+	private long ephemera$querySubmitCounter() {
+		long scratch = ephemera$scratch();
+		if (scratch != 0L) {
+			long pValue = scratch + EPHEMERA$SEM_VALUE_OFFSET;
+			int res = VK12.nvkGetSemaphoreCounterValue(device.vkDevice(), submitSemaphore, pValue);
+			return res == VK12.VK_SUCCESS ? MemoryUtil.memGetLong(pValue) : -1L;
+		}
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			LongBuffer pVal = stack.callocLong(1);
+			int res = VK12.vkGetSemaphoreCounterValue(device.vkDevice(), submitSemaphore, pVal);
+			return res == VK12.VK_SUCCESS ? pVal.get(0) : -1L;
 		}
 	}
 
@@ -184,8 +266,23 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 		if (VulkanDiagTracker.ENABLED) {
 			ephemera$submitStartNs = System.nanoTime();
 		}
-		// Ensure any previous frame's off-thread vkQueuePresentKHR has finished before touching VkQueue.
+	}
+
+	/**
+	 * Hands {@code vkQueueSubmit2KHR} to the FIFO {@link VulkanAsyncPresenter} worker. At this
+	 * point {@code currentSubmitIndex} is still the timeline value this submission signals.
+	 */
+	@WrapOperation(
+		method = "submit",
+		at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/vulkan/VulkanQueue$Submission;close()V")
+	)
+	private void ephemera$asyncQueueSubmit(VulkanQueue.Submission submission, Operation<Void> original) {
+		if (VulkanAsyncPresenter.isAsyncSubmitEnabled()) {
+			VulkanAsyncPresenter.enqueueSubmit(submission, currentSubmitIndex);
+			return;
+		}
 		VulkanAsyncPresenter.awaitIdle();
+		original.call(submission);
 	}
 
 	@Inject(method = "submit", at = @At("RETURN"))
@@ -195,38 +292,77 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 		}
 	}
 
+	/** {@code destroy()} closes the submission + waits the queue; {@code getTimestampNow()} submits directly. */
+	@Inject(method = "destroy", at = @At("HEAD"))
+	private void ephemera$drainAsyncQueueOnDestroy(CallbackInfo ci) {
+		VulkanAsyncPresenter.awaitIdle();
+		VulkanAsyncPresenter.resetSubmittedIndex();
+	}
+
+	@Inject(method = "getTimestampNow", at = @At("HEAD"))
+	private void ephemera$drainAsyncQueueOnTimestamp(CallbackInfoReturnable<Long> cir) {
+		VulkanAsyncPresenter.awaitIdle();
+	}
+
+	@Inject(method = "destroy", at = @At("TAIL"))
+	private void ephemera$freeScratch(CallbackInfo ci) {
+		long scratch = ephemera$scratch;
+		if (scratch != 0L) {
+			ephemera$scratch = 0L;
+			MemoryUtil.nmemFree(scratch);
+		}
+		if (RenderSystem.isOnRenderThread()) {
+			VulkanDescriptorPlan.clearRenderThreadCache();
+		}
+	}
+
 	@Inject(method = "awaitSubmitCompletion", at = @At("HEAD"), cancellable = true)
-	private void ephemera$coalesceZeroTimeoutPoll(long submitIndex, long timeoutNs, CallbackInfoReturnable<Boolean> cir) {
+	private void ephemera$fastSubmitCompletion(long submitIndex, long timeoutNs, CallbackInfoReturnable<Boolean> cir) {
 		if (VulkanDiagTracker.ENABLED) {
 			ephemera$waitStartNs = System.nanoTime();
-		}
-		if (timeoutNs != 0L || !VulkanModernCapabilities.modernSyncActive()) {
-			return;
 		}
 		if (completedSubmitIndex >= submitIndex) {
 			cir.setReturnValue(true);
 			return;
 		}
 		if (submitIndex >= currentSubmitIndex) {
+			// Vanilla: false for zero-timeout polls, throws for blocking waits on the current submit.
+			return;
+		}
+		if (timeoutNs != 0L) {
+			// Never wait on a timeline value whose vkQueueSubmit2KHR is still queued on the worker.
+			VulkanAsyncPresenter.awaitSubmitted(submitIndex);
+			// N-2 has usually retired already: one counter query skips MemoryStack + vkWaitSemaphores.
+			long completed = ephemera$querySubmitCounter();
+			if (completed > completedSubmitIndex) {
+				completedSubmitIndex = completed;
+			}
+			if (completedSubmitIndex >= submitIndex) {
+				if (VulkanDiagTracker.ENABLED) {
+					VulkanDiagTracker.recordWaitSem(System.nanoTime() - ephemera$waitStartNs);
+				}
+				cir.setReturnValue(true);
+			}
+			return;
+		}
+		if (!VulkanAsyncPresenter.isSubmitted(submitIndex)) {
 			cir.setReturnValue(false);
+			return;
+		}
+		if (!VulkanModernCapabilities.modernSyncActive()) {
 			return;
 		}
 		// Coalesce StagedVertexBuffer$GpuBufferPool's 50-150x/frame zero-timeout fence polls into
 		// at most ONE vkGetSemaphoreCounterValue query per submit, eliminating ~6% Render thread JNI overhead.
 		if (ephemera$zeroPollSubmitIndex != currentSubmitIndex) {
-			try (MemoryStack stack = MemoryStack.stackPush()) {
-				LongBuffer pVal = stack.callocLong(1);
-				int res = VK12.vkGetSemaphoreCounterValue(device.vkDevice(), submitSemaphore, pVal);
-				if (res == VK12.VK_SUCCESS) {
-					long completed = pVal.get(0);
-					if (completed > completedSubmitIndex) {
-						completedSubmitIndex = completed;
-					}
-					ephemera$zeroPollSubmitIndex = currentSubmitIndex;
-				} else {
-					return;
-				}
+			long completed = ephemera$querySubmitCounter();
+			if (completed < 0L) {
+				return;
 			}
+			if (completed > completedSubmitIndex) {
+				completedSubmitIndex = completed;
+			}
+			ephemera$zeroPollSubmitIndex = currentSubmitIndex;
 		}
 		cir.setReturnValue(completedSubmitIndex >= submitIndex);
 	}
@@ -259,12 +395,38 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 		}
 	}
 
-	// --- Staging uploads (fresh staging source): wait only for prior graphics reads, coalesce transfer writes ---
+	// --- Staging uploads (fresh staging source): coalesce disjoint destinations, flush on same-target WAW ---
+
+	@Unique
+	private void ephemera$syncBeforeDisjointWrite(long targetHandle) {
+		if (ephemera$pendingTransfer) {
+			boolean hazard = targetHandle == 0L || ephemera$transferTargetCount >= ephemera$transferTargets.length;
+			if (!hazard) {
+				for (int i = 0; i < ephemera$transferTargetCount; i++) {
+					if (ephemera$transferTargets[i] == targetHandle) {
+						hazard = true;
+						break;
+					}
+				}
+			}
+			if (hazard) {
+				ephemera$flushBarriers();
+			} else {
+				ephemera$flushGraphicsOnly();
+			}
+		} else {
+			ephemera$flushGraphicsOnly();
+		}
+		if (targetHandle != 0L && ephemera$transferTargetCount < ephemera$transferTargets.length) {
+			ephemera$transferTargets[ephemera$transferTargetCount++] = targetHandle;
+		}
+	}
 
 	@Inject(method = "writeToBuffer", at = @At("HEAD"))
-	private void ephemera$syncBeforeWriteBuffer(CallbackInfo ci) {
+	private void ephemera$syncBeforeWriteBuffer(GpuBufferSlice slice, ByteBuffer data, CallbackInfo ci) {
 		if (VulkanModernCapabilities.modernSyncActive()) {
-			ephemera$flushGraphicsOnly();
+			long handle = slice != null && slice.buffer() instanceof VulkanGpuBuffer vk ? vk.vkBuffer() : 0L;
+			ephemera$syncBeforeDisjointWrite(handle);
 		}
 	}
 
@@ -281,9 +443,11 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 	}
 
 	@Inject(method = "writeToTexture", at = @At("HEAD"))
-	private void ephemera$syncBeforeWriteTexture(CallbackInfo ci) {
+	private void ephemera$syncBeforeWriteTexture(GpuTexture texture, ByteBuffer data, int mip, int depthOrLayer,
+												 int x, int y, int width, int height, CallbackInfo ci) {
 		if (VulkanModernCapabilities.modernSyncActive()) {
-			ephemera$flushGraphicsOnly();
+			long handle = texture instanceof VulkanGpuTexture vk ? vk.vkImage() : 0L;
+			ephemera$syncBeforeDisjointWrite(handle);
 		}
 	}
 
@@ -319,7 +483,7 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 	)
 	private void ephemera$deferDependentTransferBarrier(VulkanCommandEncoder self, MemoryStack stack, Operation<Void> original) {
 		if (VulkanModernCapabilities.modernSyncActive()) {
-			ephemera$pendingTransfer = true;
+			ephemera$markUntrackedTransfer();
 		} else {
 			original.call(self, stack);
 		}
@@ -343,16 +507,9 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 	)
 	private void ephemera$narrowReadbackBarrier(VulkanCommandEncoder self, MemoryStack stack, Operation<Void> original) {
 		if (VulkanModernCapabilities.modernSyncActive()) {
-			VkMemoryBarrier2.Buffer barrier = VkMemoryBarrier2.calloc(1, stack)
-				.sType$Default()
-				.srcStageMask(EPHEMERA$STAGE_TRANSFER)
-				.srcAccessMask(EPHEMERA$ACCESS_TRANSFER_WRITE)
-				.dstStageMask(KHRSynchronization2.VK_PIPELINE_STAGE_2_HOST_BIT_KHR | EPHEMERA$STAGE_TRANSFER | EPHEMERA$STAGE_ALL_GRAPHICS)
-				.dstAccessMask(KHRSynchronization2.VK_ACCESS_2_HOST_READ_BIT_KHR | EPHEMERA$ACCESS_ALL_CONSUMERS);
-			VkDependencyInfo dep = VkDependencyInfo.calloc(stack)
-				.sType$Default()
-				.pMemoryBarriers(barrier);
-			KHRSynchronization2.vkCmdPipelineBarrier2KHR(commandBuffer(), dep);
+			ephemera$emitBarrier(commandBuffer(), EPHEMERA$STAGE_TRANSFER, EPHEMERA$ACCESS_TRANSFER_WRITE,
+				KHRSynchronization2.VK_PIPELINE_STAGE_2_HOST_BIT_KHR | EPHEMERA$STAGE_TRANSFER | EPHEMERA$STAGE_ALL_GRAPHICS,
+				KHRSynchronization2.VK_ACCESS_2_HOST_READ_BIT_KHR | EPHEMERA$ACCESS_ALL_CONSUMERS);
 		} else {
 			original.call(self, stack);
 		}

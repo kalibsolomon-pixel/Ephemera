@@ -2,6 +2,7 @@ package com.ephemera.render.terrain;
 
 import com.ephemera.core.terrain.IndirectCommandList;
 import com.ephemera.core.terrain.QuadBuckets;
+import com.ephemera.render.terrain.gl.GlSingleMdiTerrain;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
@@ -41,10 +42,15 @@ import java.util.OptionalDouble;
  *   ({@code glMultiDrawElementsBaseVertex}) reads byte offsets, index counts and base
  *   vertices from three reusable off-heap arrays. Nothing is uploaded to the GPU, so there
  *   is no indirect buffer to bind, orphan or synchronise.</li>
- *   <li><b>Indirect</b> (Vulkan): commands are written straight into the
- *   {@link IndirectBufferRing} staging buffer, uploaded once, and drawn with
- *   {@code drawIndexedIndirect} ({@code vkCmdDrawIndexedIndirect}).</li>
+ *   <li><b>Indirect</b>: commands are written straight into the persistently mapped
+ *   {@link IndirectBufferRing} buffer (OpenGL) or its staging buffer, uploaded once (Vulkan),
+ *   and drawn with {@code drawIndexedIndirect}.</li>
  * </ul>
+ *
+ * <p>With OpenGL single multi-draw ({@link GlSingleMdiTerrain}) solid and cutout draws all use
+ * uniform slot 0 and carry their region or fading section in {@code firstInstance}, so each
+ * of those layers is one batch per vertex heap. Translucent draws may do the same, which lets
+ * consecutive ones on the same heaps merge into one run.
  *
  * <p>Grouping:
  * <ul>
@@ -187,6 +193,7 @@ public final class RegionalChunkBatchPlan {
 	private int lastCommands;
 	private int lastBatches;
 	private boolean built;
+	private boolean glSingleMdi;
 
 	RegionalChunkBatchPlan() {
 		for (int l = 0; l < layers.length; l++) {
@@ -236,11 +243,17 @@ public final class RegionalChunkBatchPlan {
 
 	/** Sequentially indexed spans starting at {@code spanOffset} in {@code spans}. */
 	void addQuadSpans(int layer, int ubo, GpuBuffer vertexBuffer, int baseVertex, int[] spans, int spanOffset, int spanCount) {
+		addQuadSpans(layer, ubo, vertexBuffer, baseVertex, spans, spanOffset, spanCount, 0);
+	}
+
+	/** Sequentially indexed spans, each command carrying {@code firstInstance}. */
+	void addQuadSpans(int layer, int ubo, GpuBuffer vertexBuffer, int baseVertex, int[] spans, int spanOffset, int spanCount,
+					  int firstInstance) {
 		if (spanCount == 0) {
 			return;
 		}
 		Batch b = sequentialBatch(layers[layer], ubo, vertexBuffer);
-		int largest = b.commands.addQuadSpans(baseVertex, spans, spanOffset, spanCount);
+		int largest = b.commands.addQuadSpans(baseVertex, spans, spanOffset, spanCount, firstInstance);
 		if (largest > maxIndicesRequired) {
 			maxIndicesRequired = largest;
 		}
@@ -248,8 +261,13 @@ public final class RegionalChunkBatchPlan {
 
 	/** A whole sequentially indexed section layer. */
 	void addSequential(int layer, int ubo, GpuBuffer vertexBuffer, int baseVertex, int indexCount) {
+		addSequential(layer, ubo, vertexBuffer, baseVertex, indexCount, 0);
+	}
+
+	/** A whole sequentially indexed section layer carrying {@code firstInstance}. */
+	void addSequential(int layer, int ubo, GpuBuffer vertexBuffer, int baseVertex, int indexCount, int firstInstance) {
 		Batch b = sequentialBatch(layers[layer], ubo, vertexBuffer);
-		b.commands.add(indexCount, 1, 0, baseVertex, 0);
+		b.commands.add(indexCount, 1, 0, baseVertex, firstInstance);
 		if (indexCount > maxIndicesRequired) {
 			maxIndicesRequired = indexCount;
 		}
@@ -258,9 +276,15 @@ public final class RegionalChunkBatchPlan {
 	/** A section layer with its own (sorted) index buffer. */
 	void addIndexed(int layer, int ubo, GpuBuffer vertexBuffer, GpuBuffer indexBuffer, IndexType indexType,
 					int firstIndex, int indexCount, int baseVertex) {
+		addIndexed(layer, ubo, vertexBuffer, indexBuffer, indexType, firstIndex, indexCount, baseVertex, 0);
+	}
+
+	/** A section layer with its own (sorted) index buffer, carrying {@code firstInstance}. */
+	void addIndexed(int layer, int ubo, GpuBuffer vertexBuffer, GpuBuffer indexBuffer, IndexType indexType,
+					int firstIndex, int indexCount, int baseVertex, int firstInstance) {
 		Layer target = layers[layer];
 		if (!target.ordered) {
-			groupedBatch(target, ubo, vertexBuffer, indexBuffer, indexType).commands.add(indexCount, 1, firstIndex, baseVertex, 0);
+			groupedBatch(target, ubo, vertexBuffer, indexBuffer, indexType).commands.add(indexCount, 1, firstIndex, baseVertex, firstInstance);
 			return;
 		}
 		int i = target.staged.size();
@@ -275,7 +299,7 @@ public final class RegionalChunkBatchPlan {
 		target.stagedVertex[i] = vertexBuffer;
 		target.stagedIndex[i] = indexBuffer;
 		target.stagedType[i] = indexType;
-		target.staged.add(indexCount, 1, firstIndex, baseVertex, 0);
+		target.staged.add(indexCount, 1, firstIndex, baseVertex, firstInstance);
 	}
 
 	/** Batch for sequential-index draws: one array read for the common case, no hashing. */
@@ -352,6 +376,11 @@ public final class RegionalChunkBatchPlan {
 	 * Must run before any render pass of the frame opens.
 	 */
 	void finish(GpuTextureView textureView, GpuBufferSlice[] ubos, boolean direct) {
+		finish(textureView, ubos, direct, false);
+	}
+
+	/** As {@link #finish(GpuTextureView, GpuBufferSlice[], boolean)}; {@code glSingleMdi} binds the batch block in every terrain pass. */
+	void finish(GpuTextureView textureView, GpuBufferSlice[] ubos, boolean direct, boolean glSingleMdi) {
 		Layer translucent = layers[TRANSLUCENT];
 		IndirectCommandList staged = translucent.staged;
 		Batch run = null;
@@ -363,7 +392,7 @@ public final class RegionalChunkBatchPlan {
 			if (run == null || !run.sameState(ubo, vertex, index, type)) {
 				run = translucent.newBatch(ubo, vertex, bufferSlices[bufferId(vertex)], index, type);
 			}
-			run.commands.add(staged.indexCount(i), 1, staged.firstIndex(i), staged.baseVertex(i), 0);
+			run.commands.add(staged.indexCount(i), 1, staged.firstIndex(i), staged.baseVertex(i), staged.firstInstance(i));
 		}
 
 		int total = 0;
@@ -378,6 +407,7 @@ public final class RegionalChunkBatchPlan {
 		}
 
 		this.direct = direct;
+		this.glSingleMdi = glSingleMdi && !direct;
 		if (direct) {
 			writeDirect(total);
 			this.indirect = null;
@@ -440,11 +470,27 @@ public final class RegionalChunkBatchPlan {
 		}
 	}
 
-	/** Every batch's commands straight into the ring's staging buffer, then one upload. */
+	/**
+	 * Every batch's commands straight into the ring's mapped buffer (OpenGL), or into its
+	 * staging buffer followed by one upload.
+	 */
 	private @Nullable GpuBuffer writeIndirect(int total) {
 		int bytes = total * IndirectCommandList.BYTES_PER_COMMAND;
 		if (bytes == 0) {
 			return null;
+		}
+		if (ring.mapsDirectly()) {
+			GpuBuffer buffer = ring.next(bytes);
+			try (GpuBufferSlice.MappedView view = buffer.map(0L, bytes, false, true)) {
+				ByteBuffer out = view.data();
+				int p = 0;
+				for (Layer layer : layers) {
+					for (int i = 0, n = layer.batches.size(); i < n; i++) {
+						p = layer.batches.get(i).commands.writeTo(out, p);
+					}
+				}
+			}
+			return buffer;
 		}
 		ByteBuffer staging = ring.staging(bytes);
 		int p = 0;
@@ -494,6 +540,7 @@ public final class RegionalChunkBatchPlan {
 		ring.close();
 		freeDirect();
 		direct = false;
+		glSingleMdi = false;
 	}
 
 	/**
@@ -531,6 +578,7 @@ public final class RegionalChunkBatchPlan {
 		PointerBuffer offsets = directOffsets;
 		IntBuffer counts = directCounts;
 		IntBuffer bases = directBaseVertices;
+		boolean bindBatch = glSingleMdi && !wireframe;
 
 		try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
 			() -> "Section layers for " + group.label(),
@@ -543,6 +591,9 @@ public final class RegionalChunkBatchPlan {
 			pass.bindTexture("Sampler2", lightmap, lightmapSampler);
 			VulkanMeshTerrainEngine meshEngine = wireframe ? null : VulkanMeshTerrainEngine.get();
 			boolean meshDescriptorsPushed = false;
+			if (bindBatch) {
+				GlSingleMdiTerrain.get().bindBatchUbo();
+			}
 
 			for (ChunkSectionLayer chunkLayer : groupLayers) {
 				if (meshEngine != null && meshEngine.hasLayerDraw(chunkLayer)) {
@@ -580,7 +631,7 @@ public final class RegionalChunkBatchPlan {
 						boundVertex = b.vertexBuffer;
 					}
 					if (count == 1) {
-						pass.drawIndexed(c.indexCount(0), 1, c.firstIndex(0), c.baseVertex(0), 0);
+						pass.drawIndexed(c.indexCount(0), 1, c.firstIndex(0), c.baseVertex(0), c.firstInstance(0));
 					} else if (directDraw) {
 						int first = b.firstCommand;
 						offsets.position(first);
@@ -593,7 +644,7 @@ public final class RegionalChunkBatchPlan {
 							(long) count * IndirectCommandList.BYTES_PER_COMMAND), count);
 					} else {
 						for (int k = 0; k < count; k++) {
-							pass.drawIndexed(c.indexCount(k), 1, c.firstIndex(k), c.baseVertex(k), 0);
+							pass.drawIndexed(c.indexCount(k), 1, c.firstIndex(k), c.baseVertex(k), c.firstInstance(k));
 						}
 					}
 				}

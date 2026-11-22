@@ -57,6 +57,173 @@ class ShaderSourcePatcherTest {
 		}
 		""";
 
+	/** Shape of the preprocessed vanilla {@code core/terrain.vsh} (imports abbreviated to the relevant blocks). */
+	private static final String TERRAIN_VSH = """
+		#version 330
+
+		layout(std140) uniform ChunkSection {
+		    mat4 ModelViewMat;
+		    float ChunkVisibility;
+		    ivec2 TextureSize;
+		    ivec3 ChunkPosition;
+		};
+
+		in vec3 Position;
+		in vec4 Color;
+
+		out vec4 vertexColor;
+
+		void main() {
+		    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+		    gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
+		    vertexColor = Color;
+		}
+		""";
+
+	/** Shape of the preprocessed vanilla {@code core/terrain.fsh}, fog include inlined. */
+	private static final String TERRAIN_FSH = SYNTHETIC.replace(
+		"""
+		void main() {
+		    fragColor = apply_fog(vec4(1.0), sphericalVertexDistance, cylindricalVertexDistance, 0.0, FogSkyEnd, FogSkyEnd, FogSkyEnd, FogColor);
+		}
+		""",
+		"""
+		void main() {
+		    vec4 color = vec4(1.0);
+		    color = mix(FogColor * vec4(1, 1, 1, color.a), color, ChunkVisibility);
+		#ifdef ALPHA_CUTOUT
+		    if (color.a < ALPHA_CUTOUT) {
+		        discard;
+		    }
+		#endif
+		    fragColor = apply_fog(color, sphericalVertexDistance, cylindricalVertexDistance, FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);
+		}
+		""");
+
+	@Test
+	void glSingleMdiVertexReadsBatchEntryOnlyForNonZeroBaseInstance() {
+		String patched = ShaderSourcePatcher.patchGlSingleMdiVertex(TERRAIN_VSH, 4096);
+		assertNotSame(TERRAIN_VSH, patched);
+		String[] lines = patched.split("\n");
+		assertEquals("#version 330", lines[0], "#version must stay on line 1");
+		assertEquals("#extension GL_ARB_shader_draw_parameters : enable", lines[1]);
+		assertTrue(patched.contains("uvec4 EphemeraBatchEntries[4096];"));
+		assertTrue(patched.contains("flat out float ephemeraChunkVisibility;"));
+		assertTrue(patched.indexOf("uniform EphemeraTerrainBatch") < patched.indexOf("void main()"));
+		assertTrue(patched.contains("if (gl_BaseInstanceARB > 0) {"));
+		assertTrue(patched.contains("EphemeraBatchEntries[gl_BaseInstanceARB - 1]"));
+		assertTrue(patched.contains("ephemeraVis = uintBitsToFloat(ephemeraEntry.w);"));
+		assertTrue(patched.contains("vec3 pos = Position + (ephemeraOrigin - CameraBlockPos) + CameraOffset;"));
+		assertFalse(patched.contains("(ChunkPosition - CameraBlockPos)"));
+		// Defaults are the vanilla uniforms, so base-instance-0 draws stay identical.
+		assertTrue(patched.contains("ivec3 ephemeraOrigin = ChunkPosition;"));
+		assertTrue(patched.contains("float ephemeraVis = ChunkVisibility;"));
+		assertTrue(balanced(patched));
+		assertEquals(1, count(patched, "#extension"));
+		assertEquals(patched, ShaderSourcePatcher.patchGlSingleMdiVertex(patched, 4096), "idempotent");
+		assertTrue(ShaderSourcePatcher.patchGlSingleMdiVertex(TERRAIN_VSH, 1024).contains("EphemeraBatchEntries[1024];"));
+	}
+
+	@Test
+	void glSingleMdiVertexFailsSoftOnModifiedShader() {
+		String moved = TERRAIN_VSH.replace(
+			"vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;",
+			"vec3 pos = Position + vec3(ChunkPosition - CameraBlockPos) + CameraOffset;");
+		assertSame(moved, ShaderSourcePatcher.patchGlSingleMdiVertex(moved, 4096));
+		String noVersion = TERRAIN_VSH.replace("#version 330\n", "");
+		assertSame(noVersion, ShaderSourcePatcher.patchGlSingleMdiVertex(noVersion, 4096));
+		String noMain = TERRAIN_VSH.replace("void main()", "void ephemeraMain()");
+		assertSame(noMain, ShaderSourcePatcher.patchGlSingleMdiVertex(noMain, 4096));
+		String plain = "#version 330\nvoid main() { gl_Position = vec4(0.0); }\n";
+		assertSame(plain, ShaderSourcePatcher.patchGlSingleMdiVertex(plain, 4096));
+		assertNull(ShaderSourcePatcher.patchGlSingleMdiVertex(null, 4096));
+	}
+
+	@Test
+	void glSingleMdiFragmentUsesVaryingVisibility() {
+		String patched = ShaderSourcePatcher.patchGlSingleMdiFragment(TERRAIN_FSH);
+		assertNotSame(TERRAIN_FSH, patched);
+		assertTrue(patched.startsWith("#version 330\n"));
+		assertTrue(patched.contains("flat in float ephemeraChunkVisibility;"));
+		assertTrue(patched.indexOf("flat in float ephemeraChunkVisibility;") < patched.indexOf("void main()"));
+		assertTrue(patched.contains("color = mix(FogColor * vec4(1, 1, 1, color.a), color, ephemeraChunkVisibility);"));
+		assertFalse(patched.contains(", ChunkVisibility);"));
+		assertTrue(balanced(patched));
+		assertEquals(patched, ShaderSourcePatcher.patchGlSingleMdiFragment(patched), "idempotent");
+
+		String modified = TERRAIN_FSH.replace(", ChunkVisibility);", ", clamp(ChunkVisibility, 0.0, 1.0));");
+		assertSame(modified, ShaderSourcePatcher.patchGlSingleMdiFragment(modified));
+		assertNull(ShaderSourcePatcher.patchGlSingleMdiFragment(null));
+	}
+
+	@Test
+	void glSingleMdiFragmentComposesWithFogAndDitherPatches() {
+		String mdi = ShaderSourcePatcher.patchGlSingleMdiFragment(TERRAIN_FSH);
+		Result r = ShaderSourcePatcher.patch(mdi, ALL);
+		assertTrue(r.smoothFogApplied());
+		assertTrue(r.applyFogRewritten());
+		String both = r.source();
+		assertTrue(both.contains("ephemeraChunkVisibility);"));
+		assertTrue(both.contains("float ephemera_ign("));
+		assertEquals(1, count(both, "flat in float ephemeraChunkVisibility;"));
+		assertTrue(both.startsWith("#version 330\n"));
+		assertTrue(balanced(both));
+		assertEquals(both, ShaderSourcePatcher.patchGlSingleMdiFragment(both));
+		assertEquals(both, ShaderSourcePatcher.patchFragment(both, ALL));
+	}
+
+	@Test
+	void glSingleMdiDeclaresVaryingsBeforeWrappedMainHelpersAndCommentedMain() {
+		String auroraWrapped = "#version 330\n"
+			+ "// void main() wrapper comment\n"
+			+ "uniform float ChunkVisibility;\n"
+			+ "out vec4 fragColor;\n"
+			+ "void aurora_orig_main() {\n"
+			+ "    fragColor = mix(vec4(0.0), vec4(1.0), ChunkVisibility);\n"
+			+ "}\n"
+			+ "void main() {\n"
+			+ "    aurora_orig_main();\n"
+			+ "}\n";
+		String patchedF = ShaderSourcePatcher.patchGlSingleMdiFragment(auroraWrapped);
+		int declAt = patchedF.indexOf("flat in float ephemeraChunkVisibility;");
+		int useAt = patchedF.indexOf(", ephemeraChunkVisibility);");
+		assertTrue(declAt > 0 && useAt > declAt, "declaration must precede helper-function use");
+		assertTrue(balanced(patchedF));
+
+		String commentedV = "#version 330\n"
+			+ "// void main() handles terrain lighting\n"
+			+ "layout(std140) uniform ChunkSection { ivec3 ChunkPosition; float ChunkVisibility; };\n"
+			+ "in vec3 Position;\n"
+			+ "void main() {\n"
+			+ "    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;\n"
+			+ "}\n";
+		String patchedV = ShaderSourcePatcher.patchGlSingleMdiVertex(commentedV, 1024);
+		int uboAt = patchedV.indexOf("layout(std140) uniform EphemeraTerrainBatch");
+		int commentAt = patchedV.indexOf("// void main() handles terrain lighting");
+		assertTrue(uboAt > 0 && uboAt < commentAt, "UBO declaration must be placed cleanly after #version/#extension preamble");
+		assertTrue(balanced(patchedV));
+	}
+
+	@Test
+	void realVanillaTerrainShadersPatchForGlSingleMdi() throws IOException {
+		Path dir = shaderDir();
+		Assumptions.assumeTrue(dir != null, "MC 26.2 shader dump not present");
+		String vsh = expandImports(dir, Files.readString(dir.resolve("core__terrain.vsh"), StandardCharsets.UTF_8));
+		String patchedV = ShaderSourcePatcher.patchGlSingleMdiVertex(vsh, 4096);
+		assertNotSame(vsh, patchedV, "vertex shape recognised");
+		assertTrue(patchedV.startsWith("#version 330\n#extension GL_ARB_shader_draw_parameters : enable\n"));
+		assertTrue(balanced(patchedV));
+		assertEquals(patchedV, ShaderSourcePatcher.patchGlSingleMdiVertex(patchedV, 4096));
+
+		String fsh = expandImports(dir, Files.readString(dir.resolve("core__terrain.fsh"), StandardCharsets.UTF_8));
+		String patchedF = ShaderSourcePatcher.patchGlSingleMdiFragment(fsh);
+		assertNotSame(fsh, patchedF, "fragment shape recognised");
+		assertTrue(balanced(patchedF));
+		Result r = ShaderSourcePatcher.patch(patchedF, ALL);
+		assertTrue(r.smoothFogApplied() && r.applyFogRewritten());
+		assertTrue(r.source().contains(", ephemeraChunkVisibility);"));
+	}
+
 	@Test
 	void smoothFogReplacesLinearRampWithHermiteCurve() {
 		Result r = ShaderSourcePatcher.patch(SYNTHETIC, FOG_ONLY);

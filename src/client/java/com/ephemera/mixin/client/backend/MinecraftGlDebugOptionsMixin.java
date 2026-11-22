@@ -27,7 +27,7 @@ abstract class MinecraftGlDebugOptionsMixin {
 	private Window ephemera$passDebugOptions(WindowEventHandler events, DisplayData display, String fullscreenMode,
 			boolean exclusive, String title, MonitorManager monitors, GpuBackend backend, Operation<Window> original,
 			@Local(argsOnly = true) GameConfig config) {
-		boolean allowed = options.glDebugVerbosity <= 0 && !SharedConstants.DEBUG_SYNCHRONOUS_GL_LOGS
+		boolean allowed = options.glDebugVerbosity == 0 && !SharedConstants.DEBUG_SYNCHRONOUS_GL_LOGS
 			&& !config.game.renderDebugLabels;
 		return GlNoErrorContext.aroundWindowCreation(allowed,
 			() -> original.call(events, display, fullscreenMode, exclusive, title, monitors, backend));

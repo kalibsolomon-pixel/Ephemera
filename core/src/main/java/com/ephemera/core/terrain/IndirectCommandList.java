@@ -67,6 +67,14 @@ public final class IndirectCommandList {
 	 * Appends one command per sequential-index quad span starting at {@code spanOffset} in {@code spans}.
 	 */
 	public int addQuadSpans(int sectionBaseVertex, int[] spans, int spanOffset, int spanCount) {
+		return addQuadSpans(sectionBaseVertex, spans, spanOffset, spanCount, 0);
+	}
+
+	/**
+	 * Appends one command per sequential-index quad span starting at {@code spanOffset} in
+	 * {@code spans}, each with the given {@code firstInstance}.
+	 */
+	public int addQuadSpans(int sectionBaseVertex, int[] spans, int spanOffset, int spanCount, int firstInstance) {
 		if (spanCount <= 0) {
 			return 0;
 		}
@@ -85,7 +93,7 @@ public final class IndirectCommandList {
 			d[p + 1] = 1;
 			d[p + 2] = 0;
 			d[p + 3] = sectionBaseVertex + (start << 2);
-			d[p + 4] = 0;
+			d[p + 4] = firstInstance;
 			if (indexCount > largest) {
 				largest = indexCount;
 			}

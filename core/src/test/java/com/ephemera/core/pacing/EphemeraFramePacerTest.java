@@ -53,9 +53,9 @@ final class EphemeraFramePacerTest {
 		FakeWaitOps ops = new FakeWaitOps(1_000_000_000L);
 		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
 
-		// Frame 1: arming returns 0 wait
+		// Frame 1: arming returns 0 wait, but frame-head still owns the cadence so vanilla is cancelled
 		assertEquals(0L, pacer.paceFrameHead(120, true, 500));
-		assertFalse(pacer.pacePostSwap(120, 500));
+		assertTrue(pacer.pacePostSwap(120, 500), "Vanilla must not sleep on the frame frame-head just armed");
 
 		// Frame 2: on time, waits until exact deadline and suppresses post-swap
 		ops.nowNs += 2_000_000L; // 2 ms work, ~6.33 ms left in 120 fps period
@@ -63,6 +63,45 @@ final class EphemeraFramePacerTest {
 		assertTrue(waited > 5_000_000L && waited < 7_000_000L);
 		assertTrue(pacer.pacePostSwap(120, 500), "Post-swap must be cancelled when frame-head already waited");
 		assertEquals(1, ops.parkRequests.size());
+	}
+
+	@Test
+	void frameHeadPostHitchReanchorStillCancelsVanillaPostSwap() {
+		FakeWaitOps ops = new FakeWaitOps(1_000_000_000L);
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		assertEquals(0L, pacer.paceFrameHead(120, true, 500));
+		assertTrue(pacer.pacePostSwap(120, 500));
+		ops.nowNs += 2_000_000L;
+		assertTrue(pacer.paceFrameHead(120, true, 500) > 0L);
+		assertTrue(pacer.pacePostSwap(120, 500));
+		int parksBeforeHitch = ops.parkRequests.size();
+
+		// 50 ms hitch (> 0.75 * 8.33 ms period): frame-head re-anchors without waiting...
+		ops.nowNs += 50_000_000L;
+		assertEquals(0L, pacer.paceFrameHead(120, true, 500));
+		// ...and post-swap must still cancel vanilla so the re-anchored frame is not waited twice.
+		assertTrue(pacer.pacePostSwap(120, 500), "Post-hitch re-anchor must not hand the wait back to vanilla");
+		assertEquals(parksBeforeHitch, ops.parkRequests.size());
+		assertEquals(EphemeraFramePacer.HookPoint.FRAME_HEAD, pacer.activeOwner());
+	}
+
+	@Test
+	void hugeUptimeNanoTimePreservesExactFractionalCadence() {
+		long uptimeNs = 1_000_000_000_000_000L; // ~11.5 days, far beyond double's exact-ns range
+		for (int fps : new int[] {144, 240}) {
+			EphemeraFramePacer pacer = new EphemeraFramePacer(new FakeWaitOps(uptimeNs));
+			double periodNs = 1_000_000_000.0 / fps;
+			assertEquals(0L, pacer.advanceDeadline(EphemeraFramePacer.HookPoint.POST_SWAP, fps, uptimeNs));
+
+			int frames = 10_000;
+			for (int k = 1; k <= frames; k++) {
+				long expected = uptimeNs + Math.round(k * periodNs);
+				// Arrive slightly early each frame so only the on-time cadence path is exercised.
+				long target = pacer.advanceDeadline(EphemeraFramePacer.HookPoint.POST_SWAP, fps, expected - 1_000L);
+				assertEquals(expected, target, "fps=" + fps + " frame=" + k);
+			}
+		}
 	}
 
 	@Test

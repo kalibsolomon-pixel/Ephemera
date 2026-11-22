@@ -19,16 +19,38 @@ public final class VulkanDiagTracker {
 	private static long submitNs;
 	private static long waitSemNs;
 	private static long presentNs;
+	private static volatile long workerSubNs;
+	private static volatile long workerPresNs;
+	private static volatile long workerAcqNs;
+	private static volatile long workerJobs;
 	private static long lastReportNs;
 	private static String lastPresentMode = "?";
 
 	private VulkanDiagTracker() {}
 
 	public static void notePresentMode(String mode, int images) {
+		notePresentMode(mode, images, null);
+	}
+
+	public static void notePresentMode(String mode, int images, String extra) {
 		lastPresentMode = mode + "(" + images + " imgs)";
 		if (ENABLED) {
-			LOGGER.info("Swapchain configured: {}", lastPresentMode);
+			if (extra != null && !extra.isEmpty()) {
+				LOGGER.info("Swapchain configured: {} [{}]", lastPresentMode, extra);
+			} else {
+				LOGGER.info("Swapchain configured: {}", lastPresentMode);
+			}
 		}
+	}
+
+	public static void recordWorkerSubmit(long ns) {
+		workerSubNs += ns;
+	}
+
+	public static void recordWorkerPresentAcquire(long presNs, long acqNs) {
+		workerPresNs += presNs;
+		workerAcqNs += acqNs;
+		workerJobs++;
 	}
 
 	public static void recordAcquire(long ns) {
@@ -66,8 +88,12 @@ public final class VulkanDiagTracker {
 			double qsubUs = Math.max(0.0, subUs - waitUs);
 			double presUs = presentNs * inv;
 			double cpuRenderUs = Math.max(0.0, totalFrameUs - acqUs - bltUs - subUs - presUs);
+			long wj = Math.max(1L, workerJobs);
+			double wSubUs = workerSubNs / (wj * 1000.0);
+			double wPresUs = workerPresNs / (wj * 1000.0);
+			double wAcqUs = workerAcqNs / (wj * 1000.0);
 			LOGGER.info(
-				"VkDiag [{}]: fps={} frame={}us | render={}us acq={}us blit={}us qsub={}us waitSem={}us pres={}us",
+				"VkDiag [{}]: fps={} frame={}us | render={}us acq={}us blit={}us qsub={}us waitSem={}us pres={}us | worker[sub={}us pres={}us acq={}us]",
 				lastPresentMode,
 				String.format("%.1f", frames * 1e9 / elapsed),
 				String.format("%.0f", totalFrameUs),
@@ -76,7 +102,10 @@ public final class VulkanDiagTracker {
 				String.format("%.0f", bltUs),
 				String.format("%.0f", qsubUs),
 				String.format("%.0f", waitUs),
-				String.format("%.0f", presUs)
+				String.format("%.0f", presUs),
+				String.format("%.0f", wSubUs),
+				String.format("%.0f", wPresUs),
+				String.format("%.0f", wAcqUs)
 			);
 			frames = 0L;
 			acquireNs = 0L;
@@ -84,6 +113,10 @@ public final class VulkanDiagTracker {
 			submitNs = 0L;
 			waitSemNs = 0L;
 			presentNs = 0L;
+			workerSubNs = 0L;
+			workerPresNs = 0L;
+			workerAcqNs = 0L;
+			workerJobs = 0L;
 			lastReportNs = now;
 		}
 	}
