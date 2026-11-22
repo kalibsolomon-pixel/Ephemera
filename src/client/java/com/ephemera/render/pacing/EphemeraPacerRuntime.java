@@ -4,9 +4,7 @@ import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.pacing.EphemeraFramePacer;
 import com.ephemera.core.pacing.FrameBudgetPacer;
-import com.ephemera.render.backend.VulkanAsyncPresenter;
-import com.mojang.blaze3d.platform.Monitor;
-import com.mojang.blaze3d.platform.Window;
+import com.ephemera.platform.RenderPlatform;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -19,7 +17,7 @@ import net.minecraft.client.Minecraft;
  *       effective target FPS and wait metrics through {@code ObjectShare} ({@code ephemera:frame_pacer}).
  *       Ephemera automatically yields blocking sleeps to Aurora (preventing any double-wait) while
  *       using Aurora's exact target FPS and wait timing to budget terrain GPU uploads and coordinate
- *       with {@link VulkanAsyncPresenter}.</li>
+ *       with Vulkan async presenter.</li>
  *   <li>When Aurora is absent or its custom pacer is disabled/VANILLA, Ephemera's own
  *       {@link EphemeraFramePacer} steps in automatically with adaptive overshoot compensation,
  *       bounded re-parking, anti-sawtooth phase recovery, and optional low-latency frame-head pacing.</li>
@@ -58,7 +56,7 @@ public final class EphemeraPacerRuntime {
 
 	/**
 	 * Invoked by Aurora Client right before entering a blocking pacer sleep so Ephemera records
-	 * clean CPU work end and lets any in-flight {@link VulkanAsyncPresenter} job overlap naturally.
+	 * clean CPU work end and lets any in-flight Vulkan async presenter job overlap naturally.
 	 */
 	public static void onAuroraBeforeWait(long plannedWaitNanos) {
 		externalBeforeWaitActive = true;
@@ -78,7 +76,7 @@ public final class EphemeraPacerRuntime {
 
 	/** Exposed to Aurora's {@code ReflexScheduler} so it knows Vulkan present is overlapped off-thread. */
 	public static boolean isVulkanAsyncPresentActive() {
-		return VulkanAsyncPresenter.isEnabled();
+		return RenderPlatform.isVulkanAsyncPresentActive();
 	}
 
 	/** Exposed to Aurora's {@code FramePacer} so HYBRID/adaptive paths can reuse measured OS overshoot. */
@@ -173,20 +171,7 @@ public final class EphemeraPacerRuntime {
 	}
 
 	private static int safeRefreshRate(Minecraft mc) {
-		Window win = mc.getWindow();
-		if (win == null) {
-			return FALLBACK_REFRESH_RATE;
-		}
-		// Resolve the monitor the window actually lives on (Window.getRefreshRate() only queries the
-		// primary display in windowed/borderless mode, which can under-report a 144/240 Hz secondary).
-		Monitor monitor = win.findBestMonitor();
-		if (monitor != null) {
-			int monitorHz = monitor.currentMode().getRefreshRate();
-			if (monitorHz > 0) {
-				return monitorHz;
-			}
-		}
-		int refresh = win.getRefreshRate();
+		int refresh = RenderPlatform.refreshRate(mc);
 		return refresh > 0 ? refresh : FALLBACK_REFRESH_RATE;
 	}
 

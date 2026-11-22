@@ -46,7 +46,8 @@ loom {
 		set.java.srcDir(new File(versionOverlay, "${name}/java"))
 		set.resources.srcDir(new File(versionOverlay, "${name}/resources"))
 	}
-	accessWidenerPath = file('src/main/resources/ephemera.accesswidener')
+	// Per version: the widened targets differ (26.3 dropped SurfaceRules$SurfaceRule).
+	accessWidenerPath = new File(versionOverlay, 'main/resources/ephemera.accesswidener')
 	enableTransitiveAccessWideners = true
 
 	runConfigs.configureEach {
@@ -114,6 +115,54 @@ jar {
 	from(project(':core').sourceSets.main.output)
 }
 
+// Every mixin class compiled for this version must be listed in exactly one mixin config
+// shipped for this version, and every listed mixin must exist. Catches shared/overlay drift.
+def verifyMixinConfigs = tasks.register('verifyMixinConfigs') {
+	def sets = ['main', 'client'].collect { sourceSets.getByName(it) }
+	inputs.files(sets.collect { it.java.sourceDirectories })
+	inputs.files(sets.collect { it.resources.sourceDirectories })
+	doLast {
+		def slurper = new groovy.json.JsonSlurper()
+		def sources = [] as Set
+		sets.each { set ->
+			set.java.srcDirs.findAll { it.isDirectory() }.each { root ->
+				def mixinRoot = new File(root, 'com/ephemera/mixin')
+				if (!mixinRoot.isDirectory()) return
+				mixinRoot.eachFileRecurse(groovy.io.FileType.FILES) { f ->
+					// Plugins live directly in com.ephemera.mixin; mixins live in its subpackages.
+					if (f.name.endsWith('.java') && f.parentFile != mixinRoot) {
+						sources << root.toPath().relativize(f.toPath()).toString().replace(File.separator, '.') - ~/\.java$/
+					}
+				}
+			}
+		}
+		def listed = [:]
+		sets.each { set ->
+			set.resources.srcDirs.findAll { it.isDirectory() }.each { root ->
+				root.eachFileMatch(~/.*\.mixins\.json/) { cfgFile ->
+					def cfg = slurper.parse(cfgFile)
+					['mixins', 'client', 'server'].each { side ->
+						(cfg[side] ?: []).each { name ->
+							def fqn = "${cfg.package}.${name}".toString()
+							if (listed.containsKey(fqn)) {
+								throw new GradleException("Mixin ${fqn} is listed in both ${listed[fqn]} and ${cfgFile.name}")
+							}
+							listed[fqn] = cfgFile.name
+						}
+					}
+				}
+			}
+		}
+		def missing = listed.keySet() - sources
+		def unlisted = sources - listed.keySet()
+		if (missing || unlisted) {
+			throw new GradleException("Mixin configs out of sync for Minecraft ${project.minecraft_version}:" +
+				(missing ? "\n  listed without a source file: ${missing.sort()}" : '') +
+				(unlisted ? "\n  source file not in any config: ${unlisted.sort()}" : ''))
+		}
+	}
+}
+
 tasks.named('check') {
-	dependsOn ':api:check', ':core:check'
+	dependsOn ':api:check', ':core:check', verifyMixinConfigs
 }

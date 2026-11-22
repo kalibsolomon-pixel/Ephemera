@@ -4,7 +4,7 @@ import com.ephemera.EphemeraClient;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.ConfigStore;
 import com.ephemera.core.config.EphemeraConfig;
-import com.ephemera.visuals.AnisotropyService;
+import com.ephemera.platform.RenderPlatform;
 import com.ephemera.visuals.VisualsDiagnostics;
 import com.ephemera.visuals.VisualsRuntime;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -119,7 +119,7 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 	public void onClose() {
 		ConfigStore.sanitize(cfg);
 		EphemeraCommon.saveConfig();
-		AnisotropyService.refreshBlockAtlas();
+		RenderPlatform.refreshBlockAtlasAnisotropy();
 		minecraft.gui.setScreen(parent);
 	}
 
@@ -147,7 +147,7 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 		VisualsRuntime.invalidate();
 		shadersDirty = true;
 		rows = tab.rows(cfg);
-		AnisotropyService.refreshBlockAtlas();
+		RenderPlatform.refreshBlockAtlasAnisotropy();
 		clampScroll();
 	}
 
@@ -180,7 +180,7 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 		}
 		if (field.equals("visualCrispMipmaps") || field.equals("visualAnisotropicLevel")) {
 			try {
-				AnisotropyService.refreshBlockAtlas();
+				RenderPlatform.refreshBlockAtlasAnisotropy();
 			} catch (RuntimeException e) {
 				EphemeraClient.LOGGER.warn("Could not refresh anisotropic filtering: {}", e.toString());
 			}

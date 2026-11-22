@@ -29,6 +29,10 @@
     {
       "config": "ephemera.client.mixins.json",
       "environment": "client"
+    },
+    {
+      "config": "ephemera.client.versioned.mixins.json",
+      "environment": "client"
     }
   ],
   "accessWidener": "ephemera.accesswidener",

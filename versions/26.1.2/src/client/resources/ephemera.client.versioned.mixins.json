@@ -1,0 +1,11 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.ephemera.mixin.client",
+  "compatibilityLevel": "JAVA_25",
+  "plugin": "com.ephemera.mixin.EphemeraClientMixinPlugin",
+  "client": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

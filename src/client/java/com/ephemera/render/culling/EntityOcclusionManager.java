@@ -7,6 +7,7 @@ import com.ephemera.core.culling.OpaqueLayerSweep;
 import com.ephemera.core.culling.CullingBounds;
 import com.ephemera.core.culling.ParticleCellOcclusion;
 import com.ephemera.mixin.client.culling.EntityRendererAccessor;
+import com.ephemera.platform.RenderPlatform;
 import com.ephemera.mixin.client.culling.LeashDataAccessor;
 import com.ephemera.mixin.client.particle.FrustumAccessor;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
@@ -145,7 +146,7 @@ public final class EntityOcclusionManager {
                 || entity.level() != level || !(entity instanceof Mob || entity instanceof ItemEntity
                 || entity instanceof ItemFrame || entity instanceof Painting)
                 || !VANILLA_CLASS.get(renderer.getClass())) return false;
-        AABB box = ((EntityRendererAccessor) renderer).ephemera$cullingBox(entity);
+        AABB box = RenderPlatform.cullingBox(renderer, entity);
         if (box.maxX - box.minX > 8 || box.maxY - box.minY > 8 || box.maxZ - box.minZ > 8) return false;
         double dx = entity.xOld - entity.getX(), dy = entity.yOld - entity.getY(), dz = entity.zOld - entity.getZ();
         BOUNDS.entity(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ,

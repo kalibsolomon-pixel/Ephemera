@@ -3,13 +3,11 @@ package com.ephemera.engine.client;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.engine.StateInterning;
+import com.ephemera.platform.RenderPlatform;
 import com.ephemera.render.culling.EntityOcclusionManager;
 import com.ephemera.render.culling.FastShadowCache;
 import com.ephemera.render.culling.ParticleCullingManager;
 import com.ephemera.render.gui.GuiItemStateCache;
-import com.ephemera.render.gui.TextureSetupCache;
-import com.ephemera.render.terrain.ChunkRenderBatcher;
-import com.ephemera.visuals.AnisotropyService;
 import com.ephemera.visuals.DynamicLightTracker;
 
 /**
@@ -33,9 +31,8 @@ public final class MemoryLeakGuard {
 		ParticleCullingManager.reset();
 		FastShadowCache.invalidate();
 		GuiItemStateCache.clear();
-		TextureSetupCache.clear();
 		DynamicLightTracker.clear();
-		ChunkRenderBatcher.get().release();
+		RenderPlatform.onWorldUnload();
 		StateInterning.trim();
 		MemoryPressurePolicy.recordWorldUnloadSweep();
 	}
@@ -48,8 +45,7 @@ public final class MemoryLeakGuard {
 		ModelInterning.onReloadComplete();
 		StateInterning.trim();
 		GuiItemStateCache.clear();
-		TextureSetupCache.clear();
-		AnisotropyService.clearCache();
+		RenderPlatform.onResourceReloadComplete();
 		MemoryPressurePolicy.recordResourceReloadSweep();
 	}
 }
