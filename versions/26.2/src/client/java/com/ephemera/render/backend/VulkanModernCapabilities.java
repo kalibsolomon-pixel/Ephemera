@@ -2,10 +2,9 @@ package com.ephemera.render.backend;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
-import com.mojang.blaze3d.vulkan.VulkanBackend;
+import com.ephemera.platform.VulkanFeatureDefs;
 import com.mojang.blaze3d.vulkan.VulkanPhysicalDevice;
 import com.mojang.blaze3d.vulkan.init.VulkanFeature;
-import com.mojang.blaze3d.vulkan.init.VulkanPNextStruct;
 import java.util.Collection;
 import java.util.Set;
 import org.lwjgl.system.MemoryStack;
@@ -39,19 +38,10 @@ public final class VulkanModernCapabilities {
 	public static final int VENDOR_NVIDIA = 0x10DE;
 	public static final int VENDOR_INTEL = 0x8086;
 
-	public static final VulkanPNextStruct MESH_SHADER_FEATURES_STRUCT = new VulkanPNextStruct(
-		EXTMeshShader.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-		VkPhysicalDeviceMeshShaderFeaturesEXT.SIZEOF
-	);
-	public static final VulkanFeature MESH_SHADER_FEATURE = new VulkanFeature(
-		MESH_SHADER_FEATURES_STRUCT, "meshShader", VkPhysicalDeviceMeshShaderFeaturesEXT.MESHSHADER
-	);
-	public static final VulkanFeature TASK_SHADER_FEATURE = new VulkanFeature(
-		MESH_SHADER_FEATURES_STRUCT, "taskShader", VkPhysicalDeviceMeshShaderFeaturesEXT.TASKSHADER
-	);
-	public static final VulkanFeature DRAW_INDIRECT_COUNT_FEATURE = new VulkanFeature(
-		VulkanBackend.VK12_FEATURES_STRUCT, "drawIndirectCount", VkPhysicalDeviceVulkan12Features.DRAWINDIRECTCOUNT
-	);
+	// Built per Minecraft version (the feature struct constructors differ).
+	public static final VulkanFeature MESH_SHADER_FEATURE = VulkanFeatureDefs.MESH_SHADER;
+	public static final VulkanFeature TASK_SHADER_FEATURE = VulkanFeatureDefs.TASK_SHADER;
+	public static final VulkanFeature DRAW_INDIRECT_COUNT_FEATURE = VulkanFeatureDefs.DRAW_INDIRECT_COUNT;
 
 	private static volatile Snapshot current = Snapshot.INACTIVE;
 	private static volatile boolean checkpointsBypassed;

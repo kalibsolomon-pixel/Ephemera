@@ -15,8 +15,9 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
  */
 @Mixin(GlslCompiler.class)
 abstract class VulkanGlslCompilerMixin {
+	// 26.2 sets the level in the constructor; 26.3 in createBaseShaderOptions().
 	@ModifyArg(
-		method = "<init>",
+		method = {"<init>", "createBaseShaderOptions"},
 		at = @At(value = "INVOKE", target = "Lorg/lwjgl/util/shaderc/Shaderc;shaderc_compile_options_set_optimization_level(JI)V"),
 		index = 1
 	)

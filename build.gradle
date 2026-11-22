@@ -66,6 +66,60 @@ loom {
 	}
 }
 
+// A version may derive the version-specific sources it does not hand-write from another
+// version (versions/<ver>/derive.json). Classes are renamed per versions/<ver>/renames.txt
+// (both dotted and descriptor/slash forms), so code fixed once in the base version flows to the
+// derived one. Files in versions/<ver>/src take precedence; `exclude` lists base files
+// (relative to src/) that cannot be derived.
+def deriveConfigFile = file("versions/${selectedMinecraft}/derive.json")
+if (deriveConfigFile.isFile()) {
+	def deriveConfig = new groovy.json.JsonSlurper().parse(deriveConfigFile)
+	def baseSrc = file("versions/${deriveConfig.from}/src")
+	def renamesFile = file("versions/${selectedMinecraft}/renames.txt")
+	def renames = renamesFile.readLines().findAll { it.trim() && !it.startsWith('#') }.collect { line ->
+		def parts = line.trim().split(/\s+/)
+		def quote = { String s -> java.util.regex.Pattern.quote(s) }
+		[
+			java.util.regex.Pattern.compile('(?<![\\w$.])' + quote(parts[0]) + '(?![\\w$])'),
+			java.util.regex.Matcher.quoteReplacement(parts[1]),
+			// Slash form also matches inside descriptors, where the class follows an `L` and may be
+			// followed by `$Nested`.
+			java.util.regex.Pattern.compile('(?:(?<![\\w$/])|(?<=(?:^|[^\\w$/])L))' + quote(parts[0].replace('.', '/')) + '(?!\\w)'),
+			java.util.regex.Matcher.quoteReplacement(parts[1].replace('.', '/')),
+		]
+	}
+	def excluded = (deriveConfig.exclude ?: []) as Set
+	['main', 'client'].each { name ->
+		def deriveTask = tasks.register("derive${name.capitalize()}Sources", Sync) {
+			inputs.file(deriveConfigFile)
+			inputs.file(renamesFile)
+			// The rename filter is defined here, and Gradle does not track closure bodies.
+			inputs.file(buildFile)
+			from(new File(baseSrc, "${name}/java")) {
+				include '**/*.java'
+				eachFile { details ->
+					def rel = "${name}/java/${details.relativePath.pathString}".toString()
+					if (excluded.contains(rel) || new File(versionOverlay, rel).exists()) {
+						details.exclude()
+					}
+				}
+				filter { String line ->
+					if (!line.contains('blaze3d') && !line.contains('levelgen')) {
+						return line
+					}
+					renames.each { r ->
+						line = r[0].matcher(line).replaceAll(r[1])
+						line = r[2].matcher(line).replaceAll(r[3])
+					}
+					return line
+				}
+			}
+			into(layout.buildDirectory.dir("derived/${name}/java"))
+		}
+		sourceSets.getByName(name).java.srcDir(deriveTask)
+	}
+}
+
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"

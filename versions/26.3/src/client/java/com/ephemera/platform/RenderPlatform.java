@@ -1,30 +1,52 @@
 package com.ephemera.platform;
 
+import com.ephemera.EphemeraClient;
 import com.ephemera.mixin.client.culling.EntityRendererAccessor;
+import com.ephemera.render.backend.VulkanAsyncPresenter;
+import com.ephemera.render.backend.VulkanModernCapabilities;
+import com.ephemera.render.fastwrite.FastGlyphWriter;
+import com.ephemera.render.fastwrite.FastLineWriter;
+import com.ephemera.render.gui.TextureSetupCache;
+import com.ephemera.visuals.AnisotropyService;
 import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.renderpearl.api.device.GpuDevice;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 
 /**
  * Minecraft 26.3 side of the version seam. 26.3 moved the GPU layer to
- * {@code com.mojang.renderpearl} and the window to SDL; the Ephemera GL/Vulkan backend,
- * terrain engine and fast-write paths are not ported yet, so those hooks report inactive.
+ * {@code com.mojang.renderpearl} and the window to SDL. The Ephemera terrain engine (chunk
+ * batcher, Vulkan mesh shaders) is not ported yet, so those hooks report inactive.
  */
 public final class RenderPlatform {
 	private RenderPlatform() {}
 
-	public static void onWorldUnload() {}
+	/** Leaving a world: drop GPU-side caches tied to its render data. */
+	public static void onWorldUnload() {
+		TextureSetupCache.clear();
+	}
 
-	public static void onResourceReloadComplete() {}
+	/** Resource reload finished: textures and samplers were recreated. */
+	public static void onResourceReloadComplete() {
+		TextureSetupCache.clear();
+		AnisotropyService.clearCache();
+	}
 
-	public static void refreshBlockAtlasAnisotropy() {}
+	public static void refreshBlockAtlasAnisotropy() {
+		AnisotropyService.refreshBlockAtlas();
+	}
 
 	public static boolean isVulkanMeshShaderActive() {
 		return false;
@@ -35,7 +57,7 @@ public final class RenderPlatform {
 	}
 
 	public static boolean isVulkanAsyncPresentActive() {
-		return false;
+		return VulkanAsyncPresenter.isEnabled();
 	}
 
 	/** Backend name of the live device, or null before the device exists. */
@@ -44,7 +66,11 @@ public final class RenderPlatform {
 		return device != null ? device.getDeviceInfo().backendName() : null;
 	}
 
+	/** Adds the active terrain engine to a backend name for diagnostics. */
 	public static String decorateBackendName(String backend) {
+		if (VulkanModernCapabilities.isMeshEngineActive() && "Vulkan".equals(backend)) {
+			return VulkanModernCapabilities.get().taskShaderEnabled() ? "Vulkan • Task+Mesh" : "Vulkan • Mesh";
+		}
 		return backend;
 	}
 
@@ -58,9 +84,31 @@ public final class RenderPlatform {
 		return monitor != null ? Math.round(monitor.currentMode().getRefreshRate()) : 0;
 	}
 
-	/** Aurora {@code ephemera:fast_write} handles are not published on 26.3 yet. */
+	/** Aurora {@code ephemera:fast_write} ObjectShare handles; empty when unavailable on this version. */
 	public static Map<String, MethodHandle> fastWriteHandles() {
-		return Map.of();
+		try {
+			MethodHandles.Lookup lookup = MethodHandles.publicLookup();
+			MethodHandle sdfGlyph = lookup.findStatic(FastGlyphWriter.class, "writeSdfGlyph",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4fc.class, int.class,
+					float.class, float.class, float.class, float.class, float.class, float.class,
+					float.class, float.class, int.class, int.class, boolean.class, boolean.class,
+					float.class, float.class, float.class, float.class));
+			MethodHandle sdfBox = lookup.findStatic(FastLineWriter.class, "writeSdfBox",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4f.class, Vec3.class,
+					double.class, double.class, double.class, double.class, double.class, double.class,
+					float.class, float.class, float.class, float.class, float.class));
+			MethodHandle line = lookup.findStatic(FastLineWriter.class, "writeLine",
+				MethodType.methodType(boolean.class,
+					VertexConsumer.class, Matrix4f.class, Vec3.class,
+					double.class, double.class, double.class, double.class, double.class, double.class,
+					float.class, float.class, float.class, float.class, float.class, boolean.class));
+			return Map.of("sdfGlyph", sdfGlyph, "sdfBox", sdfBox, "line", line);
+		} catch (Throwable t) {
+			EphemeraClient.LOGGER.warn("Could not publish Ephemera fast_write ObjectShare handles: {}", t.toString());
+			return Map.of();
+		}
 	}
 
 	/** The renderer's culling box for {@code entity} at its current position. */
