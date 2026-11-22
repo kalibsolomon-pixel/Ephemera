@@ -8,8 +8,10 @@ import com.ephemera.core.terrain.SectionVertexBaker;
 import com.ephemera.mixin.client.terrain.TerrainFogRendererAccessor;
 import com.ephemera.mixin.client.terrain.TerrainRenderSectionFadeAccessor;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
+import com.ephemera.render.terrain.gl.GlSingleMdiTerrain;
 import com.ephemera.render.terrain.vulkan.VulkanMeshSectionHandle;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
+import com.ephemera.visuals.VisualsRuntime;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
@@ -63,6 +65,13 @@ import java.util.function.BiConsumer;
  * position, fog, culling and visible list, no fading section), last frame's plan is reused
  * and only the section uniforms are rewritten.
  *
+ * <p><b>OpenGL single multi-draw</b> (see {@link GlSingleMdiTerrain}): on top of regional
+ * multi-draw, solid and cutout draws share uniform slot 0 and select their region (or fading
+ * section) origin and visibility through {@code firstInstance}, so each of those layers is one
+ * multi-draw per vertex heap and fading sections need no uniform of their own. When the
+ * translucent program has the batch block too, translucent draws do the same, so consecutive
+ * ones on the same heaps merge into one back-to-front run.
+ *
  * <p><b>Per-section fallback</b>: produces vanilla's {@link ChunkSectionsToRender} (same
  * grouping hash, per-layer order and UBO contents, except that baked meshes get their baked
  * origin) while reusing maps, lists, {@code RenderPass.Draw} records and section infos.
@@ -85,6 +94,10 @@ public final class ChunkRenderBatcher {
 	private static final ChunkSectionLayer[] LAYERS = ChunkSectionLayer.values();
 	private static final int LAYER_COUNT = LAYERS.length;
 	private static final int TRANSLUCENT = ChunkSectionLayer.TRANSLUCENT.ordinal();
+	/** Layers drawn through single multi-draw batch entries when their draw is sequentially indexed. */
+	private static final int GL_MDI_LAYERS = (1 << ChunkSectionLayer.SOLID.ordinal()) | (1 << ChunkSectionLayer.CUTOUT.ordinal());
+	/** The translucent layer, drawn through batch entries (sorted index buffer or not) when its program has the block. */
+	private static final int GL_MDI_TRANSLUCENT = 1 << TRANSLUCENT;
 	/** Groups are keyed by heap buffer identity; drop stale keys once heaps have churned. */
 	private static final int MAX_GROUPS_BEFORE_RESET = 64;
 	/** Block models may extend one block outside their cell. */
@@ -154,6 +167,8 @@ public final class ChunkRenderBatcher {
 	private boolean planTrackSprites;
 	private boolean planDirect;
 	private boolean planMeshActive;
+	private boolean planGlSingleMdi;
+	private boolean planGlSingleMdiTranslucent;
 	private long lastSpriteStamp = Long.MIN_VALUE / 4;
 
 	// Fading sections inside a reusable plan: only their visibility uniform changes frame-to-frame.
@@ -163,6 +178,16 @@ public final class ChunkRenderBatcher {
 	private @Nullable BlockPos[] fadingOrigins = new BlockPos[32];
 	private int[] fadingUbos = new int[32];
 	private int fadingCount;
+
+	// OpenGL single multi-draw: batch entry per region (rebuilt with the plan) and fading entries.
+	private final Long2IntOpenHashMap regionBatchEntries = new Long2IntOpenHashMap();
+	private SectionRenderDispatcher.RenderSection[] glMdiFadingSections = new SectionRenderDispatcher.RenderSection[32];
+	private int[] glMdiFadingEntries = new int[32];
+	private float[] glMdiVisScratch = new float[32];
+	private int glMdiFadingCount;
+	/** Slot-0 uniform of single multi-draw frames (origin 0, visibility 1), reused while the atlas size holds. */
+	private DynamicUniforms.@Nullable ChunkSectionInfo glSingleMdiFrameInfo;
+	private int lastBatchEntries;
 
 	// Vulkan VK_EXT_mesh_shader task lists & fading handles (zero GC across frames).
 	private int[] meshSolidTasks = new int[1024];
@@ -196,6 +221,8 @@ public final class ChunkRenderBatcher {
 	private int atlasWidth;
 	private int atlasHeight;
 	private int uboCount;
+	/** {@code VisualsRuntime.smoothChunkFade()}, read once per frame. */
+	private boolean frameSmoothFade;
 
 	@SuppressWarnings("unchecked")
 	private ChunkRenderBatcher() {
@@ -206,6 +233,7 @@ public final class ChunkRenderBatcher {
 			drawGroups.put(layer, map);
 		}
 		regionUbos.defaultReturnValue(-1);
+		regionBatchEntries.defaultReturnValue(-1);
 	}
 
 	public static ChunkRenderBatcher get() {
@@ -246,6 +274,7 @@ public final class ChunkRenderBatcher {
 	/** Drops frame state and GPU command buffers; called when the section dispatcher is disposed. */
 	public void release() {
 		plan.release();
+		GlSingleMdiTerrain.get().release();
 		VulkanMeshTerrainEngine.get().resetSections();
 		resetGroups();
 		planValid = false;
@@ -257,6 +286,16 @@ public final class ChunkRenderBatcher {
 		planSectionCount = 0;
 		clearFading();
 		clearMeshFading();
+		clearGlMdiFading();
+		if (glMdiFadingSections.length > 4096) {
+			glMdiFadingSections = new SectionRenderDispatcher.RenderSection[32];
+			glMdiFadingEntries = new int[32];
+			glMdiVisScratch = new float[32];
+		}
+		regionBatchEntries.clear();
+		regionBatchEntries.trim(256);
+		glSingleMdiFrameInfo = null;
+		planGlSingleMdi = false;
 		meshSolidTaskCount = 0;
 		meshCutoutTaskCount = 0;
 		meshSectionCount = 0;
@@ -321,6 +360,7 @@ public final class ChunkRenderBatcher {
 		atlasHeight = blockAtlas.getHeight(0);
 		frameModelView.set(modelViewMatrix);
 		setupCamera(levelRenderState.cameraRenderState);
+		frameSmoothFade = VisualsRuntime.smoothChunkFade();
 
 		boolean cull = hasCamera && TerrainFeatures.directionalCulling();
 		boolean wireframe = SharedConstants.DEBUG_HOTKEYS && Minecraft.getInstance().wireframe;
@@ -340,15 +380,16 @@ public final class ChunkRenderBatcher {
 				boolean trackSprites = VisibleSpriteTracker.trackingFrame();
 				boolean direct = TerrainFeatures.directMultiDraw();
 				boolean meshActive = !wireframe && VulkanMeshTerrainEngine.get().beginFrame();
-				if (canReusePlan(dispatcher, epoch, visibleSections, trackSprites, direct, cullMask, meshActive)) {
-					ChunkSectionsToRender reused = reuseRegional(blockAtlas, trackSprites, now, meshActive, cull);
+				boolean glSingleMdi = !meshActive && !wireframe && !direct && GlSingleMdiTerrain.get().beginFrame();
+				if (canReusePlan(dispatcher, epoch, visibleSections, trackSprites, direct, cullMask, meshActive, glSingleMdi)) {
+					ChunkSectionsToRender reused = reuseRegional(blockAtlas, trackSprites, now, meshActive, cull, glSingleMdi);
 					if (reused != null) {
 						lastRegional = true;
 						return reused;
 					}
 				}
 				ChunkSectionsToRender regional = prepareRegional(dispatcher, epoch, visibleSections, blockAtlas, now,
-					trackSprites, direct, cullMask, meshActive, cull);
+					trackSprites, direct, cullMask, meshActive, cull, glSingleMdi);
 				lastRegional = true;
 				return regional;
 			} catch (Throwable t) {
@@ -405,12 +446,14 @@ public final class ChunkRenderBatcher {
 			envEnd, rdEnd);
 	}
 
-	/** Vanilla {@code getVisibility}, without calling it once the fade has finished (where vanilla returns exactly 1). */
-	private static float visibility(SectionRenderDispatcher.RenderSection section, long now) {
+	/**
+	 * Vanilla {@code getVisibility} (eased when smooth chunk fade is on), computed inline through
+	 * the mesh-swap hook with the per-frame fade gate; without the hook, vanilla's is only
+	 * called while the section still fades.
+	 */
+	private float visibility(SectionRenderDispatcher.RenderSection section, long now) {
 		if (SWAP_HOOK) {
-			if (now >= ((SectionMeshSwapHook) section).ephemera$fadeEndMs()) {
-				return 1.0f;
-			}
+			return ((SectionMeshSwapHook) section).ephemera$visibility(now, frameSmoothFade);
 		} else if (FADE_ACCESSOR) {
 			TerrainRenderSectionFadeAccessor fade = (TerrainRenderSectionFadeAccessor) section;
 			if (now - fade.getEphemeraUploadedTime() >= fade.getEphemeraFadeDuration()) {
@@ -446,7 +489,8 @@ public final class ChunkRenderBatcher {
 	 */
 	private boolean canReusePlan(SectionRenderDispatcher dispatcher, int epoch,
 								 ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections,
-								 boolean trackSprites, boolean direct, int cullMask, boolean meshActive) {
+								 boolean trackSprites, boolean direct, int cullMask, boolean meshActive,
+								 boolean glSingleMdi) {
 		if (!planValid || !TerrainFeatures.planReuse()
 			|| dispatcher != planDispatcher || epoch != planEpoch
 			|| planTopology != TerrainTopology.topology()
@@ -454,6 +498,8 @@ public final class ChunkRenderBatcher {
 			|| fogCull != planFogCull || Float.compare(envEnd, planEnvEnd) != 0 || Float.compare(rdEnd, planRdEnd) != 0
 			|| cullMask != planCullMask || atlasWidth != planAtlasWidth || atlasHeight != planAtlasHeight
 			|| trackSprites != planTrackSprites || direct != planDirect || meshActive != planMeshActive
+			|| glSingleMdi != planGlSingleMdi
+			|| (glSingleMdi && GlSingleMdiTerrain.get().supportsTranslucent() != planGlSingleMdiTranslucent)
 			|| !plan.reusable()) {
 			return false;
 		}
@@ -473,8 +519,19 @@ public final class ChunkRenderBatcher {
 
 	/** Re-arms last frame's plan: fresh section uniforms (this frame's model-view + fading alpha) and sprite stamps, nothing else. */
 	private @Nullable ChunkSectionsToRender reuseRegional(GpuTextureView blockAtlas, boolean trackSprites,
-														  long now, boolean meshActive, boolean dirCull) {
+														  long now, boolean meshActive, boolean dirCull, boolean glSingleMdi) {
 		boolean anySettled = false;
+		if (glSingleMdi && glMdiFadingCount > 0) {
+			float[] vis = glMdiVisScratch;
+			for (int i = 0; i < glMdiFadingCount; i++) {
+				float v = visibility(glMdiFadingSections[i], now);
+				if (v == 1.0f) {
+					anySettled = true;
+				}
+				vis[i] = v;
+			}
+			GlSingleMdiTerrain.get().prepareReuseForFading(glMdiFadingEntries, vis, glMdiFadingCount);
+		}
 		for (int i = 0; i < fadingCount; i++) {
 			float vis = visibility(fadingSections[i], now);
 			if (vis == 1.0f) {
@@ -484,7 +541,7 @@ public final class ChunkRenderBatcher {
 			exactInfos[ubo] = sectionInfo(fadingCaches[i], fadingLayouts[i], fadingOrigins[i], vis);
 		}
 		if (anySettled) {
-			// Rebuild on the next frame so newly settled sections merge into their shared region UBO.
+			// Rebuild on the next frame so newly settled sections merge into their shared region UBO / entry.
 			planValid = false;
 		}
 		if (meshActive && (meshSolidTaskCount + meshCutoutTaskCount) > 0) {
@@ -628,10 +685,42 @@ public final class ChunkRenderBatcher {
 		fadingCount = n + 1;
 	}
 
+	private void clearGlMdiFading() {
+		if (glMdiFadingCount > 0) {
+			java.util.Arrays.fill(glMdiFadingSections, 0, glMdiFadingCount, null);
+			glMdiFadingCount = 0;
+		}
+	}
+
+	private void trackGlMdiFading(SectionRenderDispatcher.RenderSection section, int entry) {
+		int n = glMdiFadingCount;
+		if (n == glMdiFadingSections.length) {
+			int next = n * 2;
+			glMdiFadingSections = java.util.Arrays.copyOf(glMdiFadingSections, next);
+			glMdiFadingEntries = java.util.Arrays.copyOf(glMdiFadingEntries, next);
+			glMdiVisScratch = java.util.Arrays.copyOf(glMdiVisScratch, next);
+		}
+		glMdiFadingSections[n] = section;
+		glMdiFadingEntries[n] = entry;
+		glMdiFadingCount = n + 1;
+	}
+
+	/** Uniform slot 0 of a single multi-draw frame: this frame's model-view, origin 0, fully visible. */
+	private DynamicUniforms.ChunkSectionInfo glSingleMdiFrameInfo() {
+		DynamicUniforms.ChunkSectionInfo info = glSingleMdiFrameInfo;
+		if (info == null || info.modelView() != frameModelView
+			|| info.textureAtlasWidth() != atlasWidth || info.textureAtlasHeight() != atlasHeight) {
+			info = new DynamicUniforms.ChunkSectionInfo(frameModelView, 0, 0, 0, 1.0f, atlasWidth, atlasHeight);
+			glSingleMdiFrameInfo = info;
+		}
+		return info;
+	}
+
 	private ChunkSectionsToRender prepareRegional(SectionRenderDispatcher dispatcher, int epoch,
 												  ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections,
 												  GpuTextureView blockAtlas, long now, boolean trackSprites,
-												  boolean direct, int cullMask, boolean meshActive, boolean dirCull) {
+												  boolean direct, int cullMask, boolean meshActive, boolean dirCull,
+												  boolean glSingleMdi) {
 		// Read the counters before looking at any section: a change racing the build then
 		// only causes one extra rebuild, never a stale reuse.
 		long topology = TerrainTopology.topology();
@@ -655,6 +744,17 @@ public final class ChunkRenderBatcher {
 		spriteSections.clear();
 		long lastRegionKey = Long.MIN_VALUE;
 		int lastRegionUbo = -1;
+		clearGlMdiFading();
+		regionBatchEntries.clear();
+		GlSingleMdiTerrain singleMdi = glSingleMdi ? GlSingleMdiTerrain.get() : null;
+		boolean translucentEntries = singleMdi != null && singleMdi.supportsTranslucent();
+		long lastEntryKey = Long.MIN_VALUE;
+		int lastEntry = -1;
+		if (singleMdi != null) {
+			singleMdi.beginBuild();
+			// Slot 0: shared by every batch-entry draw, whose origin and visibility come from the entry.
+			putInfo(uboCount++, glSingleMdiFrameInfo());
+		}
 		boolean doFog = fogCull;
 		double cx = camX;
 		double cy = camY;
@@ -840,28 +940,80 @@ public final class ChunkRenderBatcher {
 					if (layout == null) {
 						layout = cache.ephemera$layout();
 					}
+					boolean regionShared = layout != null && layout.regionRelative && visibility == 1.0f;
+					// Single multi-draw: sequentially indexed solid/cutout layers (and the translucent
+					// layer, when its program has the block) use slot 0 plus one batch entry per
+					// section (shared per region once settled, own while fading or unbaked).
+					int entryMask = 0;
+					int firstInstance = 0;
+					if (singleMdi != null) {
+						entryMask = mask & GL_MDI_LAYERS & ~state.customIndexMask;
+						if (translucentEntries) {
+							entryMask |= mask & GL_MDI_TRANSLUCENT;
+						}
+						if (entryMask != 0) {
+							int entry;
+							if (regionShared) {
+								long key = layout.regionKey;
+								if (key == lastEntryKey) {
+									entry = lastEntry;
+								} else {
+									entry = regionBatchEntries.get(key);
+									if (entry < 0) {
+										entry = singleMdi.addEntry(layout.originX, layout.originY, layout.originZ, 1.0f);
+										if (entry >= 0) {
+											regionBatchEntries.put(key, entry);
+										}
+									}
+									lastEntryKey = key;
+									lastEntry = entry;
+								}
+							} else {
+								if (origin == null && layout == null) {
+									origin = section.getRenderOrigin();
+								}
+								entry = layout != null
+									? singleMdi.addEntry(layout.originX, layout.originY, layout.originZ, visibility)
+									: singleMdi.addEntry(origin.getX(), origin.getY(), origin.getZ(), visibility);
+								if (entry >= 0 && visibility != 1.0f) {
+									trackGlMdiFading(section, entry);
+								}
+							}
+							if (entry >= 0) {
+								firstInstance = entry + 1;
+							} else {
+								// Block full: these layers fall back to a section or region uniform.
+								entryMask = 0;
+							}
+						}
+					}
+					if (!regionShared && visibility == 1.0f) {
+						unbakedCount++;
+					}
+
 					// Settled region-baked sections share their region's slot; fading or unbaked
 					// sections get their own, positioned at the origin their vertices are relative to.
-					int ubo;
-					if (layout != null && layout.regionRelative && visibility == 1.0f) {
-						long key = layout.regionKey;
-						if (key == lastRegionKey) {
-							ubo = lastRegionUbo;
+					// Only layers not drawn through a batch entry need one.
+					int ubo = 0;
+					if ((mask & ~entryMask) != 0) {
+						if (regionShared) {
+							long key = layout.regionKey;
+							if (key == lastRegionKey) {
+								ubo = lastRegionUbo;
+							} else {
+								ubo = regionUbo(layout);
+								lastRegionKey = key;
+								lastRegionUbo = ubo;
+							}
 						} else {
-							ubo = regionUbo(layout);
-							lastRegionKey = key;
-							lastRegionUbo = ubo;
-						}
-					} else {
-						ubo = uboCount++;
-						if (origin == null && layout == null) {
-							origin = section.getRenderOrigin();
-						}
-						addSectionInfo(cache, ubo, layout, origin, visibility);
-						if (visibility != 1.0f) {
-							trackFading(section, cache, layout, origin, ubo);
-						} else {
-							unbakedCount++;
+							ubo = uboCount++;
+							if (origin == null && layout == null) {
+								origin = section.getRenderOrigin();
+							}
+							addSectionInfo(cache, ubo, layout, origin, visibility);
+							if (visibility != 1.0f) {
+								trackFading(section, cache, layout, origin, ubo);
+							}
 						}
 					}
 
@@ -879,9 +1031,12 @@ public final class ChunkRenderBatcher {
 						mask &= mask - 1;
 						GpuBuffer vertexBuffer = state.vertexBuffers[l];
 						int baseVertex = state.baseVertices[l];
+						boolean viaEntry = (entryMask & bit) != 0;
+						int layerUbo = viaEntry ? 0 : ubo;
+						int layerInstance = viaEntry ? firstInstance : 0;
 						if ((custom & bit) != 0) {
-							plan.addIndexed(l, ubo, vertexBuffer, state.indexBuffers[l], state.indexTypes[l],
-								state.firstIndices[l], state.indexCounts[l], baseVertex);
+							plan.addIndexed(l, layerUbo, vertexBuffer, state.indexBuffers[l], state.indexTypes[l],
+								state.firstIndices[l], state.indexCounts[l], baseVertex, layerInstance);
 							continue;
 						}
 						QuadBuckets buckets = (cullMask & bit) != 0 ? state.cullBuckets[l] : null;
@@ -900,10 +1055,10 @@ public final class ChunkRenderBatcher {
 								n = state.cachedSpanCount[l];
 							}
 							if (n != 0) {
-								plan.addQuadSpans(l, ubo, vertexBuffer, baseVertex, state.cachedSpans, spanOff, n);
+								plan.addQuadSpans(l, layerUbo, vertexBuffer, baseVertex, state.cachedSpans, spanOff, n, layerInstance);
 							}
 						} else {
-							plan.addSequential(l, ubo, vertexBuffer, baseVertex, state.indexCounts[l]);
+							plan.addSequential(l, layerUbo, vertexBuffer, baseVertex, state.indexCounts[l], layerInstance);
 						}
 					} while (mask != 0);
 				}
@@ -938,14 +1093,15 @@ public final class ChunkRenderBatcher {
 		lastSectionCount = uboCount;
 		lastFogCulled = fogCulled;
 		lastUnbakedCount = unbakedCount;
+		lastBatchEntries = singleMdi != null ? singleMdi.entryCount() : 0;
 		rebuiltFrames++;
 		if (DIAG && now - lastDiagMs >= 2000L) {
 			lastDiagMs = now;
-			TerrainFeatures.LOGGER.info("TerrainDiag: visible={} fogCulled={} meshSec={} meshTasks={}/{} ubos={} batches={} cmds={} fading={} unbaked={} reused={} rebuilt={}",
-				size, fogCulled, meshSectionCount, meshSolidTaskCount, meshCutoutTaskCount, uboCount, plan.lastBatchCount(), plan.lastCommandCount(), fadingCount, unbakedCount, reusedFrames, rebuiltFrames);
+			TerrainFeatures.LOGGER.info("TerrainDiag: visible={} fogCulled={} meshSec={} meshTasks={}/{} ubos={} mdiEntries={} batches={} cmds={} fading={} mdiFading={} unbaked={} reused={} rebuilt={}",
+				size, fogCulled, meshSectionCount, meshSolidTaskCount, meshCutoutTaskCount, uboCount, lastBatchEntries, plan.lastBatchCount(), plan.lastCommandCount(), fadingCount, glMdiFadingCount, unbakedCount, reusedFrames, rebuiltFrames);
 		}
 		GpuBufferSlice[] slices = uboCount == 0 ? NO_SLICES : RenderSystem.getDynamicUniforms().writeChunkSections(exactInfos(uboCount));
-		plan.finish(blockAtlas, slices, direct);
+		plan.finish(blockAtlas, slices, direct, singleMdi != null);
 		// Vanilla's body never runs for this object (the renderGroup hook takes it), but keep the
 		// draw groups valid and empty for anything else that inspects them.
 		ChunkSectionsToRender result = new ChunkSectionsToRender(blockAtlas, drawGroups, plan.maxIndicesRequired(), slices);
@@ -976,6 +1132,8 @@ public final class ChunkRenderBatcher {
 		planTrackSprites = trackSprites;
 		planDirect = direct;
 		planMeshActive = meshActive;
+		planGlSingleMdi = glSingleMdi;
+		planGlSingleMdiTranslucent = translucentEntries;
 		planValid = !deferredMeshUpload;
 		return result;
 	}

@@ -90,6 +90,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Blaze3D backend dispatch & fast native vertex writers
 		registerYield("GlCommandEncoderMixin", "sodium", "vulkanmod");
 		registerYield("GlRenderPassMixin", "sodium", "vulkanmod");
+		registerYield("GlSamplerCacheMixin", "sodium", "vulkanmod");
+		registerYield("GlStateManagerCacheMixin", "sodium", "vulkanmod");
 		registerYield("GlTextureBindingAccess", "sodium", "vulkanmod");
 		registerYield("GlTextureMixin", legacyAuroraMixins.contains("GlTextureMipCacheMixin")
 			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
@@ -99,6 +101,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
 		registerYield("MinecraftGlDebugOptionsMixin", "iris", "oculus", "vulkanmod");
 		registerYield("WindowGlNoErrorMixin", "iris", "oculus", "vulkanmod");
+		registerYield("GlDeviceTerrainPatchMixin", "sodium", "iris", "oculus", "vulkanmod");
+		registerYield("GlProgramTerrainBatchMixin", "sodium", "iris", "oculus", "vulkanmod");
 		for (String m : new String[] {
 			"CommandEncoderBackendAccessor", "RenderPassBackendAccessor",
 			"VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
@@ -164,6 +168,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("FontPreparedTextBuilderMixin", "modernui", "caxton", "immediatelyfast", "aurora");
 		registerYield("FontTextureMixin", "modernui", "caxton", "immediatelyfast", "aurora");
 		registerYield("GlyphRenderStateFastMixin", "modernui", "caxton", "immediatelyfast");
+		registerYield("GuiRendererTextBatchMixin", "immediatelyfast", "modernui", "caxton", "aurora");
 		registerYield("TextureSetupCacheMixin", "immediatelyfast");
 		registerYield("GuiItemAtlasMixin", "immediatelyfast", "polytone", "aurora");
 		registerYield("AtlasSlotMixin", "immediatelyfast", "polytone", "aurora");
@@ -211,7 +216,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
 		return switch (simpleName) {
 			// Backend
-			case "GlCommandEncoderMixin", "GlRenderPassMixin", "GlTextureBindingAccess",
+			case "GlCommandEncoderMixin", "GlRenderPassMixin", "GlSamplerCacheMixin",
+				 "GlStateManagerCacheMixin", "GlTextureBindingAccess",
 				 "GlTextureMixin", "FrameBufferCacheMixin", "SeparateVertexArrayCacheMixin" -> cfg.backendGlDispatchCache;
 			case "MinecraftGlDebugOptionsMixin", "WindowGlNoErrorMixin" -> cfg.backendGlNoErrorContext;
 			case "VulkanRenderPassMixin", "VulkanTextureBindingAccess" -> cfg.backendVulkanDispatchCache || cfg.terrainVulkanMeshShaders;

@@ -5,6 +5,7 @@ import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.AABB;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector4f;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
@@ -13,6 +14,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import static org.joml.Math.fma;
 
@@ -33,6 +35,7 @@ import static org.joml.Math.fma;
 @Mixin(Frustum.class)
 abstract class FrustumFastMixin implements FrustumFastCube {
 	@Shadow @Final private Matrix4f matrix;
+	@Shadow private Vector4f viewVector;
 	@Shadow private double camX;
 	@Shadow private double camY;
 	@Shadow private double camZ;
@@ -43,6 +46,19 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 	@Unique private float ep$pyX, ep$pyY, ep$pyZ, ep$pyW, ep$pyAbs;
 	@Unique private float ep$nzX, ep$nzY, ep$nzZ, ep$nzW, ep$nzAbs;
 	@Unique private float ep$pzX, ep$pzY, ep$pzZ, ep$pzW, ep$pzAbs;
+	@Unique private boolean ep$finite;
+
+	@Inject(method = "offsetToFullyIncludeCameraCube", at = @At("HEAD"), cancellable = true)
+	private void ephemera$guardDegenerateFrustumOffset(int step, CallbackInfoReturnable<Frustum> cir) {
+		// On OpenGL window minimize (0x0 viewport), projection has aspect 0/0 = NaN so vanilla's
+		// while (intersectAab(...) != -2) loop never terminates. Exit immediately on non-finite planes.
+		Vector4f v = this.viewVector;
+		if (!this.ep$finite || v == null
+			|| !Float.isFinite(v.x()) || !Float.isFinite(v.y()) || !Float.isFinite(v.z())
+			|| (v.x() == 0f && v.y() == 0f && v.z() == 0f)) {
+			cir.setReturnValue((Frustum) (Object) this);
+		}
+	}
 
 	@Inject(method = "calculateFrustum", at = @At("TAIL"))
 	private void ephemera$extractPlanesOnCalc(Matrix4fc modelView, Matrix4f projection, CallbackInfo ci) {
@@ -72,6 +88,12 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		this.ep$nzAbs = Math.abs(this.ep$nzX) + Math.abs(this.ep$nzY) + Math.abs(this.ep$nzZ);
 		this.ep$pzX = m03 - m02; this.ep$pzY = m13 - m12; this.ep$pzZ = m23 - m22; this.ep$pzW = m33 - m32;
 		this.ep$pzAbs = Math.abs(this.ep$pzX) + Math.abs(this.ep$pzY) + Math.abs(this.ep$pzZ);
+		this.ep$finite = Float.isFinite(this.ep$nxAbs) && Float.isFinite(this.ep$pxAbs)
+			&& Float.isFinite(this.ep$nyAbs) && Float.isFinite(this.ep$pyAbs)
+			&& Float.isFinite(this.ep$nzAbs) && Float.isFinite(this.ep$pzAbs)
+			&& Float.isFinite(this.ep$nxW) && Float.isFinite(this.ep$pxW)
+			&& Float.isFinite(this.ep$nyW) && Float.isFinite(this.ep$pyW)
+			&& Float.isFinite(this.ep$nzW) && Float.isFinite(this.ep$pzW);
 	}
 
 	@Override
@@ -80,11 +102,12 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		float fy = (float) (cy - this.camY);
 		float fz = (float) (cz - this.camZ);
 		float fr = (float) radius;
-		return fma(ep$nxX, fx, fma(ep$nxY, fy, fma(ep$nxZ, fz, fma(ep$nxAbs, fr, ep$nxW)))) >= 0f
+		// Test near plane first to reject behind-camera boxes in a single FMA chain.
+		return fma(ep$nzX, fx, fma(ep$nzY, fy, fma(ep$nzZ, fz, fma(ep$nzAbs, fr, ep$nzW)))) >= 0f
+			&& fma(ep$nxX, fx, fma(ep$nxY, fy, fma(ep$nxZ, fz, fma(ep$nxAbs, fr, ep$nxW)))) >= 0f
 			&& fma(ep$pxX, fx, fma(ep$pxY, fy, fma(ep$pxZ, fz, fma(ep$pxAbs, fr, ep$pxW)))) >= 0f
 			&& fma(ep$nyX, fx, fma(ep$nyY, fy, fma(ep$nyZ, fz, fma(ep$nyAbs, fr, ep$nyW)))) >= 0f
 			&& fma(ep$pyX, fx, fma(ep$pyY, fy, fma(ep$pyZ, fz, fma(ep$pyAbs, fr, ep$pyW)))) >= 0f
-			&& fma(ep$nzX, fx, fma(ep$nzY, fy, fma(ep$nzZ, fz, fma(ep$nzAbs, fr, ep$nzW)))) >= 0f
 			&& fma(ep$pzX, fx, fma(ep$pzY, fy, fma(ep$pzZ, fz, fma(ep$pzAbs, fr, ep$pzW)))) >= 0f;
 	}
 
@@ -96,11 +119,11 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		float maxX = (float) (x1 - this.camX);
 		float maxY = (float) (y1 - this.camY);
 		float maxZ = (float) (z1 - this.camZ);
-		return fma(ep$nxX, ep$nxX < 0f ? minX : maxX, fma(ep$nxY, ep$nxY < 0f ? minY : maxY, fma(ep$nxZ, ep$nxZ < 0f ? minZ : maxZ, ep$nxW))) >= 0f
+		return fma(ep$nzX, ep$nzX < 0f ? minX : maxX, fma(ep$nzY, ep$nzY < 0f ? minY : maxY, fma(ep$nzZ, ep$nzZ < 0f ? minZ : maxZ, ep$nzW))) >= 0f
+			&& fma(ep$nxX, ep$nxX < 0f ? minX : maxX, fma(ep$nxY, ep$nxY < 0f ? minY : maxY, fma(ep$nxZ, ep$nxZ < 0f ? minZ : maxZ, ep$nxW))) >= 0f
 			&& fma(ep$pxX, ep$pxX < 0f ? minX : maxX, fma(ep$pxY, ep$pxY < 0f ? minY : maxY, fma(ep$pxZ, ep$pxZ < 0f ? minZ : maxZ, ep$pxW))) >= 0f
 			&& fma(ep$nyX, ep$nyX < 0f ? minX : maxX, fma(ep$nyY, ep$nyY < 0f ? minY : maxY, fma(ep$nyZ, ep$nyZ < 0f ? minZ : maxZ, ep$nyW))) >= 0f
 			&& fma(ep$pyX, ep$pyX < 0f ? minX : maxX, fma(ep$pyY, ep$pyY < 0f ? minY : maxY, fma(ep$pyZ, ep$pyZ < 0f ? minZ : maxZ, ep$pyW))) >= 0f
-			&& fma(ep$nzX, ep$nzX < 0f ? minX : maxX, fma(ep$nzY, ep$nzY < 0f ? minY : maxY, fma(ep$nzZ, ep$nzZ < 0f ? minZ : maxZ, ep$nzW))) >= 0f
 			&& fma(ep$pzX, ep$pzX < 0f ? minX : maxX, fma(ep$pzY, ep$pzY < 0f ? minY : maxY, fma(ep$pzZ, ep$pzZ < 0f ? minZ : maxZ, ep$pzW))) >= 0f;
 	}
 
@@ -126,14 +149,14 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		float maxY = (float) (y1 - this.camY);
 		float maxZ = (float) (z1 - this.camZ);
 
-		// Plane 0: -X (left)
-		if (fma(ep$nxX, ep$nxX < 0f ? minX : maxX, fma(ep$nxY, ep$nxY < 0f ? minY : maxY, fma(ep$nxZ, ep$nxZ < 0f ? minZ : maxZ, ep$nxW))) < 0f) {
+		// Plane 0: -X (left) — use !(>= 0f) so NaN planes return 0 (outside), matching JOML.
+		if (!(fma(ep$nxX, ep$nxX < 0f ? minX : maxX, fma(ep$nxY, ep$nxY < 0f ? minY : maxY, fma(ep$nxZ, ep$nxZ < 0f ? minZ : maxZ, ep$nxW))) >= 0f)) {
 			return 0;
 		}
 		boolean inside = fma(ep$nxX, ep$nxX < 0f ? maxX : minX, fma(ep$nxY, ep$nxY < 0f ? maxY : minY, fma(ep$nxZ, ep$nxZ < 0f ? maxZ : minZ, ep$nxW))) >= 0f;
 
 		// Plane 1: +X (right)
-		if (fma(ep$pxX, ep$pxX < 0f ? minX : maxX, fma(ep$pxY, ep$pxY < 0f ? minY : maxY, fma(ep$pxZ, ep$pxZ < 0f ? minZ : maxZ, ep$pxW))) < 0f) {
+		if (!(fma(ep$pxX, ep$pxX < 0f ? minX : maxX, fma(ep$pxY, ep$pxY < 0f ? minY : maxY, fma(ep$pxZ, ep$pxZ < 0f ? minZ : maxZ, ep$pxW))) >= 0f)) {
 			return 1;
 		}
 		if (inside) {
@@ -141,7 +164,7 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		}
 
 		// Plane 2: -Y (bottom)
-		if (fma(ep$nyX, ep$nyX < 0f ? minX : maxX, fma(ep$nyY, ep$nyY < 0f ? minY : maxY, fma(ep$nyZ, ep$nyZ < 0f ? minZ : maxZ, ep$nyW))) < 0f) {
+		if (!(fma(ep$nyX, ep$nyX < 0f ? minX : maxX, fma(ep$nyY, ep$nyY < 0f ? minY : maxY, fma(ep$nyZ, ep$nyZ < 0f ? minZ : maxZ, ep$nyW))) >= 0f)) {
 			return 2;
 		}
 		if (inside) {
@@ -149,7 +172,7 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		}
 
 		// Plane 3: +Y (top)
-		if (fma(ep$pyX, ep$pyX < 0f ? minX : maxX, fma(ep$pyY, ep$pyY < 0f ? minY : maxY, fma(ep$pyZ, ep$pyZ < 0f ? minZ : maxZ, ep$pyW))) < 0f) {
+		if (!(fma(ep$pyX, ep$pyX < 0f ? minX : maxX, fma(ep$pyY, ep$pyY < 0f ? minY : maxY, fma(ep$pyZ, ep$pyZ < 0f ? minZ : maxZ, ep$pyW))) >= 0f)) {
 			return 3;
 		}
 		if (inside) {
@@ -157,7 +180,7 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		}
 
 		// Plane 4: -Z (near)
-		if (fma(ep$nzX, ep$nzX < 0f ? minX : maxX, fma(ep$nzY, ep$nzY < 0f ? minY : maxY, fma(ep$nzZ, ep$nzZ < 0f ? minZ : maxZ, ep$nzW))) < 0f) {
+		if (!(fma(ep$nzX, ep$nzX < 0f ? minX : maxX, fma(ep$nzY, ep$nzY < 0f ? minY : maxY, fma(ep$nzZ, ep$nzZ < 0f ? minZ : maxZ, ep$nzW))) >= 0f)) {
 			return 4;
 		}
 		if (inside) {
@@ -165,7 +188,7 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		}
 
 		// Plane 5: +Z (far)
-		if (fma(ep$pzX, ep$pzX < 0f ? minX : maxX, fma(ep$pzY, ep$pzY < 0f ? minY : maxY, fma(ep$pzZ, ep$pzZ < 0f ? minZ : maxZ, ep$pzW))) < 0f) {
+		if (!(fma(ep$pzX, ep$pzX < 0f ? minX : maxX, fma(ep$pzY, ep$pzY < 0f ? minY : maxY, fma(ep$pzZ, ep$pzZ < 0f ? minZ : maxZ, ep$pzW))) >= 0f)) {
 			return 5;
 		}
 		if (inside) {
@@ -183,11 +206,11 @@ abstract class FrustumFastMixin implements FrustumFastCube {
 		float fx = (float) (x - this.camX);
 		float fy = (float) (y - this.camY);
 		float fz = (float) (z - this.camZ);
-		return fma(ep$nxX, fx, fma(ep$nxY, fy, fma(ep$nxZ, fz, ep$nxW))) >= 0f
+		return fma(ep$nzX, fx, fma(ep$nzY, fy, fma(ep$nzZ, fz, ep$nzW))) >= 0f
+			&& fma(ep$nxX, fx, fma(ep$nxY, fy, fma(ep$nxZ, fz, ep$nxW))) >= 0f
 			&& fma(ep$pxX, fx, fma(ep$pxY, fy, fma(ep$pxZ, fz, ep$pxW))) >= 0f
 			&& fma(ep$nyX, fx, fma(ep$nyY, fy, fma(ep$nyZ, fz, ep$nyW))) >= 0f
 			&& fma(ep$pyX, fx, fma(ep$pyY, fy, fma(ep$pyZ, fz, ep$pyW))) >= 0f
-			&& fma(ep$nzX, fx, fma(ep$nzY, fy, fma(ep$nzZ, fz, ep$nzW))) >= 0f
 			&& fma(ep$pzX, fx, fma(ep$pzY, fy, fma(ep$pzZ, fz, ep$pzW))) >= 0f;
 	}
 }

@@ -12,6 +12,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.EXTMeshShader;
 import org.lwjgl.vulkan.VK11;
 import org.lwjgl.vulkan.VK12;
+import org.lwjgl.vulkan.VK13;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceFeatures2;
 import org.lwjgl.vulkan.VkPhysicalDeviceMeshShaderFeaturesEXT;
@@ -19,6 +20,7 @@ import org.lwjgl.vulkan.VkPhysicalDeviceMeshShaderPropertiesEXT;
 import org.lwjgl.vulkan.VkPhysicalDeviceProperties;
 import org.lwjgl.vulkan.VkPhysicalDeviceProperties2;
 import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupProperties;
+import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlProperties;
 import org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,13 +69,14 @@ public final class VulkanModernCapabilities {
 		boolean taskShaderEnabled,
 		boolean drawIndirectCountEnabled,
 		boolean computeSubgroupBallot,
+		boolean taskSubgroupBallot,
 		int preferredMeshWorkGroupSize,
 		int maxMeshOutputVertices,
 		int maxMeshOutputPrimitives,
 		int maxMeshWorkGroupCountX
 	) {
 		static final Snapshot INACTIVE = new Snapshot(
-			false, 0, "", 0, false, false, false, false, false, false, 0, 0, 0, 0
+			false, 0, "", 0, false, false, false, false, false, false, false, 0, 0, 0, 0
 		);
 
 		public String vendorLabel() {
@@ -138,6 +141,7 @@ public final class VulkanModernCapabilities {
 		boolean taskEnabled = false;
 		boolean drawIndirectCount = false;
 		boolean subgroupBallot = false;
+		boolean taskSubgroupBallot = false;
 		int preferredMeshWg = 32;
 		int maxMeshVerts = 0;
 		int maxMeshPrims = 0;
@@ -150,20 +154,41 @@ public final class VulkanModernCapabilities {
 
 			VkPhysicalDeviceSubgroupProperties subgroupProps = VkPhysicalDeviceSubgroupProperties.calloc(stack)
 				.sType$Default();
+			boolean hasVk13 = apiVersion >= VK13.VK_API_VERSION_1_3;
+			VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeCtrl = hasVk13
+				? VkPhysicalDeviceSubgroupSizeControlProperties.calloc(stack).sType$Default()
+				: null;
 			VkPhysicalDeviceMeshShaderPropertiesEXT meshProps = hasMeshExt
 				? VkPhysicalDeviceMeshShaderPropertiesEXT.calloc(stack).sType$Default()
 				: null;
 
 			VkPhysicalDeviceProperties2 props2 = VkPhysicalDeviceProperties2.calloc(stack).sType$Default();
 			props2.pNext(subgroupProps);
+			if (subgroupSizeCtrl != null) {
+				subgroupProps.pNext(subgroupSizeCtrl.address());
+			}
 			if (meshProps != null) {
-				subgroupProps.pNext(meshProps.address());
+				if (subgroupSizeCtrl != null) {
+					subgroupSizeCtrl.pNext(meshProps.address());
+				} else {
+					subgroupProps.pNext(meshProps.address());
+				}
 			}
 			VK12.vkGetPhysicalDeviceProperties2(vkPhys, props2);
 
 			int requiredSubgroupOps = VK11.VK_SUBGROUP_FEATURE_BASIC_BIT | VK11.VK_SUBGROUP_FEATURE_BALLOT_BIT;
 			subgroupBallot = (subgroupProps.supportedStages() & VK12.VK_SHADER_STAGE_COMPUTE_BIT) != 0
 				&& (subgroupProps.supportedOperations() & requiredSubgroupOps) == requiredSubgroupOps;
+			// A 32-lane Task workgroup only fits in one subgroup when minSubgroupSize >= 32
+			// (AMD RDNA Wave32/64, NVIDIA Warp32). GPUs with SIMD8/16 minSubgroupSize (e.g. Intel Arc)
+			// can split a 32-lane workgroup across multiple subgroups and must use the shared-atomic path.
+			int minSubgroup = subgroupSizeCtrl != null && subgroupSizeCtrl.minSubgroupSize() > 0
+				? subgroupSizeCtrl.minSubgroupSize()
+				: (vendorId == VENDOR_INTEL ? 8 : subgroupProps.subgroupSize());
+			taskSubgroupBallot = (subgroupProps.supportedStages() & EXTMeshShader.VK_SHADER_STAGE_TASK_BIT_EXT) != 0
+				&& (subgroupProps.supportedOperations() & requiredSubgroupOps) == requiredSubgroupOps
+				&& subgroupProps.subgroupSize() >= 32
+				&& minSubgroup >= 32;
 
 			// Query Vulkan 1.2 drawIndirectCount + VK_EXT_mesh_shader features
 			VkPhysicalDeviceVulkan12Features vk12Feats = VkPhysicalDeviceVulkan12Features.calloc(stack)
@@ -214,22 +239,23 @@ public final class VulkanModernCapabilities {
 			meshEnabled = false;
 			taskEnabled = false;
 			drawIndirectCount = false;
+			taskSubgroupBallot = false;
 		}
 
 		Snapshot snap = new Snapshot(
 			true, vendorId, deviceName, apiVersion,
 			cfg.backendVulkanModernGpu, checkpointsBypassed,
-			meshEnabled, taskEnabled, drawIndirectCount, subgroupBallot,
+			meshEnabled, taskEnabled, drawIndirectCount, subgroupBallot, taskSubgroupBallot,
 			preferredMeshWg, maxMeshVerts, maxMeshPrims, maxMeshWgX
 		);
 		current = snap;
 		meshEngineActive = false;
 
-		LOGGER.info("Modern Vulkan GPU init [{} / {}]: modernSync={}, checkpointsBypassed={}({}), meshShader={} (task={}, prefWG={}, maxV={}, maxP={}), drawIndirectCount={}, subgroups={}",
+		LOGGER.info("Modern Vulkan GPU init [{} / {}]: modernSync={}, checkpointsBypassed={}({}), meshShader={} (task={}, prefWG={}, maxV={}, maxP={}), drawIndirectCount={}, subgroups={}, taskBallot={}",
 			snap.vendorLabel(), deviceName, snap.modernSyncEnabled(), snap.checkpointsBypassed(),
 			bypassedCheckpointExt != null ? bypassedCheckpointExt : "none",
 			meshEnabled, taskEnabled, preferredMeshWg, maxMeshVerts, maxMeshPrims,
-			drawIndirectCount, subgroupBallot);
+			drawIndirectCount, subgroupBallot, taskSubgroupBallot);
 
 		return new ProbeResult(meshEnabled, taskEnabled, drawIndirectCount);
 	}
@@ -244,7 +270,7 @@ public final class VulkanModernCapabilities {
 		current = new Snapshot(
 			old.initialized(), old.vendorId(), old.deviceName(), old.apiVersion(),
 			old.modernSyncEnabled(), old.checkpointsBypassed(),
-			false, false, false, old.computeSubgroupBallot(), 0, 0, 0, 0
+			false, false, false, old.computeSubgroupBallot(), false, 0, 0, 0, 0
 		);
 		meshEngineActive = false;
 	}

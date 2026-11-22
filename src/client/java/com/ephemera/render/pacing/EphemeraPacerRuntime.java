@@ -5,6 +5,8 @@ import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.pacing.EphemeraFramePacer;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.render.backend.VulkanAsyncPresenter;
+import com.mojang.blaze3d.platform.Monitor;
+import com.mojang.blaze3d.platform.Window;
 import net.minecraft.client.Minecraft;
 
 /**
@@ -25,6 +27,7 @@ import net.minecraft.client.Minecraft;
  */
 public final class EphemeraPacerRuntime {
 	private static final int VANILLA_UNLIMITED_FPS = 260;
+	private static final int FALLBACK_REFRESH_RATE = 60;
 
 	private static final EphemeraFramePacer PACER = new EphemeraFramePacer();
 	private static final FrameBudgetPacer BUDGET = new FrameBudgetPacer();
@@ -100,6 +103,21 @@ public final class EphemeraPacerRuntime {
 			return;
 		}
 
+		boolean vsync = mc.options != null && mc.options.enableVsync().get();
+		if (vsync) {
+			// Never sleep before render under VSync: the present already blocks on VBlank, so a
+			// frame-head wait phase-locks into missed VBlanks and halves/thirds the framerate.
+			// Only drop frame-head ownership; a sub-refresh post-swap cadence must survive across frames.
+			PACER.paceFrameHead(0, false, cfg.framePacerSpinTailMicros);
+			int refresh = safeRefreshRate(mc);
+			int effectiveBudgetFps = activeNative > 0 ? Math.min(activeNative, refresh) : refresh;
+			BUDGET.setActiveOwner(cfg.framePacerEnabled
+				? FrameBudgetPacer.PacerOwner.EPHEMERA
+				: FrameBudgetPacer.PacerOwner.VANILLA, effectiveBudgetFps);
+			BUDGET.beginFrameWork(now);
+			return;
+		}
+
 		if (!cfg.framePacerEnabled) {
 			PACER.reset();
 			BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.VANILLA, activeNative);
@@ -143,7 +161,33 @@ public final class EphemeraPacerRuntime {
 			PACER.reset();
 			return false;
 		}
+		Minecraft mc = Minecraft.getInstance();
+		boolean vsync = mc != null && mc.options != null && mc.options.enableVsync().get();
+		if (vsync && active >= safeRefreshRate(mc)) {
+			// VBlank already caps this frame; neither Ephemera nor vanilla should sleep on top of it.
+			PACER.reset();
+			return true;
+		}
+		// Non-VSync, or VSync with a sub-refresh cap (e.g. 60 fps menu on a 240 Hz display).
 		return PACER.pacePostSwap(active, cfg.framePacerSpinTailMicros);
+	}
+
+	private static int safeRefreshRate(Minecraft mc) {
+		Window win = mc.getWindow();
+		if (win == null) {
+			return FALLBACK_REFRESH_RATE;
+		}
+		// Resolve the monitor the window actually lives on (Window.getRefreshRate() only queries the
+		// primary display in windowed/borderless mode, which can under-report a 144/240 Hz secondary).
+		Monitor monitor = win.findBestMonitor();
+		if (monitor != null) {
+			int monitorHz = monitor.currentMode().getRefreshRate();
+			if (monitorHz > 0) {
+				return monitorHz;
+			}
+		}
+		int refresh = win.getRefreshRate();
+		return refresh > 0 ? refresh : FALLBACK_REFRESH_RATE;
 	}
 
 	/** Dynamic per-frame terrain upload budget in nanoseconds for {@code ChunkRenderBatcher}. */

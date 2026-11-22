@@ -1,5 +1,6 @@
 package com.ephemera.mixin.client.terrain;
 
+import com.ephemera.core.visuals.ChunkFadeMath;
 import com.ephemera.render.terrain.FastVertexSorting;
 import com.ephemera.render.terrain.SectionMeshRenderCache;
 import com.ephemera.render.terrain.SectionMeshSwapHook;
@@ -24,7 +25,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Swaps the translucent section sorter for the stable radix sorter, caches
- * {@code uploadedTime + fadeDuration}, mirrors the active {@link SectionMeshRenderCache}
+ * {@code uploadedTime + fadeDuration}, computes the (eased) fade visibility without going
+ * through {@code getVisibility}, mirrors the active {@link SectionMeshRenderCache}
  * and block-entity presence flag (while leaving {@code getSectionMesh()} untouched for
  * vanilla {@code SectionOcclusionGraph} CAS visibility), and bumps {@link TerrainTopology}
  * whenever the section's mesh changes.
@@ -80,6 +82,19 @@ public abstract class TerrainRenderSectionVertexSortingMixin implements SectionM
 	@Override
 	public long ephemera$fadeEndMs() {
 		return this.ephemera$fadeEndMs;
+	}
+
+	@Override
+	public float ephemera$visibility(long now, boolean smoothChunkFade) {
+		long elapsed = now - this.uploadedTime;
+		if (elapsed >= this.fadeDuration) {
+			return 1.0f;
+		}
+		float linear = (float) elapsed / (float) this.fadeDuration;
+		if (smoothChunkFade && linear > 0.0f && linear < 1.0f) {
+			return ChunkFadeMath.easeOutCubic(linear);
+		}
+		return linear;
 	}
 
 	@Override

@@ -51,6 +51,7 @@ import org.lwjgl.vulkan.VkDescriptorSetLayoutCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkGraphicsPipelineCreateInfo;
 import org.lwjgl.vulkan.VkPipelineColorBlendAttachmentState;
+import org.lwjgl.vulkan.VkPipelineCacheCreateInfo;
 import org.lwjgl.vulkan.VkPipelineColorBlendStateCreateInfo;
 import org.lwjgl.vulkan.VkPipelineDepthStencilStateCreateInfo;
 import org.lwjgl.vulkan.VkPipelineDynamicStateCreateInfo;
@@ -85,6 +86,7 @@ public final class VulkanMeshTerrainEngine {
 	private @Nullable VulkanDevice device;
 	private @Nullable VulkanMeshArena arena;
 	private boolean taskShaderMode;
+	private boolean taskBallotMode;
 
 	// Compute cull pipeline (fallback only when !taskShaderMode)
 	private long computeSetLayout;
@@ -100,7 +102,23 @@ public final class VulkanMeshTerrainEngine {
 	private long cutoutPipeline;
 	private int compiledColorFormat;
 	private int compiledDepthFormat;
-	private ShaderSourcePatcher.@Nullable Options compiledVisualOptions;
+	// Primitive copy of the compiled ShaderSourcePatcher.Options (zero-alloc per-frame check)
+	private boolean compiledVisualValid;
+	private boolean compiledSmoothFog;
+	private boolean compiledDither;
+	private boolean compiledHorizon;
+	private float compiledDitherStrength;
+	private long pipelineCache;
+
+	// Off-heap push-descriptor + push-constant template (allocated once, lives with the singleton):
+	// 11 VkWriteDescriptorSet | 9 VkDescriptorBufferInfo | 2 VkDescriptorImageInfo | 8-byte push constants
+	private static final int MESH_WRITES = 11;
+	private static final int MESH_BUF_INFOS = 9;
+	private static final int MESH_IMG_INFOS = 2;
+	private long meshWritesAddr;
+	private long meshBufInfosAddr;
+	private long meshImgInfosAddr;
+	private long pushConstAddr;
 
 	// Reusable per-frame scratch (zero GC)
 	private final Matrix4f clipMatrix = new Matrix4f();
@@ -244,8 +262,13 @@ public final class VulkanMeshTerrainEngine {
 			// Write 256-byte CullParams UBO straight into mapped ReBAR ring buffer (zero vkCmdUpdateBuffer!)
 			VulkanMeshArena.GpuBuf cullParams = arena.cullParamsBuf();
 			long cp = cullParams.mappedPtr;
-			for (int i = 0; i < VulkanFrustumMath.PLANE_FLOATS; i++) {
-				MemoryUtil.memPutFloat(cp + ((long) i << 2), gpuFrustumCull ? frustumPlanes[i] : 0.0f);
+			if (gpuFrustumCull) {
+				float[] planes = frustumPlanes;
+				for (int i = 0; i < VulkanFrustumMath.PLANE_FLOATS; i++) {
+					MemoryUtil.memPutFloat(cp + ((long) i << 2), planes[i]);
+				}
+			} else {
+				MemoryUtil.memSet(cp, 0, (long) VulkanFrustumMath.PLANE_FLOATS << 2);
 			}
 			MemoryUtil.memPutInt(cp + 96L, camBlockX);
 			MemoryUtil.memPutInt(cp + 100L, camBlockY);
@@ -370,17 +393,11 @@ public final class VulkanMeshTerrainEngine {
 			if (taskShaderMode) {
 				int taskOffset = layerIdx == 0 ? 0 : frameSolidTasks;
 				int taskCount = layerIdx == 0 ? frameSolidTasks : frameCutoutTasks;
-				try (MemoryStack stack = MemoryStack.stackPush()) {
-					IntBuffer pc = stack.ints(taskOffset, layerIdx);
-					VK12.vkCmdPushConstants(cmd, meshPipelineLayout, EXTMeshShader.VK_SHADER_STAGE_TASK_BIT_EXT, 0, pc);
-				}
+				pushConstants(cmd, EXTMeshShader.VK_SHADER_STAGE_TASK_BIT_EXT, taskOffset, layerIdx);
 				EXTMeshShader.vkCmdDrawMeshTasksEXT(cmd, taskCount, 1, 1);
 			} else {
 				int visOffset = layerIdx * VulkanMeshArena.MAX_VISIBLE_MESHLETS_PER_LAYER;
-				try (MemoryStack stack = MemoryStack.stackPush()) {
-					IntBuffer pc = stack.ints(visOffset, VulkanMeshArena.MAX_VISIBLE_MESHLETS_PER_LAYER);
-					VK12.vkCmdPushConstants(cmd, meshPipelineLayout, EXTMeshShader.VK_SHADER_STAGE_MESH_BIT_EXT, 0, pc);
-				}
+				pushConstants(cmd, EXTMeshShader.VK_SHADER_STAGE_MESH_BIT_EXT, visOffset, VulkanMeshArena.MAX_VISIBLE_MESHLETS_PER_LAYER);
 				EXTMeshShader.vkCmdDrawMeshTasksIndirectEXT(cmd, arena.indirectCmdBuf().buffer, layerIdx * 12L, 1, 12);
 			}
 
@@ -397,7 +414,12 @@ public final class VulkanMeshTerrainEngine {
 			return;
 		}
 		if (device != null && device != vkDev) {
+			VulkanMeshArena oldArena = arena;
 			arena = null;
+			if (oldArena != null) {
+				oldArena.freeHostScratch();
+			}
+			pipelineCache = 0L;
 			computeSetLayout = 0L;
 			computePipelineLayout = 0L;
 			computePipeline = 0L;
@@ -407,18 +429,25 @@ public final class VulkanMeshTerrainEngine {
 			meshShaderModule = 0L;
 			solidPipeline = 0L;
 			cutoutPipeline = 0L;
+			compiledVisualValid = false;
 		}
 		device = vkDev;
 		taskShaderMode = VulkanModernCapabilities.get().taskShaderEnabled();
+		taskBallotMode = false;
+		if (pipelineCache == 0L) {
+			pipelineCache = createPipelineCache(vkDev.vkDevice());
+		}
+		ensureDescriptorTemplate();
 		arena = new VulkanMeshArena(vkDev, taskShaderMode);
 		if (!taskShaderMode) {
 			createComputePipeline(vkDev);
 		}
 		createMeshLayoutsAndModules(vkDev);
 		VulkanModernCapabilities.setMeshEngineActive(true);
-		LOGGER.info("Initialized Nvidium-class VK_EXT_mesh_shader terrain engine on {} (mode={}, 64 MB VRAM quad pool, ReBAR ring buffers, 32-quad Wave32/Warp32 meshlets)",
+		LOGGER.info("Initialized Nvidium-class VK_EXT_mesh_shader terrain engine on {} (mode={}, taskCompaction={}, 64 MB VRAM quad pool, ReBAR ring buffers, 32-quad Wave32/Warp32 meshlets)",
 			VulkanModernCapabilities.get().deviceName(),
-			taskShaderMode ? "Task+Mesh single-pass" : "Compute+Mesh fallback");
+			taskShaderMode ? "Task+Mesh single-pass" : "Compute+Mesh fallback",
+			!taskShaderMode ? "n/a" : taskBallotMode ? "subgroupBallot" : "shared atomicAdd");
 	}
 
 	private void createComputePipeline(VulkanDevice vkDev) {
@@ -454,7 +483,7 @@ public final class VulkanMeshTerrainEngine {
 				.sType$Default()
 				.stage(stage)
 				.layout(computePipelineLayout);
-			checkVk(VK12.vkCreateComputePipelines(dev, 0L, cpInfo, null, out), "vkCreateComputePipelines");
+			checkVk(VK12.vkCreateComputePipelines(dev, pipelineCache, cpInfo, null, out), "vkCreateComputePipelines");
 			computePipeline = out.get(0);
 		} finally {
 			VK12.vkDestroyShaderModule(dev, compModule, null);
@@ -464,8 +493,20 @@ public final class VulkanMeshTerrainEngine {
 	private void createMeshLayoutsAndModules(VulkanDevice vkDev) {
 		VkDevice dev = vkDev.vkDevice();
 		if (taskShaderMode) {
-			taskShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain.task",
-				VulkanMeshShaders.TERRAIN_TASK_GLSL, Shaderc.shaderc_task_shader);
+			taskBallotMode = false;
+			if (VulkanModernCapabilities.get().taskSubgroupBallot()) {
+				try {
+					taskShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain_ballot.task",
+						VulkanMeshShaders.TERRAIN_TASK_BALLOT_GLSL, Shaderc.shaderc_task_shader);
+					taskBallotMode = true;
+				} catch (RuntimeException e) {
+					LOGGER.warn("Subgroup-ballot Task Shader failed to compile; falling back to shared-atomic compaction: {}", e.toString());
+				}
+			}
+			if (!taskBallotMode) {
+				taskShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain.task",
+					VulkanMeshShaders.TERRAIN_TASK_GLSL, Shaderc.shaderc_task_shader);
+			}
 			meshShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain_task.mesh",
 				VulkanMeshShaders.TERRAIN_MESH_TASK_GLSL, Shaderc.shaderc_mesh_shader);
 		} else {
@@ -519,17 +560,19 @@ public final class VulkanMeshTerrainEngine {
 	private void ensureGraphicsPipelines(VulkanDevice vkDev, VulkanCommandEncoder encoder,
 										 int colorFormat, int depthFormat) {
 		EphemeraConfig cfg = EphemeraCommon.config();
-		ShaderSourcePatcher.Options visualOpts = new ShaderSourcePatcher.Options(
-			VisualsRuntime.smoothFog(),
-			VisualsRuntime.gradientDithering(),
-			cfg.visualDitherStrength,
-			VisualsRuntime.atmosphericHorizon()
-		);
+		boolean smoothFog = VisualsRuntime.smoothFog();
+		boolean dither = VisualsRuntime.gradientDithering();
+		float ditherStrength = cfg.visualDitherStrength;
+		boolean horizon = VisualsRuntime.atmosphericHorizon();
+		// Primitive compare first: the steady-state path never allocates an Options record.
 		if (solidPipeline != 0L && cutoutPipeline != 0L
 			&& colorFormat == compiledColorFormat && depthFormat == compiledDepthFormat
-			&& visualOpts.equals(compiledVisualOptions)) {
+			&& compiledVisualValid
+			&& smoothFog == compiledSmoothFog && dither == compiledDither && horizon == compiledHorizon
+			&& Float.compare(ditherStrength, compiledDitherStrength) == 0) {
 			return;
 		}
+		ShaderSourcePatcher.Options visualOpts = new ShaderSourcePatcher.Options(smoothFog, dither, ditherStrength, horizon);
 		VkDevice dev = vkDev.vkDevice();
 		if (solidPipeline != 0L) {
 			long old = solidPipeline;
@@ -547,7 +590,24 @@ public final class VulkanMeshTerrainEngine {
 		cutoutPipeline = buildMeshGraphicsPipeline(dev, ChunkSectionLayer.CUTOUT.pipeline(), cutoutThreshold, visualOpts, colorFormat, depthFormat);
 		compiledColorFormat = colorFormat;
 		compiledDepthFormat = depthFormat;
-		compiledVisualOptions = visualOpts;
+		compiledSmoothFog = smoothFog;
+		compiledDither = dither;
+		compiledDitherStrength = ditherStrength;
+		compiledHorizon = horizon;
+		compiledVisualValid = true;
+	}
+
+	/** Empty in-memory pipeline cache shared by every mesh/compute pipeline build on this device; 0 on failure. */
+	private static long createPipelineCache(VkDevice dev) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			VkPipelineCacheCreateInfo info = VkPipelineCacheCreateInfo.calloc(stack).sType$Default();
+			LongBuffer out = stack.callocLong(1);
+			if (VK12.vkCreatePipelineCache(dev, info, null, out) != VK12.VK_SUCCESS) {
+				LOGGER.warn("vkCreatePipelineCache failed; mesh pipelines build without a cache");
+				return 0L;
+			}
+			return out.get(0);
+		}
 	}
 
 	private long buildMeshGraphicsPipeline(VkDevice dev, RenderPipeline template, float alphaCutout,
@@ -621,7 +681,7 @@ public final class VulkanMeshTerrainEngine {
 				.pNext(rendering);
 
 			LongBuffer out = stack.callocLong(1);
-			checkVk(VK12.vkCreateGraphicsPipelines(dev, 0L, gpInfo, null, out), "vkCreateGraphicsPipelines(mesh)");
+			checkVk(VK12.vkCreateGraphicsPipelines(dev, pipelineCache, gpInfo, null, out), "vkCreateGraphicsPipelines(mesh)");
 			return out.get(0);
 		} finally {
 			VK12.vkDestroyShaderModule(dev, fragModule, null);
@@ -663,6 +723,30 @@ public final class VulkanMeshTerrainEngine {
 										 VulkanGpuTextureView lightmap, VulkanGpuSampler lightmapSampler) {
 		int bufCount = taskShaderMode ? 9 : 8;
 		int writeCount = taskShaderMode ? 11 : 10;
+		if (meshWritesAddr != 0L && RenderSystem.isOnRenderThread()) {
+			// Template already holds sType/binding/type/count, info links, static offsets/ranges and
+			// image layouts: only patch the per-frame handles, then push straight from native memory.
+			long b = meshBufInfosAddr;
+			putBufferInfo(b, projSlice);
+			putBufferInfo(b + VkDescriptorBufferInfo.SIZEOF, fogSlice);
+			putBufferInfo(b + 2L * VkDescriptorBufferInfo.SIZEOF, globalsSlice);
+			MemoryUtil.memPutLong(b + 3L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER, meshFrame.buffer);
+			MemoryUtil.memPutLong(b + 4L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER, arena.quadBuf.buffer);
+			MemoryUtil.memPutLong(b + 5L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER, arena.meshletBuf.buffer);
+			MemoryUtil.memPutLong(b + 6L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER, arena.sectionMetaBuf.buffer);
+			MemoryUtil.memPutLong(b + 7L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER,
+				taskShaderMode ? arena.visibleTasksBuf().buffer : arena.visibleMeshletsBuf().buffer);
+			if (taskShaderMode) {
+				MemoryUtil.memPutLong(b + 8L * VkDescriptorBufferInfo.SIZEOF + VkDescriptorBufferInfo.BUFFER, cullParams.buffer);
+			}
+			long im = meshImgInfosAddr;
+			MemoryUtil.memPutLong(im + VkDescriptorImageInfo.SAMPLER, atlasSampler.vkSampler());
+			MemoryUtil.memPutLong(im + VkDescriptorImageInfo.IMAGEVIEW, atlas.vkImageView());
+			MemoryUtil.memPutLong(im + VkDescriptorImageInfo.SIZEOF + VkDescriptorImageInfo.SAMPLER, lightmapSampler.vkSampler());
+			MemoryUtil.memPutLong(im + VkDescriptorImageInfo.SIZEOF + VkDescriptorImageInfo.IMAGEVIEW, lightmap.vkImageView());
+			KHRPushDescriptor.nvkCmdPushDescriptorSetKHR(cmd, VK12.VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineLayout, 0, writeCount, meshWritesAddr);
+			return;
+		}
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			VkDescriptorBufferInfo.Buffer bufs = VkDescriptorBufferInfo.calloc(bufCount, stack);
 			bufs.get(0).buffer(((VulkanGpuBuffer) projSlice.buffer()).vkBuffer()).offset(projSlice.offset()).range(projSlice.length());
@@ -705,6 +789,79 @@ public final class VulkanMeshTerrainEngine {
 			}
 			KHRPushDescriptor.vkCmdPushDescriptorSetKHR(cmd, VK12.VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineLayout, 0, writes);
 		}
+	}
+
+	private static void putBufferInfo(long addr, GpuBufferSlice slice) {
+		MemoryUtil.memPutLong(addr + VkDescriptorBufferInfo.BUFFER, ((VulkanGpuBuffer) slice.buffer()).vkBuffer());
+		MemoryUtil.memPutLong(addr + VkDescriptorBufferInfo.OFFSET, slice.offset());
+		MemoryUtil.memPutLong(addr + VkDescriptorBufferInfo.RANGE, slice.length());
+	}
+
+	/** 8-byte push constant range (two ints) written from the preallocated native slot when available. */
+	private void pushConstants(VkCommandBuffer cmd, int stageFlags, int a, int b) {
+		if (pushConstAddr != 0L && RenderSystem.isOnRenderThread()) {
+			MemoryUtil.memPutInt(pushConstAddr, a);
+			MemoryUtil.memPutInt(pushConstAddr + 4L, b);
+			VK12.nvkCmdPushConstants(cmd, meshPipelineLayout, stageFlags, 0, 8, pushConstAddr);
+			return;
+		}
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			IntBuffer pc = stack.ints(a, b);
+			VK12.vkCmdPushConstants(cmd, meshPipelineLayout, stageFlags, 0, pc);
+		}
+	}
+
+	/**
+	 * Allocates the push-descriptor / push-constant template once. Its layout is identical in
+	 * Task+Mesh and compute-fallback mode (fallback just pushes the first 10 writes), so it survives
+	 * device changes. The engine is a process-lifetime singleton, so the block is never freed.
+	 */
+	private void ensureDescriptorTemplate() {
+		if (meshWritesAddr != 0L) {
+			return;
+		}
+		long writesBytes = (long) MESH_WRITES * VkWriteDescriptorSet.SIZEOF;
+		long bufBytes = (long) MESH_BUF_INFOS * VkDescriptorBufferInfo.SIZEOF;
+		long imgBytes = (long) MESH_IMG_INFOS * VkDescriptorImageInfo.SIZEOF;
+		long block = MemoryUtil.nmemCalloc(1L, writesBytes + bufBytes + imgBytes + 8L);
+		if (block == 0L) {
+			return; // MemoryStack fallback paths stay in use
+		}
+		long bufs = block + writesBytes;
+		long imgs = bufs + bufBytes;
+
+		for (int i = 0; i < MESH_BUF_INFOS; i++) {
+			long b = bufs + (long) i * VkDescriptorBufferInfo.SIZEOF;
+			long range = i == 3 ? VulkanMeshArena.MESH_FRAME_BYTES
+				: i == 8 ? VulkanMeshArena.CULL_PARAMS_BYTES
+				: VK12.VK_WHOLE_SIZE; // 0..2 are rewritten per push from their slices
+			MemoryUtil.memPutLong(b + VkDescriptorBufferInfo.OFFSET, 0L);
+			MemoryUtil.memPutLong(b + VkDescriptorBufferInfo.RANGE, range);
+		}
+		for (int i = 0; i < MESH_IMG_INFOS; i++) {
+			MemoryUtil.memPutInt(imgs + (long) i * VkDescriptorImageInfo.SIZEOF + VkDescriptorImageInfo.IMAGELAYOUT,
+				VK12.VK_IMAGE_LAYOUT_GENERAL);
+		}
+		// Binding -> info: 0..3 UBO -> buf 0..3, 4..5 sampler -> img 0..1, 6..9 SSBO -> buf 4..7, 10 UBO -> buf 8
+		for (int binding = 0; binding < MESH_WRITES; binding++) {
+			long w = block + (long) binding * VkWriteDescriptorSet.SIZEOF;
+			MemoryUtil.memPutInt(w + VkWriteDescriptorSet.STYPE, VK12.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+			MemoryUtil.memPutInt(w + VkWriteDescriptorSet.DSTBINDING, binding);
+			MemoryUtil.memPutInt(w + VkWriteDescriptorSet.DESCRIPTORCOUNT, 1);
+			if (binding == 4 || binding == 5) {
+				MemoryUtil.memPutInt(w + VkWriteDescriptorSet.DESCRIPTORTYPE, VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+				MemoryUtil.memPutAddress(w + VkWriteDescriptorSet.PIMAGEINFO, imgs + (long) (binding - 4) * VkDescriptorImageInfo.SIZEOF);
+				continue;
+			}
+			int bufIdx = binding < 4 ? binding : binding - 2;
+			int type = binding >= 6 && binding <= 9 ? VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			MemoryUtil.memPutInt(w + VkWriteDescriptorSet.DESCRIPTORTYPE, type);
+			MemoryUtil.memPutAddress(w + VkWriteDescriptorSet.PBUFFERINFO, bufs + (long) bufIdx * VkDescriptorBufferInfo.SIZEOF);
+		}
+		meshBufInfosAddr = bufs;
+		meshImgInfosAddr = imgs;
+		pushConstAddr = imgs + imgBytes;
+		meshWritesAddr = block;
 	}
 
 	private static @Nullable VulkanEncoderBridge currentBridge() {

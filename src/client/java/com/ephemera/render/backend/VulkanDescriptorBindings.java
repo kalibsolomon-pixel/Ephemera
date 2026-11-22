@@ -3,6 +3,8 @@ package com.ephemera.render.backend;
 import com.ephemera.render.backend.RenderPassTextureBinding.Vulkan;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vulkan.VulkanGpuSampler;
+import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,8 +21,8 @@ public final class VulkanDescriptorBindings {
 	static final int MAX_SLOTS = 64;
 
 	private static final String[] HOT_NAMES = {
-		"Projection", "DynamicTransforms", "Fog", "Globals", "ChunkSection", "Lighting",
-		"Sampler0", "Sampler1", "Sampler2", "Sampler3",
+		"DynamicTransforms", "Sampler0", "Projection", "Fog", "Globals", "Sampler2",
+		"ChunkSection", "Lighting", "Sampler1", "Sampler3",
 		"CloudInfo", "CloudFaces", "Sky", "DiffuseSampler", "InSampler", "MainSampler"
 	};
 
@@ -40,7 +42,8 @@ public final class VulkanDescriptorBindings {
 	private static int poolSize;
 
 	private final GpuBufferSlice[] uniforms = new GpuBufferSlice[MAX_SLOTS];
-	private final Vulkan[] textures = new Vulkan[MAX_SLOTS];
+	private final VulkanGpuTextureView[] textureViews = new VulkanGpuTextureView[MAX_SLOTS];
+	private final VulkanGpuSampler[] textureSamplers = new VulkanGpuSampler[MAX_SLOTS];
 
 	public static VulkanDescriptorBindings acquire(Map<String, GpuBufferSlice> uniforms, Map<String, ?> textures) {
 		VulkanDescriptorBindings bindings = null;
@@ -61,7 +64,8 @@ public final class VulkanDescriptorBindings {
 		}
 		int limit = Math.min(MAX_SLOTS, NEXT_SLOT.get());
 		Arrays.fill(bindings.uniforms, 0, limit, null);
-		Arrays.fill(bindings.textures, 0, limit, null);
+		Arrays.fill(bindings.textureViews, 0, limit, null);
+		Arrays.fill(bindings.textureSamplers, 0, limit, null);
 		if (poolSize < POOL_CAP) {
 			POOL[poolSize++] = bindings;
 		}
@@ -72,7 +76,6 @@ public final class VulkanDescriptorBindings {
 	}
 
 	private void seed(Map<String, GpuBufferSlice> uniforms, Map<String, ?> textures) {
-		// A live config change can enable the cache after vanilla has populated these maps.
 		if (!uniforms.isEmpty()) {
 			for (Map.Entry<String, GpuBufferSlice> e : uniforms.entrySet()) {
 				int slot = slot(e.getKey());
@@ -84,8 +87,9 @@ public final class VulkanDescriptorBindings {
 		if (!textures.isEmpty()) {
 			for (Map.Entry<String, ?> e : textures.entrySet()) {
 				int slot = slot(e.getKey());
-				if (slot >= 0) {
-					this.textures[slot] = (Vulkan) e.getValue();
+				if (slot >= 0 && e.getValue() instanceof Vulkan v) {
+					this.textureViews[slot] = v.ephemera$view();
+					this.textureSamplers[slot] = v.ephemera$sampler();
 				}
 			}
 		}
@@ -95,9 +99,15 @@ public final class VulkanDescriptorBindings {
 		if (name == null) {
 			return -1;
 		}
-		// Fast identity scan for the 10 hottest vanilla interned literals (covers >99% of calls).
+		// Fast identity checks for MC 26.2's 6 hottest interned descriptor names.
+		if (name == "DynamicTransforms") return 0;
+		if (name == "Sampler0") return 1;
+		if (name == "Projection") return 2;
+		if (name == "Fog") return 3;
+		if (name == "Globals") return 4;
+		if (name == "Sampler2") return 5;
 		String[] hot = HOT_NAMES;
-		for (int i = 0; i < 10; i++) {
+		for (int i = 6; i < hot.length; i++) {
 			if (name == hot[i]) {
 				return i;
 			}
@@ -106,16 +116,21 @@ public final class VulkanDescriptorBindings {
 		if (existing != null) {
 			return existing;
 		}
-		int allocated = NEXT_SLOT.getAndIncrement();
-		if (allocated >= MAX_SLOTS) {
-			return -1;
+		while (true) {
+			int cur = NEXT_SLOT.get();
+			if (cur >= MAX_SLOTS) {
+				REGISTRY.putIfAbsent(name, -1);
+				return -1;
+			}
+			if (NEXT_SLOT.compareAndSet(cur, cur + 1)) {
+				Integer raced = REGISTRY.putIfAbsent(name, cur);
+				if (raced != null) {
+					return raced;
+				}
+				SLOT_NAMES[cur] = name;
+				return cur;
+			}
 		}
-		Integer raced = REGISTRY.putIfAbsent(name, allocated);
-		if (raced != null) {
-			return raced;
-		}
-		SLOT_NAMES[allocated] = name;
-		return allocated;
 	}
 
 	public GpuBufferSlice uniform(int slot) {
@@ -126,11 +141,21 @@ public final class VulkanDescriptorBindings {
 		uniforms[slot] = slice;
 	}
 
-	public Vulkan texture(int slot) {
-		return textures[slot];
+	public VulkanGpuTextureView textureView(int slot) {
+		return textureViews[slot];
 	}
 
-	public void texture(int slot, Object binding) {
-		textures[slot] = (Vulkan) binding;
+	public VulkanGpuSampler textureSampler(int slot) {
+		return textureSamplers[slot];
+	}
+
+	public void setTexture(int slot, VulkanGpuTextureView view, VulkanGpuSampler sampler) {
+		textureViews[slot] = view;
+		textureSamplers[slot] = sampler;
+	}
+
+	public void clearTexture(int slot) {
+		textureViews[slot] = null;
+		textureSamplers[slot] = null;
 	}
 }

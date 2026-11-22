@@ -53,7 +53,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 			case "BlockStateCacheMixin", "BlockStateMixin", "StateHolderMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
 			case "BlockShapeMixin", "ArrayVoxelShapeMixin" -> cfg.memoryDeduplicateShapes;
 			case "CompactTrigMixin" -> cfg.engineFastMath;
-			case "ChunkModuloMixin", "LevelChunkIndexMixin", "PaletteIndexAccessor", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin", "ServerChunkCacheFastMixin" -> cfg.engineFastChunkLookup;
+			case "ChunkModuloMixin", "LevelChunkIndexMixin", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin", "ServerChunkCacheFastMixin" -> cfg.engineFastChunkLookup;
 			case "CubeVoxelShapeFastMixin", "BlockCollisionsFastMixin" -> cfg.engineFastCollisions;
 			case "EntitySectionStorageFastMixin", "TrackedEntityFastMixin" -> cfg.engineFastEntityLookup;
 			case "SimpleBitStorageFastMixin", "LinearPaletteFastMixin", "PalettedContainerFastMixin" -> cfg.engineFastPalettedStorage;
@@ -77,7 +77,6 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("CompactTrigMixin", "lithium", "radium", "canary");
 		registerYield("ChunkModuloMixin", "lithium", "radium", "canary");
 		registerYield("LevelChunkIndexMixin", "lithium", "radium", "canary");
-		registerYield("PaletteIndexAccessor", "lithium", "radium", "canary");
 		registerYield("SectionStateMixin", "lithium", "radium", "canary");
 		registerYield("FluidAccess", "lithium", "radium", "canary");
 		registerYield("FluidStateFastMixin", "lithium", "radium", "canary");

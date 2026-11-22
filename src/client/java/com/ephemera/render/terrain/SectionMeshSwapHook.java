@@ -10,6 +10,13 @@ import org.jspecify.annotations.Nullable;
 public interface SectionMeshSwapHook {
 	long ephemera$fadeEndMs();
 
+	/**
+	 * Vanilla {@code getVisibility(now)} (1 once {@code now - uploadedTime >= fadeDuration},
+	 * else the linear ramp), eased with {@code ChunkFadeMath.easeOutCubic} when
+	 * {@code smoothChunkFade} (the caller reads that gate once per frame).
+	 */
+	float ephemera$visibility(long now, boolean smoothChunkFade);
+
 	/** Compiled mesh cache directly mirrored from {@code sectionMesh}, or null when UNCOMPILED/EMPTY. */
 	@Nullable SectionMeshRenderCache ephemera$compiledCache();
 

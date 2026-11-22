@@ -11,10 +11,18 @@ import java.util.regex.Pattern;
  * <p>Output stays plain GLSL 330 with no extensions, so it compiles through both the
  * OpenGL driver and Blaze3D's GLSL-to-SPIR-V path. Each feature only applies when the
  * expected vanilla function shape is found; anything else is left byte-for-byte untouched.
+ * The exception is the OpenGL-only single multi-draw terrain patch
+ * ({@link #patchGlSingleMdiVertex}), which enables {@code GL_ARB_shader_draw_parameters}.
  */
 public final class ShaderSourcePatcher {
 	public static final String MARKER = "// ephemera:visuals-patched";
 	private static final String VANILLA_APPLY_FOG = "ephemera_vanilla_apply_fog";
+	/** Uniform block holding {@code (originX, originY, originZ, floatBits(visibility))} per single multi-draw entry. */
+	public static final String GL_BATCH_BLOCK = "EphemeraTerrainBatch";
+	private static final String GL_BATCH_VISIBILITY = "ephemeraChunkVisibility";
+	private static final String MAIN_DECL = "void main()";
+	private static final String VANILLA_TERRAIN_POS = "vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;";
+	private static final String VANILLA_FADE_ARG = ", ChunkVisibility);";
 
 	private static final Pattern LINEAR_FOG_DECL = Pattern.compile("\\bfloat\\s+linear_fog_value\\s*\\(");
 	private static final Pattern LINEAR_FOG_RETURN = Pattern.compile(
@@ -120,6 +128,146 @@ public final class ShaderSourcePatcher {
 		}
 		sb.append("    return vec4(rgb, inColor.a);\n}");
 		return sb.toString();
+	}
+
+	/**
+	 * OpenGL single multi-draw terrain: lets {@code core/terrain.vsh} take its section origin
+	 * and fade visibility from {@code EphemeraBatchEntries[gl_BaseInstanceARB - 1]} when a draw
+	 * has a non-zero base instance. Base instance 0 (vanilla, wireframe, translucent and
+	 * fallback draws) keeps {@code ChunkPosition} and {@code ChunkVisibility} exactly. Returns
+	 * {@code source} unchanged unless the vanilla shape is found.
+	 */
+	public static String patchGlSingleMdiVertex(String source, int maxEntries) {
+		if (source == null || maxEntries <= 0 || source.contains(GL_BATCH_BLOCK) || !source.startsWith("#version")
+			|| !source.contains("ChunkPosition") || !hasMainOutsideComments(source)
+			|| !source.contains(VANILLA_TERRAIN_POS)) {
+			return source;
+		}
+		int versionEnd = source.indexOf('\n');
+		int insertAt = afterDirectivePreamble(source);
+		if (versionEnd < 0 || insertAt <= versionEnd) {
+			return source;
+		}
+		String declarations = "\nlayout(std140) uniform " + GL_BATCH_BLOCK + " {\n"
+			+ "    uvec4 EphemeraBatchEntries[" + maxEntries + "];\n"
+			+ "};\n"
+			+ "flat out float " + GL_BATCH_VISIBILITY + ";\n\n";
+		String out = source.substring(0, versionEnd + 1)
+			+ "#extension GL_ARB_shader_draw_parameters : enable\n"
+			+ source.substring(versionEnd + 1, insertAt)
+			+ declarations
+			+ source.substring(insertAt);
+		return out.replace(VANILLA_TERRAIN_POS,
+			"ivec3 ephemeraOrigin = ChunkPosition;\n"
+				+ "    float ephemeraVis = ChunkVisibility;\n"
+				+ "    if (gl_BaseInstanceARB > 0) {\n"
+				+ "        uvec4 ephemeraEntry = EphemeraBatchEntries[gl_BaseInstanceARB - 1];\n"
+				+ "        ephemeraOrigin = ivec3(ephemeraEntry.xyz);\n"
+				+ "        ephemeraVis = uintBitsToFloat(ephemeraEntry.w);\n"
+				+ "    }\n"
+				+ "    " + GL_BATCH_VISIBILITY + " = ephemeraVis;\n"
+				+ "    vec3 pos = Position + (ephemeraOrigin - CameraBlockPos) + CameraOffset;");
+	}
+
+	/**
+	 * Fragment half of {@link #patchGlSingleMdiVertex}: the fade mix reads the visibility the
+	 * vertex stage resolved instead of {@code ChunkVisibility}. Inserts the {@code flat in}
+	 * declaration right after the {@code #version}/{@code #extension} preamble so mods that wrap
+	 * {@code main()} into earlier helper functions (e.g. Aurora gradient dithering) or resource
+	 * packs with {@code void main()} inside comments always see it declared in scope.
+	 */
+	public static String patchGlSingleMdiFragment(String source) {
+		if (source == null || source.contains(GL_BATCH_VISIBILITY) || !source.startsWith("#version")
+			|| !hasMainOutsideComments(source) || !source.contains(VANILLA_FADE_ARG)) {
+			return source;
+		}
+		int insertAt = afterDirectivePreamble(source);
+		if (insertAt < 0) {
+			return source;
+		}
+		String out = source.substring(0, insertAt)
+			+ "\nflat in float " + GL_BATCH_VISIBILITY + ";\n\n"
+			+ source.substring(insertAt);
+		return out.replace(VANILLA_FADE_ARG, ", " + GL_BATCH_VISIBILITY + ");");
+	}
+
+	/**
+	 * Returns the character index immediately after the leading {@code #version}, {@code #extension},
+	 * blank lines, and comments — the earliest legal GLSL global-declaration insertion point.
+	 */
+	private static int afterDirectivePreamble(String s) {
+		int n = s.length();
+		int i = 0;
+		int lastDirectiveEnd = -1;
+		while (i < n) {
+			// Skip leading horizontal whitespace and newlines
+			while (i < n && (s.charAt(i) == ' ' || s.charAt(i) == '\t' || s.charAt(i) == '\r' || s.charAt(i) == '\n')) {
+				i++;
+			}
+			if (i >= n) {
+				break;
+			}
+			// Skip line comments
+			if (s.charAt(i) == '/' && i + 1 < n && s.charAt(i + 1) == '/') {
+				int eol = s.indexOf('\n', i);
+				if (eol < 0) {
+					break;
+				}
+				i = eol + 1;
+				continue;
+			}
+			// Skip block comments
+			if (s.charAt(i) == '/' && i + 1 < n && s.charAt(i + 1) == '*') {
+				int end = s.indexOf("*/", i + 2);
+				if (end < 0) {
+					return -1;
+				}
+				i = end + 2;
+				continue;
+			}
+			if (s.startsWith("#version", i) || s.startsWith("#extension", i)) {
+				int eol = s.indexOf('\n', i);
+				if (eol < 0) {
+					return -1;
+				}
+				lastDirectiveEnd = eol + 1;
+				i = eol + 1;
+				continue;
+			}
+			break;
+		}
+		return lastDirectiveEnd;
+	}
+
+	/** True when a real {@code void main()} declaration exists outside GLSL comments. */
+	private static boolean hasMainOutsideComments(String s) {
+		int n = s.length();
+		for (int i = 0; i < n; i++) {
+			char c = s.charAt(i);
+			if (c == '/' && i + 1 < n) {
+				char d = s.charAt(i + 1);
+				if (d == '/') {
+					int eol = s.indexOf('\n', i);
+					if (eol < 0) {
+						return false;
+					}
+					i = eol;
+					continue;
+				}
+				if (d == '*') {
+					int end = s.indexOf("*/", i + 2);
+					if (end < 0) {
+						return false;
+					}
+					i = end + 1;
+					continue;
+				}
+			}
+			if (c == 'v' && s.startsWith(MAIN_DECL, i)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Index of the brace closing the one at {@code open}, skipping comments; -1 if unbalanced. */

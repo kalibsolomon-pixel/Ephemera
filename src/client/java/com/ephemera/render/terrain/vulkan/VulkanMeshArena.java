@@ -8,6 +8,7 @@ import com.ephemera.core.terrain.MeshletSlabAllocator;
 import com.ephemera.render.backend.VulkanEncoderBridge;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
+import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.Arrays;
 import org.lwjgl.PointerBuffer;
@@ -51,6 +52,8 @@ final class VulkanMeshArena {
 		long allocation;
 		long byteSize;
 		long mappedPtr;
+		/** HOST_COHERENT memory: CPU writes are visible to the GPU without vmaFlushAllocation. */
+		boolean coherent;
 	}
 
 	private static final class DeferredFreeQueue {
@@ -108,6 +111,8 @@ final class VulkanMeshArena {
 	private int frameCounter;
 	private int arenaEpoch = 1;
 	private boolean closed;
+	// One reusable native VkBufferCopy for single-region copies (render thread only; freed in destroy)
+	private long copyRegionAddr = MemoryUtil.nmemCalloc(1L, VkBufferCopy.SIZEOF);
 
 	VulkanMeshArena(VulkanDevice device, boolean taskShaderMode) {
 		this.vma = device.vma();
@@ -257,8 +262,8 @@ final class VulkanMeshArena {
 		long ptr = stage.mappedPtr + stageBase;
 
 		int[] qw = baked.quadWords;
-		for (int i = 0; i < qw.length; i++) {
-			MemoryUtil.memPutInt(ptr + ((long) i << 2), qw[i]);
+		if (qw.length > 0) {
+			MemoryUtil.memIntBuffer(ptr, qw.length).put(qw);
 		}
 
 		long mStageOff = stageBase + align16(quadBytes);
@@ -292,7 +297,9 @@ final class VulkanMeshArena {
 		MemoryUtil.memPutInt(sPtr + 56L, meshletBase + baked.solidMeshletCount);
 		MemoryUtil.memPutInt(sPtr + 60L, baked.cutoutMeshletCount);
 
-		Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, totalStage);
+		if (!stage.coherent) {
+			Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, totalStage);
+		}
 
 		VkCommandBuffer cmd = bridge.ephemera$commandBuffer();
 		copyRegion(cmd, stage.buffer, stageBase, quadBuf.buffer, (long) quadBase * MeshletBaker.BYTES_PER_QUAD, quadBytes);
@@ -323,7 +330,9 @@ final class VulkanMeshArena {
 		for (int i = 0; i < count; i++) {
 			MemoryUtil.memPutFloat(ptr + ((long) i << 2), values[i]);
 		}
-		Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, bytes);
+		if (!stage.coherent) {
+			Vma.vmaFlushAllocation(vma, stage.allocation, stageBase, bytes);
+		}
 		VkCommandBuffer cmd = bridge.ephemera$commandBuffer();
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			int off = 0;
@@ -362,19 +371,22 @@ final class VulkanMeshArena {
 		GpuBuf target = ensureHostWriteCapacity(encoder, visibleTasksRing, ringSlot, bytes,
 			VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		long ptr = target.mappedPtr;
-		for (int i = 0; i < solidCount; i++) {
-			MemoryUtil.memPutInt(ptr + ((long) i << 2), solidTasks[i]);
+		if (solidCount > 0) {
+			MemoryUtil.memIntBuffer(ptr, solidCount).put(solidTasks, 0, solidCount);
 		}
-		long cutPtr = ptr + ((long) solidCount << 2);
-		for (int i = 0; i < cutoutCount; i++) {
-			MemoryUtil.memPutInt(cutPtr + ((long) i << 2), cutoutTasks[i]);
+		if (cutoutCount > 0) {
+			MemoryUtil.memIntBuffer(ptr + ((long) solidCount << 2), cutoutCount).put(cutoutTasks, 0, cutoutCount);
 		}
-		Vma.vmaFlushAllocation(vma, target.allocation, 0L, bytes);
+		if (!target.coherent) {
+			Vma.vmaFlushAllocation(vma, target.allocation, 0L, bytes);
+		}
 		ringTasksVersion[ringSlot] = version;
 	}
 
 	void flushAllocation(GpuBuf buf, long bytes) {
-		Vma.vmaFlushAllocation(vma, buf.allocation, 0L, bytes);
+		if (!buf.coherent) {
+			Vma.vmaFlushAllocation(vma, buf.allocation, 0L, bytes);
+		}
 	}
 
 	int epoch() {
@@ -434,6 +446,15 @@ final class VulkanMeshArena {
 		}
 	}
 
+	/** Frees CPU-side off-heap scratch when an old {@code VulkanDevice} is replaced. */
+	void freeHostScratch() {
+		closed = true;
+		if (copyRegionAddr != 0L) {
+			MemoryUtil.nmemFree(copyRegionAddr);
+			copyRegionAddr = 0L;
+		}
+	}
+
 	void destroy(VulkanCommandEncoder encoder) {
 		if (closed) {
 			return;
@@ -457,6 +478,10 @@ final class VulkanMeshArena {
 				visibleMeshletsRing[i] = null;
 				indirectCmdRing[i] = null;
 			}
+		}
+		if (copyRegionAddr != 0L) {
+			MemoryUtil.nmemFree(copyRegionAddr);
+			copyRegionAddr = 0L;
 		}
 	}
 
@@ -608,6 +633,7 @@ final class VulkanMeshArena {
 			b.allocation = pAlloc.get(0);
 			b.byteSize = byteSize;
 			b.mappedPtr = mapped;
+			b.coherent = isCoherent(outInfo.memoryType(), stack);
 			return b;
 		}
 	}
@@ -639,8 +665,15 @@ final class VulkanMeshArena {
 			b.allocation = pAlloc.get(0);
 			b.byteSize = byteSize;
 			b.mappedPtr = mapped;
+			b.coherent = isCoherent(outInfo.memoryType(), stack);
 			return b;
 		}
+	}
+
+	private boolean isCoherent(int memoryType, MemoryStack stack) {
+		IntBuffer pFlags = stack.callocInt(1);
+		Vma.vmaGetMemoryTypeProperties(vma, memoryType, pFlags);
+		return (pFlags.get(0) & VK12.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
 	}
 
 	private void destroyBufDeferred(VulkanCommandEncoder encoder, GpuBuf b) {
@@ -654,8 +687,16 @@ final class VulkanMeshArena {
 		}
 	}
 
-	private static void copyRegion(VkCommandBuffer cmd, long src, long srcOff, long dst, long dstOff, long size) {
+	private void copyRegion(VkCommandBuffer cmd, long src, long srcOff, long dst, long dstOff, long size) {
 		if (size <= 0L) {
+			return;
+		}
+		long regionAddr = copyRegionAddr;
+		if (regionAddr != 0L) {
+			MemoryUtil.memPutLong(regionAddr + VkBufferCopy.SRCOFFSET, srcOff);
+			MemoryUtil.memPutLong(regionAddr + VkBufferCopy.DSTOFFSET, dstOff);
+			MemoryUtil.memPutLong(regionAddr + VkBufferCopy.SIZE, size);
+			VK12.nvkCmdCopyBuffer(cmd, src, dst, 1, regionAddr);
 			return;
 		}
 		try (MemoryStack stack = MemoryStack.stackPush()) {

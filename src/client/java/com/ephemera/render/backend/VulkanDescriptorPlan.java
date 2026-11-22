@@ -9,9 +9,12 @@ import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanConst;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
+import com.mojang.blaze3d.vulkan.VulkanGpuSampler;
+import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import com.mojang.blaze3d.vulkan.VulkanUtils;
 import java.lang.ref.Cleaner;
 import java.nio.LongBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -50,6 +53,11 @@ import static org.lwjgl.vulkan.VK12.vkDestroyBufferView;
 public final class VulkanDescriptorPlan {
 	private static final Cleaner CLEANER = Cleaner.create();
 	private static final Map<VulkanBindGroupLayout, VulkanDescriptorPlan> PLANS = new WeakHashMap<>();
+	private static final int RT_SET_BITS = 7; // 128 sets * 2 ways = 256 entries
+	private static final int RT_CACHE_SIZE = (1 << RT_SET_BITS) * 2;
+	private static final int RT_HASH_SHIFT = 64 - RT_SET_BITS;
+	private static final VulkanBindGroupLayout[] RT_KEYS = new VulkanBindGroupLayout[RT_CACHE_SIZE];
+	private static final VulkanDescriptorPlan[] RT_VALS = new VulkanDescriptorPlan[RT_CACHE_SIZE];
 
 	private final String[] names;
 	private final int[] slots;
@@ -66,8 +74,35 @@ public final class VulkanDescriptorPlan {
 	private final long[] infoAddrs;
 	private final long texelInfoAddr;
 
-	public static synchronized VulkanDescriptorPlan of(VulkanBindGroupLayout layout) {
+	public static VulkanDescriptorPlan of(VulkanBindGroupLayout layout) {
+		if (RenderSystem.isOnRenderThread()) {
+			long h = layout.handle();
+			int base = ((int) ((h * 0x9E3779B97F4A7C15L) >>> RT_HASH_SHIFT)) << 1;
+			if (RT_KEYS[base] == layout) {
+				return RT_VALS[base];
+			}
+			int way1 = base + 1;
+			if (RT_KEYS[way1] == layout) {
+				return RT_VALS[way1];
+			}
+			VulkanDescriptorPlan plan = ofSlow(layout);
+			RT_KEYS[way1] = RT_KEYS[base];
+			RT_VALS[way1] = RT_VALS[base];
+			RT_KEYS[base] = layout;
+			RT_VALS[base] = plan;
+			return plan;
+		}
+		return ofSlow(layout);
+	}
+
+	private static synchronized VulkanDescriptorPlan ofSlow(VulkanBindGroupLayout layout) {
 		return PLANS.computeIfAbsent(layout, VulkanDescriptorPlan::new);
+	}
+
+	public static void clearRenderThreadCache() {
+		RenderSystem.assertOnRenderThread();
+		Arrays.fill(RT_KEYS, null);
+		Arrays.fill(RT_VALS, null);
 	}
 
 	private VulkanDescriptorPlan(VulkanBindGroupLayout layout) {
@@ -186,12 +221,21 @@ public final class VulkanDescriptorPlan {
 			int type = typeArr[i];
 			long target = addrs[i];
 			if (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-				Vulkan binding = slot >= 0 ? bindings.texture(slot) : (Vulkan) textures.get(names[i]);
-				if (binding == null) {
+				VulkanGpuTextureView view;
+				VulkanGpuSampler sampler;
+				if (slot >= 0) {
+					view = bindings.textureView(slot);
+					sampler = bindings.textureSampler(slot);
+				} else {
+					Vulkan binding = (Vulkan) textures.get(names[i]);
+					view = binding == null ? null : binding.ephemera$view();
+					sampler = binding == null ? null : binding.ephemera$sampler();
+				}
+				if (view == null || sampler == null) {
 					throw new IllegalStateException("Missing sampler " + names[i]);
 				}
-				memPutLong(target + VkDescriptorImageInfo.SAMPLER, binding.ephemera$sampler().vkSampler());
-				memPutLong(target + VkDescriptorImageInfo.IMAGEVIEW, binding.ephemera$view().vkImageView());
+				memPutLong(target + VkDescriptorImageInfo.SAMPLER, sampler.vkSampler());
+				memPutLong(target + VkDescriptorImageInfo.IMAGEVIEW, view.vkImageView());
 			} else {
 				GpuBufferSlice slice = slot >= 0 ? bindings.uniform(slot) : uniforms.get(names[i]);
 				if (slice == null) {
@@ -253,12 +297,21 @@ public final class VulkanDescriptorPlan {
 				VkWriteDescriptorSet write = writes.get().sType$Default().dstBinding(i)
 					.descriptorCount(1).descriptorType(type);
 				if (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-					Vulkan binding = slot >= 0 ? bindings.texture(slot) : (Vulkan) textures.get(names[i]);
-					if (binding == null) {
+					VulkanGpuTextureView view;
+					VulkanGpuSampler sampler;
+					if (slot >= 0) {
+						view = bindings.textureView(slot);
+						sampler = bindings.textureSampler(slot);
+					} else {
+						Vulkan binding = (Vulkan) textures.get(names[i]);
+						view = binding == null ? null : binding.ephemera$view();
+						sampler = binding == null ? null : binding.ephemera$sampler();
+					}
+					if (view == null || sampler == null) {
 						throw new IllegalStateException("Missing sampler " + names[i]);
 					}
-					images.position(imageIndex++).sampler(binding.ephemera$sampler().vkSampler())
-						.imageView(binding.ephemera$view().vkImageView()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+					images.position(imageIndex++).sampler(sampler.vkSampler())
+						.imageView(view.vkImageView()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
 					memPutAddress(write.address() + VkWriteDescriptorSet.PIMAGEINFO, images.address());
 					continue;
 				}
