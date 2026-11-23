@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 628" width="960" height="628">
+<style>
+  .title { font: 700 17px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #1f2328; }
+  .sub { font: 400 11.5px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #59636e; }
+  .leg { font: 600 11.5px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #32383f; }
+  .wname { font: 600 12px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #1f2328; }
+  .wdesc { font: 400 10.5px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #59636e; }
+  .bval { font: 500 10.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #59636e; }
+  .bval-e { font: 700 11px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #1f2328; }
+  .delta-s { font: 700 11.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #059669; }
+  .delta-v { font: 500 10.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #59636e; }
+  .axis { font: 500 10.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #59636e; }
+  .colhdr { font: 700 10.5px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #59636e; letter-spacing: 0.04em; }
+</style>
+<rect x="0.5" y="0.5" width="959" height="627" rx="14" fill="#ffffff" stroke="#d0d7de"/>
+<circle cx="30" cy="30" r="5" fill="#0d9488"/>
+<text x="42" y="35" class="title">Native Vulkan — 10-Workload Avg FPS Breakdown</text>
+<text x="24" y="54" class="sub">Minecraft 26.2 · RX 9070 XT · i7-14700F · 1080×720 · Uninstrumented (No JFR) · Higher is better</text>
+<rect x="640" y="22" width="11" height="11" rx="3" fill="#94a3b8"/>
+<text x="656" y="32" class="leg">Vanilla</text>
+<rect x="720.4" y="22" width="11" height="11" rx="3" fill="#2563eb"/>
+<text x="736.4" y="32" class="leg">Sodium 0.9.2</text>
+<rect x="836.8" y="22" width="11" height="11" rx="3" fill="#0d9488"/>
+<text x="852.8" y="32" class="leg">Ephemera 1.3.0</text>
+<text x="24" y="75" class="colhdr">WORKLOAD</text>
+<text x="220" y="75" class="colhdr">AVERAGE FPS</text>
+<text x="936" y="75" text-anchor="end" class="colhdr">VS SODIUM / VANILLA</text>
+<line x1="220.0" y1="80" x2="220.0" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="220.0" y="612" text-anchor="middle" class="axis">0</text>
+<line x1="293.6" y1="80" x2="293.6" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="293.6" y="612" text-anchor="middle" class="axis">500</text>
+<line x1="367.1" y1="80" x2="367.1" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="367.1" y="612" text-anchor="middle" class="axis">1,000</text>
+<line x1="440.7" y1="80" x2="440.7" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="440.7" y="612" text-anchor="middle" class="axis">1,500</text>
+<line x1="514.3" y1="80" x2="514.3" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="514.3" y="612" text-anchor="middle" class="axis">2,000</text>
+<line x1="587.9" y1="80" x2="587.9" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="587.9" y="612" text-anchor="middle" class="axis">2,500</text>
+<line x1="661.4" y1="80" x2="661.4" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="661.4" y="612" text-anchor="middle" class="axis">3,000</text>
+<line x1="735.0" y1="80" x2="735.0" y2="596" stroke="#e5e7eb" stroke-dasharray="3,3"/>
+<text x="735.0" y="612" text-anchor="middle" class="axis">3,500</text>
+<text x="24" y="99" class="wname">Terrain Vista (RD 20)</text>
+<text x="24" y="114" class="wdesc">RD 20 full-terrain camera sweep</text>
+<rect x="220" y="87" width="87.5" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="313.5" y="95.5" class="bval">594</text>
+<rect x="220" y="99" width="120.6" height="9.5" rx="3" fill="#2563eb"/>
+<text x="346.6" y="107.5" class="bval">820</text>
+<rect x="220" y="111" width="251.1" height="9.5" rx="3" fill="#0d9488"/>
+<text x="477.1" y="119.5" class="bval-e">1,707</text>
+<text x="936" y="100" text-anchor="end" class="delta-s">+108% vs Sod</text>
+<text x="936" y="115" text-anchor="end" class="delta-v">2.87× vs Van</text>
+<line x1="24" y1="126" x2="936" y2="126" stroke="#e1e6eb"/>
+<text x="24" y="145" class="wname">Terrain Vista (RD 32)</text>
+<text x="24" y="160" class="wdesc">RD 32 long-range vista sweep</text>
+<rect x="220" y="133" width="82.5" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="308.5" y="141.5" class="bval">560</text>
+<rect x="220" y="145" width="107.3" height="9.5" rx="3" fill="#2563eb"/>
+<text x="333.3" y="153.5" class="bval">730</text>
+<rect x="220" y="157" width="230.1" height="9.5" rx="3" fill="#0d9488"/>
+<text x="456.1" y="165.5" class="bval-e">1,564</text>
+<text x="936" y="146" text-anchor="end" class="delta-s">+114% vs Sod</text>
+<text x="936" y="161" text-anchor="end" class="delta-v">2.79× vs Van</text>
+<line x1="24" y1="172" x2="936" y2="172" stroke="#e1e6eb"/>
+<text x="24" y="191" class="wname">Dense World Crowd</text>
+<text x="24" y="206" class="wdesc">Entities, chests, particles &amp; culling</text>
+<rect x="220" y="179" width="73.1" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="299.1" y="187.5" class="bval">497</text>
+<rect x="220" y="191" width="102.7" height="9.5" rx="3" fill="#2563eb"/>
+<text x="328.7" y="199.5" class="bval">698</text>
+<rect x="220" y="203" width="275.5" height="9.5" rx="3" fill="#0d9488"/>
+<text x="501.5" y="211.5" class="bval-e">1,873</text>
+<text x="936" y="192" text-anchor="end" class="delta-s">+168% vs Sod</text>
+<text x="936" y="207" text-anchor="end" class="delta-v">3.77× vs Van</text>
+<line x1="24" y1="218" x2="936" y2="218" stroke="#e1e6eb"/>
+<text x="24" y="237" class="wname">Chunk Rebuild (RD 20)</text>
+<text x="24" y="252" class="wdesc">384-block teleport full rebuild burst</text>
+<rect x="220" y="225" width="152.9" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="378.9" y="233.5" class="bval">1,039</text>
+<rect x="220" y="237" width="159.9" height="9.5" rx="3" fill="#2563eb"/>
+<text x="385.9" y="245.5" class="bval">1,087</text>
+<rect x="220" y="249" width="345.2" height="9.5" rx="3" fill="#0d9488"/>
+<text x="571.2" y="257.5" class="bval-e">2,346</text>
+<text x="936" y="238" text-anchor="end" class="delta-s">+116% vs Sod</text>
+<text x="936" y="253" text-anchor="end" class="delta-v">2.26× vs Van</text>
+<line x1="24" y1="264" x2="936" y2="264" stroke="#e1e6eb"/>
+<text x="24" y="283" class="wname">Chunk Rebuild (RD 32)</text>
+<text x="24" y="298" class="wdesc">RD 32 full chunk rebuild burst</text>
+<rect x="220" y="271" width="149.0" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="375.0" y="279.5" class="bval">1,013</text>
+<rect x="220" y="283" width="146.4" height="9.5" rx="3" fill="#2563eb"/>
+<text x="372.4" y="291.5" class="bval">995</text>
+<rect x="220" y="295" width="330.3" height="9.5" rx="3" fill="#0d9488"/>
+<text x="556.3" y="303.5" class="bval-e">2,245</text>
+<text x="936" y="284" text-anchor="end" class="delta-s">+126% vs Sod</text>
+<text x="936" y="299" text-anchor="end" class="delta-v">2.22× vs Van</text>
+<line x1="24" y1="310" x2="936" y2="310" stroke="#e1e6eb"/>
+<text x="24" y="329" class="wname">GUI PvP HUD</text>
+<text x="24" y="344" class="wdesc">Inventory + enchanted hotbar over 3D</text>
+<rect x="220" y="317" width="132.0" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="358.0" y="325.5" class="bval">897</text>
+<rect x="220" y="329" width="150.4" height="9.5" rx="3" fill="#2563eb"/>
+<text x="376.4" y="337.5" class="bval">1,022</text>
+<rect x="220" y="341" width="360.2" height="9.5" rx="3" fill="#0d9488"/>
+<text x="586.2" y="349.5" class="bval-e">2,448</text>
+<text x="936" y="330" text-anchor="end" class="delta-s">+139% vs Sod</text>
+<text x="936" y="345" text-anchor="end" class="delta-v">2.73× vs Van</text>
+<line x1="24" y1="356" x2="936" y2="356" stroke="#e1e6eb"/>
+<text x="24" y="375" class="wname">Mouse Whip Flick</text>
+<text x="24" y="390" class="wdesc">Fast 360° camera flicks &amp; uploads</text>
+<rect x="220" y="363" width="98.3" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="324.3" y="371.5" class="bval">668</text>
+<rect x="220" y="375" width="129.5" height="9.5" rx="3" fill="#2563eb"/>
+<text x="355.5" y="383.5" class="bval">880</text>
+<rect x="220" y="387" width="259.1" height="9.5" rx="3" fill="#0d9488"/>
+<text x="485.1" y="395.5" class="bval-e">1,761</text>
+<text x="936" y="376" text-anchor="end" class="delta-s">+100% vs Sod</text>
+<text x="936" y="391" text-anchor="end" class="delta-v">2.64× vs Van</text>
+<line x1="24" y1="402" x2="936" y2="402" stroke="#e1e6eb"/>
+<text x="24" y="421" class="wname">Block &amp; Fluid Storm</text>
+<text x="24" y="436" class="wdesc">Heavy block/fluid updates &amp; lighting</text>
+<rect x="220" y="409" width="108.1" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="334.1" y="417.5" class="bval">734</text>
+<rect x="220" y="421" width="191.9" height="9.5" rx="3" fill="#2563eb"/>
+<text x="417.9" y="429.5" class="bval">1,304</text>
+<rect x="220" y="433" width="426.0" height="9.5" rx="3" fill="#0d9488"/>
+<text x="652.0" y="441.5" class="bval-e">2,895</text>
+<text x="936" y="422" text-anchor="end" class="delta-s">+122% vs Sod</text>
+<text x="936" y="437" text-anchor="end" class="delta-v">3.94× vs Van</text>
+<line x1="24" y1="448" x2="936" y2="448" stroke="#e1e6eb"/>
+<text x="24" y="467" class="wname">Chunk Flight Load</text>
+<text x="24" y="482" class="wdesc">High-speed flight across chunk borders</text>
+<rect x="220" y="455" width="106.7" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="332.7" y="463.5" class="bval">725</text>
+<rect x="220" y="467" width="138.8" height="9.5" rx="3" fill="#2563eb"/>
+<text x="364.8" y="475.5" class="bval">943</text>
+<rect x="220" y="479" width="263.9" height="9.5" rx="3" fill="#0d9488"/>
+<text x="489.9" y="487.5" class="bval-e">1,793</text>
+<text x="936" y="468" text-anchor="end" class="delta-s">+90% vs Sod</text>
+<text x="936" y="483" text-anchor="end" class="delta-v">2.47× vs Van</text>
+<line x1="24" y1="494" x2="936" y2="494" stroke="#e1e6eb"/>
+<text x="24" y="513" class="wname">Worldgen Frontier</text>
+<text x="24" y="528" class="wdesc">Fresh terrain streaming at frontier</text>
+<rect x="220" y="501" width="214.5" height="9.5" rx="3" fill="#94a3b8"/>
+<text x="440.5" y="509.5" class="bval">1,458</text>
+<rect x="220" y="513" width="208.5" height="9.5" rx="3" fill="#2563eb"/>
+<text x="434.5" y="521.5" class="bval">1,417</text>
+<rect x="220" y="525" width="461.6" height="9.5" rx="3" fill="#0d9488"/>
+<text x="687.6" y="533.5" class="bval-e">3,137</text>
+<text x="936" y="514" text-anchor="end" class="delta-s">+121% vs Sod</text>
+<text x="936" y="529" text-anchor="end" class="delta-v">2.15× vs Van</text>
+<rect x="16" y="544" width="928" height="50" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="28" y="565" class="wname">10-Workload Geomean</text>
+<text x="28" y="581" class="wdesc">Geometric mean across all 10 scenes</text>
+<rect x="220" y="551" width="114.4" height="10" rx="3" fill="#94a3b8"/>
+<text x="340.4" y="560" class="bval">777.7</text>
+<rect x="220" y="564" width="142.1" height="10" rx="3" fill="#2563eb"/>
+<text x="368.1" y="573" class="bval">966.1</text>
+<rect x="220" y="577" width="312.2" height="10" rx="3" fill="#0d9488"/>
+<text x="538.2" y="586" class="bval-e">2,121.6</text>
+<text x="932" y="566" text-anchor="end" class="delta-s">+119.6% vs Sod</text>
+<text x="932" y="582" text-anchor="end" class="delta-v">2.73× vs Van</text>
+</svg>

@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" width="960" height="580">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M 0 1 L 10 5 L 0 9 z" fill="#59636e"/>
+  </marker>
+</defs>
+<style>
+  .title { font: 700 17px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #1f2328; }
+  .sub { font: 400 11.5px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #59636e; }
+  .layer { font: 700 10.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #59636e; letter-spacing: 0.05em; }
+  .btitle { font: 700 13px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #1f2328; }
+  .bsub { font: 400 11px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #59636e; }
+  .item { font: 500 11px Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; fill: #32383f; }
+  .code { font: 600 10.5px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #1f2328; }
+  .pill { font: 600 10px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #1d4ed8; }
+  .pill-g { font: 600 10px ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; fill: #059669; }
+</style>
+<rect x="0.5" y="0.5" width="959" height="579" rx="14" fill="#ffffff" stroke="#d0d7de"/>
+<text x="24" y="34" class="title">Ephemera Engine Architecture</text>
+<text x="24" y="52" class="sub">Clean-room layered design · Pure Java 25 core · Dual Vulkan + OpenGL GPU pipelines · Fail-soft multi-version overlays (MC 26.2 &amp; 26.3)</text>
+<rect x="24" y="68" width="548" height="64" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="24" y="68" width="5" height="64" rx="2.5" fill="#7c3aed"/>
+<text x="40" y="88" class="btitle">:api — Zero-Dependency Public SPI</text>
+<text x="40" y="106" class="bsub">EphemeraApi · EphemeraCapabilities · EphemeraVisibilityProvider · EphemeraShaderHooks · SettingsBridge</text>
+<text x="40" y="122" class="bsub">Zero MC / Fabric / LWJGL imports — safe for third-party mods and Aurora Client integration</text>
+<rect x="586" y="68" width="350" height="64" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="586" y="68" width="5" height="64" rx="2.5" fill="#d97706"/>
+<text x="602" y="88" class="btitle">Fabric ObjectShare Bridges</text>
+<text x="602" y="106" class="bsub">ephemera:fast_write · ephemera:frame_pacer · ephemera:settings</text>
+<text x="602" y="122" class="bsub">Zero compile coupling · Aurora SDF acceleration &amp; UI sync</text>
+<rect x="24" y="146" width="912" height="92" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="24" y="146" width="5" height="92" rx="2.5" fill="#2563eb"/>
+<text x="40" y="167" class="btitle">:core — Pure Java 25 Algorithms (Verified Zero MC / Fabric / LWJGL / Mixin Imports)</text>
+<rect x="40.0" y="180" width="172.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="126.0" y="194" text-anchor="middle" class="code">MeshletBaker (16B uvec4)</text>
+<rect x="220.0" y="180" width="146.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="293.0" y="194" text-anchor="middle" class="code">QuadBuckets (7-face)</text>
+<rect x="374.0" y="180" width="126.5" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="437.2" y="194" text-anchor="middle" class="code">BitmaskFaceCuller</text>
+<rect x="508.5" y="180" width="120.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="568.5" y="194" text-anchor="middle" class="code">OpaqueLayerSweep</text>
+<rect x="636.5" y="180" width="152.5" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="712.8" y="194" text-anchor="middle" class="code">ParticleCellOcclusion</text>
+<rect x="797.0" y="180" width="107.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="850.5" y="194" text-anchor="middle" class="code">GuiBoundsIndex</text>
+<rect x="40.0" y="206" width="120.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="100.0" y="220" text-anchor="middle" class="code">FrameBudgetPacer</text>
+<rect x="168.0" y="206" width="133.0" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="234.5" y="220" text-anchor="middle" class="code">EphemeraFramePacer</text>
+<rect x="309.0" y="206" width="178.5" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="398.2" y="220" text-anchor="middle" class="code">FastMath / FastLightQueue</text>
+<rect x="495.5" y="206" width="139.5" height="21" rx="5" fill="#eaeef2" stroke="#e1e6eb"/>
+<text x="565.2" y="220" text-anchor="middle" class="code">ShaderSourcePatcher</text>
+<line x1="250" y1="238" x2="250" y2="256" stroke="#59636e" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="710" y1="238" x2="710" y2="256" stroke="#59636e" stroke-width="1.5" marker-end="url(#arr)"/>
+<rect x="24" y="258" width="448" height="154" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="24" y="258" width="448" height="3.5" rx="2" fill="#0d9488"/>
+<text x="40" y="281" class="btitle">Native Vulkan Terrain &amp; Backend Pipeline</text>
+<rect x="332" y="267" width="128" height="20" rx="5" fill="#dcfce7"/>
+<text x="396" y="280.5" text-anchor="middle" class="pill-g">VK_EXT_mesh_shader</text>
+<text x="40" y="303.0" class="item">• Single-pass Task + Mesh GPU culling (zero compute pass or barrier)</text>
+<text x="40" y="320.5" class="item">• 32-quad Wave32/Warp32 meshlets · 16B packed vertices · no index buf</text>
+<text x="40" y="338.0" class="item">• Persistent VMA VRAM arena + 3-frame ReBAR host-visible ring buffers</text>
+<text x="40" y="355.5" class="item">• Precompiled push-descriptor templates + direct buffer-view cache</text>
+<text x="40" y="373.0" class="item">• Lock-free SPSC VulkanAsyncPresenter (off-thread submit &amp; present)</text>
+<text x="40" y="390.5" class="item">• Atomic SOLID+CUTOUT readiness with same-frame indexed fallback</text>
+<rect x="488" y="258" width="448" height="154" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="488" y="258" width="448" height="3.5" rx="2" fill="#2563eb"/>
+<text x="504" y="281" class="btitle">OpenGL 3.3 Core Terrain &amp; Backend Pipeline</text>
+<rect x="806" y="267" width="118" height="20" rx="5" fill="#dbeafe"/>
+<text x="865" y="280.5" text-anchor="middle" class="pill">Single-MDI / GL3.3</text>
+<text x="504" y="303.0" class="item">• Single glMultiDrawElementsIndirect per heap via gl_BaseInstanceARB</text>
+<text x="504" y="320.5" class="item">• 4-ring persistent coherently mapped EphemeraTerrainBatch UBO</text>
+<text x="504" y="338.0" class="item">• Automatic fallback to direct glMultiDrawElementsBaseVertex (macOS/GL4)</text>
+<text x="504" y="355.5" class="item">• Symmetric 7-bucket directional face culling (≤3 spans) &amp; plan reuse</text>
+<text x="504" y="373.0" class="item">• Pass-scoped GL state, VAO, FBO, sampler &amp; UBO dispatch caches</text>
+<text x="504" y="390.5" class="item">• Scoped KHR_no_error window context when GL debug logging is off</text>
+<rect x="24.0" y="428" width="219.0" height="130" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="24.0" y="428" width="219.0" height="3" rx="1.5" fill="#0d9488"/>
+<text x="36.0" y="451" class="btitle">Fast-Write &amp; Culling</text>
+<text x="36.0" y="472.0" class="bsub">• Direct native vertex writers</text>
+<text x="36.0" y="489.5" class="bsub">• OpaqueLayerSweep voxel proof</text>
+<text x="36.0" y="507.0" class="bsub">• ParticleCellOcclusion DDA</text>
+<text x="36.0" y="524.5" class="bsub">• Direct renderer &amp; shadow cache</text>
+<text x="36.0" y="542.0" class="bsub">• Leaves / sign / weather culling</text>
+<rect x="255.0" y="428" width="219.0" height="130" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="255.0" y="428" width="219.0" height="3" rx="1.5" fill="#2563eb"/>
+<text x="267.0" y="451" class="btitle">GUI, Pacing &amp; Display</text>
+<text x="267.0" y="472.0" class="bsub">• IndexedRectList O(1) bounds</text>
+<text x="267.0" y="489.5" class="bsub">• FastBidi + text run batching</text>
+<text x="267.0" y="507.0" class="bsub">• Tick-cached GuiItemAtlas</text>
+<text x="267.0" y="524.5" class="bsub">• 3ms unified streaming budget</text>
+<text x="267.0" y="542.0" class="bsub">• Borderless Flip + Win32 HighQoS</text>
+<rect x="486.0" y="428" width="219.0" height="130" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="486.0" y="428" width="219.0" height="3" rx="1.5" fill="#7c3aed"/>
+<text x="498.0" y="451" class="btitle">Common Engine (*)</text>
+<text x="498.0" y="472.0" class="bsub">• BlockState &amp; VoxelShape intern</text>
+<text x="498.0" y="489.5" class="bsub">• Model/quad dedup &amp; mip free</text>
+<text x="498.0" y="507.0" class="bsub">• 8-slot light cache &amp; ring FIFO</text>
+<text x="498.0" y="524.5" class="bsub">• Fast worldgen noise &amp; biomes</text>
+<text x="498.0" y="542.0" class="bsub">• Netty flush consolidation</text>
+<rect x="717.0" y="428" width="219.0" height="130" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+<rect x="717.0" y="428" width="219.0" height="3" rx="1.5" fill="#d97706"/>
+<text x="729.0" y="451" class="btitle">Visuals &amp; Compatibility</text>
+<text x="729.0" y="472.0" class="bsub">• Smooth fog, IGN dither, AO</text>
+<text x="729.0" y="489.5" class="bsub">• Zero-rebuild Dynamic Lights</text>
+<text x="729.0" y="507.0" class="bsub">• Optional Held World Light</text>
+<text x="729.0" y="524.5" class="bsub">• Full-page Video Settings UI</text>
+<text x="729.0" y="542.0" class="bsub">• Fail-soft stand-down matrix</text>
+</svg>
