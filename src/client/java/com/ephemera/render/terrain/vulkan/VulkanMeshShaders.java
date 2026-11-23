@@ -1,6 +1,7 @@
 package com.ephemera.render.terrain.vulkan;
 
 import com.ephemera.core.visuals.ShaderSourcePatcher;
+import com.ephemera.platform.RenderPlatform;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -475,7 +476,8 @@ final class VulkanMeshShaders {
 
 		        uint outV = baseV + v;
 		        gl_MeshVerticesEXT[outV].gl_Position = mvp * vec4(pos, 1.0);
-		        vSphericalDist[outV] = length(pos);
+		        float dist = length(pos);
+		        vSphericalDist[outV] = dist;
 		        vCylindricalDist[outV] = max(length(pos.xz), abs(pos.y));
 		        vColor[outV] = unpackUnorm4x8(raw.z);
 		        vec2 uv0 = vec2(float(raw.w & 0xFFFFu), float(raw.w >> 16u)) * (1.0 / 32768.0);
@@ -484,7 +486,7 @@ final class VulkanMeshShaders {
 		            vec2(0.5 / 16.0), vec2(15.5 / 16.0)
 		        );
 		        vTexAndLight[outV] = vec4(uv0, uv2);
-		        vVisibility[outV] = vis;
+		        vVisibility[outV] = mix(1.0, vis, clamp((dist - 16.0) * 0.0625, 0.0, 1.0));
 		    }
 
 		    gl_PrimitiveTriangleIndicesEXT[tid * 2u] = uvec3(baseV, baseV + 1u, baseV + 2u);
@@ -628,8 +630,37 @@ final class VulkanMeshShaders {
 		}
 		""";
 
+	private static final String GLOBALS_UBO_262 = """
+			layout(set = 0, binding = 2, std140) uniform Globals {
+			    ivec3 CameraBlockPos;
+			    vec3 CameraOffset;
+			    vec2 ScreenSize;
+			    float GlintAlpha;
+			    float GameTime;
+			    int MenuBlurRadius;
+			    int UseRgss;
+			};
+			""";
+
+	private static final String GLOBALS_UBO_263 = """
+			layout(set = 0, binding = 2, std140) uniform Globals {
+			    ivec3 CameraBlockPos;
+			    float GlintAlpha;
+			    vec3 CameraOffset;
+			    float GameTime;
+			    vec2 ScreenSize;
+			    int MenuBlurRadius;
+			    int UseRgss;
+			};
+			""";
+
+	private static String globalsUboBlock() {
+		return RenderPlatform.packedGlobalsUbo() ? GLOBALS_UBO_263 : GLOBALS_UBO_262;
+	}
+
 	/** Fallback mesh shader fed by {@link #CULL_COMPUTE_GLSL} (also zero texture fetches in Mesh stage). */
-	static final String TERRAIN_MESH_COMPUTE_GLSL = """
+	static String computeMeshGlsl() {
+		return """
 		#version 450
 		#extension GL_EXT_mesh_shader : require
 
@@ -649,15 +680,7 @@ final class VulkanMeshShaders {
 		};
 
 		layout(set = 0, binding = 0, std140) uniform Projection { mat4 ProjMat; };
-		layout(set = 0, binding = 2, std140) uniform Globals {
-		    ivec3 CameraBlockPos;
-		    vec3 CameraOffset;
-		    vec2 ScreenSize;
-		    float GlintAlpha;
-		    float GameTime;
-		    int MenuBlurRadius;
-		    int UseRgss;
-		};
+		""" + globalsUboBlock() + """
 		layout(set = 0, binding = 3, std140) uniform MeshFrame {
 		    mat4 ModelViewMat;
 		    ivec2 TextureSize;
@@ -710,7 +733,8 @@ final class VulkanMeshShaders {
 
 		        uint outV = baseV + v;
 		        gl_MeshVerticesEXT[outV].gl_Position = mvp * vec4(pos, 1.0);
-		        vSphericalDist[outV] = length(pos);
+		        float dist = length(pos);
+		        vSphericalDist[outV] = dist;
 		        vCylindricalDist[outV] = max(length(pos.xz), abs(pos.y));
 		        vColor[outV] = unpackUnorm4x8(raw.z);
 		        vec2 uv0 = vec2(float(raw.w & 0xFFFFu), float(raw.w >> 16u)) * (1.0 / 32768.0);
@@ -719,13 +743,14 @@ final class VulkanMeshShaders {
 		            vec2(0.5 / 16.0), vec2(15.5 / 16.0)
 		        );
 		        vTexAndLight[outV] = vec4(uv0, uv2);
-		        vVisibility[outV] = vis;
+		        vVisibility[outV] = mix(1.0, vis, clamp((dist - 16.0) * 0.0625, 0.0, 1.0));
 		    }
 
 		    gl_PrimitiveTriangleIndicesEXT[tid * 2u] = uvec3(baseV, baseV + 1u, baseV + 2u);
 		    gl_PrimitiveTriangleIndicesEXT[tid * 2u + 1u] = uvec3(baseV + 2u, baseV + 3u, baseV);
 		}
 		""";
+	}
 
 	/**
 	 * Builds the terrain fragment shader matching Mojang's {@code terrain.fsh}, sampling the 1 KB
@@ -745,15 +770,7 @@ final class VulkanMeshShaders {
 			    float FogCloudsEnd;
 			};
 
-			layout(set = 0, binding = 2, std140) uniform Globals {
-			    ivec3 CameraBlockPos;
-			    vec3 CameraOffset;
-			    vec2 ScreenSize;
-			    float GlintAlpha;
-			    float GameTime;
-			    int MenuBlurRadius;
-			    int UseRgss;
-			};
+			""" + globalsUboBlock() + """
 
 			layout(set = 0, binding = 3, std140) uniform MeshFrame {
 			    mat4 ModelViewMat;

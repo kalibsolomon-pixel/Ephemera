@@ -2,6 +2,7 @@ package com.ephemera.render.gui;
 
 import com.ephemera.mixin.client.gui.ItemStackRenderStateAccessor;
 import com.ephemera.mixin.client.gui.LayerRenderStateAccessor;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.render.DynamicAtlasAllocator;
 import net.minecraft.client.renderer.item.ItemStackRenderState;
 import net.minecraft.client.renderer.item.TrackingItemStackRenderState;
@@ -13,7 +14,7 @@ import net.minecraft.client.renderer.item.TrackingItemStackRenderState;
  * animated items (and enchantment glint items) are re-rendered every single frame. Sprite animation
  * only advances in {@code TextureManager.tick()}, so such items keep their slot and are redrawn when the
  * tick counter changes. Glint items animate with real time; they keep vanilla's every-frame redraw unless
- * glint pacing is enabled, in which case they are redrawn once per {@code 1 / guiGlintFps} seconds.
+ * glint pacing is enabled, in which case visible, moving glint advances at {@code guiGlintFps}.
  */
 public final class GuiItemBakingManager {
 	private static long textureTicks;
@@ -72,7 +73,13 @@ public final class GuiItemBakingManager {
 		if (!foil) {
 			return textureTicks;
 		}
-		return (System.nanoTime() / features.glintPeriodNanos) * 0x9E3779B97F4A7C15L + textureTicks;
+		var options = Minecraft.getInstance().options;
+		double strength = options.glintStrength().get();
+		double speed = options.glintSpeed().get();
+		long glintStep = strength > 0.0 && speed > 0.0 ? System.nanoTime() / features.glintPeriodNanos : 0;
+		// Sprite animations on foil items still follow texture ticks, even with glint turned off.
+		return glintStep * 0x9E3779B97F4A7C15L + textureTicks
+			^ Double.doubleToLongBits(strength) ^ Long.rotateLeft(Double.doubleToLongBits(speed), 23);
 	}
 
 	private static boolean hasFoil(ItemStackRenderState state) {

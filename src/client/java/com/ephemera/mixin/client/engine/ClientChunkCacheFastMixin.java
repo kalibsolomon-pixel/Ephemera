@@ -1,6 +1,7 @@
 package com.ephemera.mixin.client.engine;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.engine.client.ClientChunkCacheFastAccess;
 import com.ephemera.engine.client.ClientChunkStorageFastLookup;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -23,9 +24,14 @@ import org.spongepowered.asm.mixin.injection.Coerce;
  * reference through {@link ClientChunkStorageFastLookup}.
  */
 @Mixin(ClientChunkCache.class)
-abstract class ClientChunkCacheFastMixin {
+abstract class ClientChunkCacheFastMixin implements ClientChunkCacheFastAccess {
 	@Shadow @Final private LevelChunk emptyChunk;
 	@Unique private volatile @Nullable ClientChunkStorageFastLookup ephemera$storage;
+
+	@Override
+	public @Nullable ClientChunkStorageFastLookup ephemera$storageLookup() {
+		return this.ephemera$storage;
+	}
 
 	@WrapOperation(
 		method = {"<init>", "updateViewRadius"},

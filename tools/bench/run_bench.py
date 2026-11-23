@@ -26,6 +26,13 @@ LITHIUM_262_MODS = ROAMING_APP / "PandoraLauncher" / "instances" / "26.2" / ".mi
 DEFAULT_WORLD_SRC = Path(r"C:\Dev\Aurora-Client\build\perf-research-26.2\game\saves\New World")
 
 
+def default_minecraft() -> str:
+    for line in (REPO / "gradle.properties").read_text(encoding="utf-8").splitlines():
+        if line.startswith("minecraft_version="):
+            return line.split("=", 1)[1].strip()
+    raise RuntimeError("minecraft_version missing from gradle.properties")
+
+
 def find_mod(pattern: str) -> Path:
     for root in (AURORA_CLIENT_LIBS, AURORA_262_MODS, PANDORA_262_MODS, LITHIUM_262_MODS):
         if root.exists():
@@ -219,13 +226,17 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render
     (run_dir / "options.txt").write_text("\n".join(opts) + "\n", encoding="utf-8")
 
 
-def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20, suite: str = "default", spark: bool = False) -> dict | None:
+def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20, suite: str = "default", spark: bool = False, minecraft: str | None = None) -> dict | None:
     spec = MOD_SETS[target]
-    run_dir = REPO / "build" / "bench" / f"game-{target}-{backend.lower()}"
+    minecraft = minecraft or default_minecraft()
+    # Non-default Minecraft versions get their own run dir and a label suffix.
+    mc_suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
+    label = f"{target}{mc_suffix}"
+    run_dir = REPO / "build" / "bench" / f"game-{label}-{backend.lower()}"
     prepare_run_dir(run_dir, spec["mods"], backend, render_distance)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    result_file = out_dir / f"bench-{target}-{backend.lower()}.json"
+    result_file = out_dir / f"bench-{label}-{backend.lower()}.json"
     if result_file.exists():
         result_file.unlink()
 
@@ -235,7 +246,8 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         "runClient",
         f"-Pephemera.runDir={run_dir}",
         f"-Pephemera.benchOut={out_dir}",
-        f"-Pephemera.benchLabel={target}",
+        f"-Pephemera.minecraft={minecraft}",
+        f"-Pephemera.benchLabel={label}",
         f"-Pephemera.benchBackend={backend}",
         f"-Pephemera.benchDisableEphemera={'true' if spec['disable_ephemera'] else 'false'}",
         f"-Pephemera.benchJfr={'true' if jfr else 'false'}",
@@ -247,8 +259,8 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
     ]
     if extra_jvm:
         cmd.append(f"-Pephemera.extraJvmArgs={extra_jvm}")
-    gradle_log = out_dir / f"gradle-{target}-{backend.lower()}.log"
-    print(f"\n=== BENCHMARK: {target} [{backend}] (suite={suite}, spark={spark}) ===", flush=True)
+    gradle_log = out_dir / f"gradle-{label}-{backend.lower()}.log"
+    print(f"\n=== BENCHMARK: {label} [{backend}] (suite={suite}, spark={spark}) ===", flush=True)
     with open(gradle_log, "w", encoding="utf-8") as lf:
         proc = subprocess.Popen(cmd, cwd=REPO, stdout=lf, stderr=subprocess.STDOUT)
         started = time.time()
@@ -288,20 +300,20 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
 
     latest_log = run_dir / "logs" / "latest.log"
     if latest_log.exists():
-        shutil.copy2(latest_log, out_dir / f"latest-{target}-{backend.lower()}.log")
+        shutil.copy2(latest_log, out_dir / f"latest-{label}-{backend.lower()}.log")
     # Collect Spark profile dumps & CrashAssistant reports when present
     for spark_dir in (run_dir / "config" / "spark", run_dir / "spark"):
         if spark_dir.exists():
             for sp in sorted(spark_dir.rglob("*.sparkprofile")):
-                shutil.copy2(sp, out_dir / f"spark-{target}-{backend.lower()}-{sp.name}")
+                shutil.copy2(sp, out_dir / f"spark-{label}-{backend.lower()}-{sp.name}")
     ca_dir = run_dir / "logs" / "crash_assistant"
     if ca_dir.exists():
-        ca_dst = out_dir / f"crash-assistant-{target}-{backend.lower()}"
+        ca_dst = out_dir / f"crash-assistant-{label}-{backend.lower()}"
         shutil.copytree(ca_dir, ca_dst, dirs_exist_ok=True)
     cr_dir = run_dir / "crash-reports"
     if cr_dir.exists():
         for cr in sorted(cr_dir.glob("*.txt")):
-            shutil.copy2(cr, out_dir / f"crash-{target}-{backend.lower()}-{cr.name}")
+            shutil.copy2(cr, out_dir / f"crash-{label}-{backend.lower()}-{cr.name}")
 
     if result_file.exists():
         data = json.loads(result_file.read_text(encoding="utf-8"))
@@ -329,18 +341,23 @@ def main() -> None:
     ap.add_argument("--extra-jvm", default="")
     ap.add_argument("--render-distance", type=int, default=20)
     ap.add_argument("--suite", default="default", choices=["default", "gameplay", "all"])
+    ap.add_argument("--minecraft", default="", help="comma-separated Minecraft versions (default: gradle.properties)")
     args = ap.parse_args()
 
     out_dir = Path(args.out).resolve()
     targets = [t.strip() for t in args.targets.split(",") if t.strip()]
     backends = [b.strip().upper() for b in args.backends.split(",") if b.strip()]
 
+    versions = [v.strip() for v in args.minecraft.split(",") if v.strip()] or [default_minecraft()]
+
     summary = {}
     for backend in backends:
-        for target in targets:
-            res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance, args.suite, args.spark)
-            if res:
-                summary[f"{target}_{backend.lower()}"] = res
+        for minecraft in versions:
+            for target in targets:
+                res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance, args.suite, args.spark, minecraft)
+                if res:
+                    suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
+                    summary[f"{target}{suffix}_{backend.lower()}"] = res
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"\nWrote {out_dir / 'summary.json'}", flush=True)

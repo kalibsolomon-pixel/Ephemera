@@ -42,6 +42,8 @@ public final class EphemeraCommon implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		config();
-		LOGGER.info("Ephemera common engine initialized (mc 26.2)");
+		String mc = FabricLoader.getInstance().getModContainer("minecraft")
+			.map(m -> m.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
+		LOGGER.info("Ephemera common engine initialized (mc {})", mc);
 	}
 }

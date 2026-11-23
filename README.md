@@ -25,7 +25,8 @@ Ephemera uses a fail-soft mixin plugin (`EphemeraCommonMixinPlugin` / `EphemeraC
 
 When paired with Aurora Client:
 - Ephemera publishes `ephemera:fast_write` and `ephemera:settings` via Fabric's `ObjectShare`, accelerating Aurora's SDF text and SDF hitbox/outline rendering with zero compile-time coupling and exposing Ephemera controls inside Aurora's Settings UI.
-- Aurora Client yields overlapping engine optimizations (`perfEntityOcclusion`, `perfGlDispatch`, `perfGuiLayering`, etc.) to Ephemera while retaining full ownership of its SDF text, SDF hitboxes/outlines, glass UI, HUD modules, and PvP features.
+- Ephemera keeps its engine hooks active with Aurora installed. Its GUI item atlas owns the animated item redraw cadence, including the glint interval. Its text batcher keeps linear sampling for Aurora's SDF glyphs. Aurora supplies glint styling, text, HUD, and overlays.
+- Builds advertising `ephemera:engine_ownership` let updated Aurora clients yield their overlapping hooks. The frame-pacing bridge accepts Aurora's FPS caps and VSync preference so Ephemera enforces them when its pacer is enabled. On Minecraft lines advertising `ephemera:world_visual_ownership`, Ephemera also owns Gradient Dithering and Smooth Fog.
 
 ## Building & Testing
 

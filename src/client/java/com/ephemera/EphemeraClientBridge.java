@@ -4,20 +4,14 @@ import com.ephemera.api.EphemeraOptionDescriptor;
 import com.ephemera.api.EphemeraSettingsBridge;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.diagnostics.MixinHealth;
-import com.ephemera.render.fastwrite.FastGlyphWriter;
-import com.ephemera.render.fastwrite.FastLineWriter;
+import com.ephemera.platform.RenderPlatform;
 import com.ephemera.render.gui.GuiFeatures;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
-import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.ephemera.ui.EphemeraSettingsScreen;
 import com.ephemera.visuals.VisualsRuntime;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ObjectShare;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix4f;
-import org.joml.Matrix4fc;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -26,10 +20,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
+import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -59,7 +55,7 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 		EphemeraClientBridge bridge = new EphemeraClientBridge(version, backendSupplier);
 		ObjectShare share = FabricLoader.getInstance().getObjectShare();
 
-		Map<String, MethodHandle> fastWrite = buildFastWriteHandles();
+		Map<String, MethodHandle> fastWrite = RenderPlatform.fastWriteHandles();
 		if (!fastWrite.isEmpty()) {
 			share.put(SHARE_FAST_WRITE, fastWrite);
 		}
@@ -84,32 +80,6 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 		return bridge;
 	}
 
-	private static Map<String, MethodHandle> buildFastWriteHandles() {
-		try {
-			MethodHandles.Lookup lookup = MethodHandles.publicLookup();
-			MethodHandle sdfGlyph = lookup.findStatic(FastGlyphWriter.class, "writeSdfGlyph",
-				MethodType.methodType(boolean.class,
-					VertexConsumer.class, Matrix4fc.class, int.class,
-					float.class, float.class, float.class, float.class, float.class, float.class,
-					float.class, float.class, int.class, int.class, boolean.class, boolean.class,
-					float.class, float.class, float.class, float.class));
-			MethodHandle sdfBox = lookup.findStatic(FastLineWriter.class, "writeSdfBox",
-				MethodType.methodType(boolean.class,
-					VertexConsumer.class, Matrix4f.class, Vec3.class,
-					double.class, double.class, double.class, double.class, double.class, double.class,
-					float.class, float.class, float.class, float.class, float.class));
-			MethodHandle line = lookup.findStatic(FastLineWriter.class, "writeLine",
-				MethodType.methodType(boolean.class,
-					VertexConsumer.class, Matrix4f.class, Vec3.class,
-					double.class, double.class, double.class, double.class, double.class, double.class,
-					float.class, float.class, float.class, float.class, float.class, boolean.class));
-			return Map.of("sdfGlyph", sdfGlyph, "sdfBox", sdfBox, "line", line);
-		} catch (Throwable t) {
-			EphemeraClient.LOGGER.warn("Could not publish Ephemera fast_write ObjectShare handles: {}", t.toString());
-			return Map.of();
-		}
-	}
-
 	private static Map<String, Object> buildFramePacerBridge() {
 		try {
 			MethodHandles.Lookup lookup = MethodHandles.publicLookup();
@@ -120,12 +90,15 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			MethodHandle afterPark = lookup.findStatic(EphemeraPacerRuntime.class, "onAuroraAfterPark",
 				MethodType.methodType(void.class, long.class, long.class));
 			Map<String, Object> map = new LinkedHashMap<>();
-			map.put("protocolVersion", 1);
+			map.put("protocolVersion", 2);
 			map.put("reportAurora", reportAurora);
 			map.put("beforeWait", beforeWait);
 			map.put("afterPark", afterPark);
 			map.put("isVulkanAsyncPresentActive", (BooleanSupplier) EphemeraPacerRuntime::isVulkanAsyncPresentActive);
 			map.put("recommendedOvershootMicros", (IntSupplier) EphemeraPacerRuntime::recommendedOvershootMicros);
+			map.put("setAuroraLimits", (BiConsumer<IntUnaryOperator, BooleanSupplier>)
+				EphemeraPacerRuntime::setAuroraLimits);
+			map.put("ownsAuroraPacing", (BooleanSupplier) EphemeraPacerRuntime::ownsAuroraPacing);
 			map.put("statusLine", (Supplier<String>) EphemeraPacerRuntime::statusLine);
 			return Map.copyOf(map);
 		} catch (Throwable t) {
@@ -249,18 +222,14 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 
 	@Override
 	public boolean isVulkanMeshShaderActive() {
-		try {
-			return VulkanMeshTerrainEngine.get().isAvailable();
-		} catch (Throwable ignored) {
-			return false;
-		}
+		return RenderPlatform.isVulkanMeshShaderActive();
 	}
 
 	@Override
 	public String statusSummary() {
 		String backend = backendSupplier.get();
 		String mesh = isVulkanMeshShaderActive()
-			? (VulkanMeshTerrainEngine.get().usesTaskShader() ? "VK_EXT_mesh_shader (Task+Mesh)" : "VK_EXT_mesh_shader")
+			? RenderPlatform.meshShaderLabel()
 			: ("VULKAN".equals(backend) ? "Vulkan Multi-Draw Indirect" : "OpenGL Multi-Draw");
 		return "Ephemera " + version + " · " + backend + " · " + mesh;
 	}

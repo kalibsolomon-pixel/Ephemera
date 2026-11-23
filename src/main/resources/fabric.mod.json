@@ -29,9 +29,17 @@
     {
       "config": "ephemera.client.mixins.json",
       "environment": "client"
+    },
+    {
+      "config": "ephemera.client.versioned.mixins.json",
+      "environment": "client"
     }
   ],
   "accessWidener": "ephemera.accesswidener",
+  "custom": {
+    "ephemera:engine_ownership": true,
+    "ephemera:world_visual_ownership": "${world_visual_ownership}"
+  },
   "depends": {
     "fabricloader": ">=0.20.0",
     "minecraft": "~${minecraft_version}",

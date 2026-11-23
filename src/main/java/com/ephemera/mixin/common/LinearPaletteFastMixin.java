@@ -15,8 +15,10 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Adds a 1-entry MRU identity cache to {@link LinearPalette#idFor} for runs of identical
+ * Adds a 1-entry MRU index cache to {@link LinearPalette#idFor} for runs of identical
  * block/biome writes during worldgen and fluid fills, and hoists array/size fields out of the loop.
+ * Stores only an {@code int} slot index (never an Object reference) to avoid G1 SATB/card-table
+ * write barriers on alternating block writes during concurrent GC marking.
  */
 @Mixin(LinearPalette.class)
 abstract class LinearPaletteFastMixin<T> {
@@ -24,30 +26,27 @@ abstract class LinearPaletteFastMixin<T> {
 	@Shadow @Final private int bits;
 	@Shadow private int size;
 
-	@Unique private T ephemera$lastValue;
-	@Unique private int ephemera$lastId = -1;
+	@Unique private int ephemera$lastId;
 
 	@Inject(method = "read", at = @At("HEAD"))
 	private void ephemera$invalidateCache(FriendlyByteBuf buf, IdMap<T> registry, CallbackInfo ci) {
-		this.ephemera$lastValue = null;
-		this.ephemera$lastId = -1;
+		this.ephemera$lastId = 0;
 	}
 
 	/**
 	 * @author Ephemera
-	 * @reason 1-entry MRU identity cache + hoisted locals for worldgen palette writes.
+	 * @reason Primitive int MRU index cache (zero GC write barriers) + hoisted locals for worldgen palette writes.
 	 */
 	@Overwrite
 	public int idFor(T value, PaletteResize<T> resizeHandler) {
-		int cached = this.ephemera$lastId;
-		if (cached >= 0 && this.ephemera$lastValue == value) {
-			return cached;
-		}
 		T[] vals = this.values;
 		int n = this.size;
+		int cached = this.ephemera$lastId;
+		if (cached < n && vals[cached] == value) {
+			return cached;
+		}
 		for (int i = 0; i < n; i++) {
 			if (vals[i] == value) {
-				this.ephemera$lastValue = value;
 				this.ephemera$lastId = i;
 				return i;
 			}
@@ -55,7 +54,6 @@ abstract class LinearPaletteFastMixin<T> {
 		if (n < vals.length) {
 			vals[n] = value;
 			this.size = n + 1;
-			this.ephemera$lastValue = value;
 			this.ephemera$lastId = n;
 			return n;
 		}

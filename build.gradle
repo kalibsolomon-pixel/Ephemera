@@ -46,7 +46,8 @@ loom {
 		set.java.srcDir(new File(versionOverlay, "${name}/java"))
 		set.resources.srcDir(new File(versionOverlay, "${name}/resources"))
 	}
-	accessWidenerPath = file('src/main/resources/ephemera.accesswidener')
+	// Per version: the widened targets differ (26.3 dropped SurfaceRules$SurfaceRule).
+	accessWidenerPath = new File(versionOverlay, 'main/resources/ephemera.accesswidener')
 	enableTransitiveAccessWideners = true
 
 	runConfigs.configureEach {
@@ -62,6 +63,60 @@ loom {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
+	}
+}
+
+// A version may derive the version-specific sources it does not hand-write from another
+// version (versions/<ver>/derive.json). Classes are renamed per versions/<ver>/renames.txt
+// (both dotted and descriptor/slash forms), so code fixed once in the base version flows to the
+// derived one. Files in versions/<ver>/src take precedence; `exclude` lists base files
+// (relative to src/) that cannot be derived.
+def deriveConfigFile = file("versions/${selectedMinecraft}/derive.json")
+if (deriveConfigFile.isFile()) {
+	def deriveConfig = new groovy.json.JsonSlurper().parse(deriveConfigFile)
+	def baseSrc = file("versions/${deriveConfig.from}/src")
+	def renamesFile = file("versions/${selectedMinecraft}/renames.txt")
+	def renames = renamesFile.readLines().findAll { it.trim() && !it.startsWith('#') }.collect { line ->
+		def parts = line.trim().split(/\s+/)
+		def quote = { String s -> java.util.regex.Pattern.quote(s) }
+		[
+			java.util.regex.Pattern.compile('(?<![\\w$.])' + quote(parts[0]) + '(?![\\w$])'),
+			java.util.regex.Matcher.quoteReplacement(parts[1]),
+			// Slash form also matches inside descriptors, where the class follows an `L` and may be
+			// followed by `$Nested`.
+			java.util.regex.Pattern.compile('(?:(?<![\\w$/])|(?<=(?:^|[^\\w$/])L))' + quote(parts[0].replace('.', '/')) + '(?!\\w)'),
+			java.util.regex.Matcher.quoteReplacement(parts[1].replace('.', '/')),
+		]
+	}
+	def excluded = (deriveConfig.exclude ?: []) as Set
+	['main', 'client'].each { name ->
+		def deriveTask = tasks.register("derive${name.capitalize()}Sources", Sync) {
+			inputs.file(deriveConfigFile)
+			inputs.file(renamesFile)
+			// The rename filter is defined here, and Gradle does not track closure bodies.
+			inputs.file(buildFile)
+			from(new File(baseSrc, "${name}/java")) {
+				include '**/*.java'
+				eachFile { details ->
+					def rel = "${name}/java/${details.relativePath.pathString}".toString()
+					if (excluded.contains(rel) || new File(versionOverlay, rel).exists()) {
+						details.exclude()
+					}
+				}
+				filter { String line ->
+					if (!line.contains('blaze3d') && !line.contains('levelgen')) {
+						return line
+					}
+					renames.each { r ->
+						line = r[0].matcher(line).replaceAll(r[1])
+						line = r[2].matcher(line).replaceAll(r[3])
+					}
+					return line
+				}
+			}
+			into(layout.buildDirectory.dir("derived/${name}/java"))
+		}
+		sourceSets.getByName(name).java.srcDir(deriveTask)
 	}
 }
 
@@ -85,12 +140,14 @@ tasks.named('test') {
 tasks.withType(ProcessResources).configureEach {
 	def version = project.version
 	def mcVersion = project.minecraft_version
+	def worldVisuals = selectedVersion.worldVisuals == true
 	inputs.property 'version', version
 	inputs.property 'minecraft_version', mcVersion
+	inputs.property 'world_visual_ownership', worldVisuals
 	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
 	filesMatching('fabric.mod.json') {
-		expand 'version': version, 'minecraft_version': mcVersion
+		expand 'version': version, 'minecraft_version': mcVersion, 'world_visual_ownership': worldVisuals
 	}
 }
 
@@ -114,6 +171,54 @@ jar {
 	from(project(':core').sourceSets.main.output)
 }
 
+// Every mixin class compiled for this version must be listed in exactly one mixin config
+// shipped for this version, and every listed mixin must exist. Catches shared/overlay drift.
+def verifyMixinConfigs = tasks.register('verifyMixinConfigs') {
+	def sets = ['main', 'client'].collect { sourceSets.getByName(it) }
+	inputs.files(sets.collect { it.java.sourceDirectories })
+	inputs.files(sets.collect { it.resources.sourceDirectories })
+	doLast {
+		def slurper = new groovy.json.JsonSlurper()
+		def sources = [] as Set
+		sets.each { set ->
+			set.java.srcDirs.findAll { it.isDirectory() }.each { root ->
+				def mixinRoot = new File(root, 'com/ephemera/mixin')
+				if (!mixinRoot.isDirectory()) return
+				mixinRoot.eachFileRecurse(groovy.io.FileType.FILES) { f ->
+					// Plugins live directly in com.ephemera.mixin; mixins live in its subpackages.
+					if (f.name.endsWith('.java') && f.parentFile != mixinRoot) {
+						sources << root.toPath().relativize(f.toPath()).toString().replace(File.separator, '.') - ~/\.java$/
+					}
+				}
+			}
+		}
+		def listed = [:]
+		sets.each { set ->
+			set.resources.srcDirs.findAll { it.isDirectory() }.each { root ->
+				root.eachFileMatch(~/.*\.mixins\.json/) { cfgFile ->
+					def cfg = slurper.parse(cfgFile)
+					['mixins', 'client', 'server'].each { side ->
+						(cfg[side] ?: []).each { name ->
+							def fqn = "${cfg.package}.${name}".toString()
+							if (listed.containsKey(fqn)) {
+								throw new GradleException("Mixin ${fqn} is listed in both ${listed[fqn]} and ${cfgFile.name}")
+							}
+							listed[fqn] = cfgFile.name
+						}
+					}
+				}
+			}
+		}
+		def missing = listed.keySet() - sources
+		def unlisted = sources - listed.keySet()
+		if (missing || unlisted) {
+			throw new GradleException("Mixin configs out of sync for Minecraft ${project.minecraft_version}:" +
+				(missing ? "\n  listed without a source file: ${missing.sort()}" : '') +
+				(unlisted ? "\n  source file not in any config: ${unlisted.sort()}" : ''))
+		}
+	}
+}
+
 tasks.named('check') {
-	dependsOn ':api:check', ':core:check'
+	dependsOn ':api:check', ':core:check', verifyMixinConfigs
 }

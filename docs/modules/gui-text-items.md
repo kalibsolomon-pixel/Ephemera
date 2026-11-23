@@ -111,8 +111,9 @@ plus run-merge tests.
 - **Animated items.** Vanilla flags both sprite-animated and enchantment-glint items as `animated`, which makes
   `DynamicAtlasAllocator` free their slot every frame. Sprite-only items now keep the slot and are redrawn once per
   `TextureManager.tick()` (sprite animation only advances there). Glint items keep vanilla's per-frame redraw unless
-  `guiGlintRateLimit` is on, then they redraw once per `1 / guiGlintFps` seconds. Compass/clock-style items are
-  property-dispatched models with distinct model identities and are unaffected.
+  `guiGlintRateLimit` is on. Moving, visible glint then advances at `guiGlintFps`. Changes to strength or speed
+  refresh the slot, and sprite animations still follow texture ticks. Compass and clock-style items use separate
+  model identities for their property states.
 - **Item state cache** is active when `guiAnimatedItemBaking` (default true) or `guiHudFrameCache` is on. A resolved
   state is reused only within one client tick (`TextureManager.tick()` counter) and only if the very same
   `ItemStack` instance still has the same count, level, owner and seed and an unchanged component patch. The item of

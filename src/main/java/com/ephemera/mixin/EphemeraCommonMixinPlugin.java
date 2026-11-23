@@ -57,7 +57,10 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 			case "CubeVoxelShapeFastMixin", "BlockCollisionsFastMixin" -> cfg.engineFastCollisions;
 			case "EntitySectionStorageFastMixin", "TrackedEntityFastMixin" -> cfg.engineFastEntityLookup;
 			case "SimpleBitStorageFastMixin", "LinearPaletteFastMixin", "PalettedContainerFastMixin" -> cfg.engineFastPalettedStorage;
-			case "ImprovedNoiseFastMixin", "PerlinNoiseFastMixin", "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess", "SurfaceRulesSequenceFastMixin" -> cfg.engineFastWorldgenNoise;
+			case "AquiferFastMixin", "BlenderFastMixin", "BlendingDataFastMixin", "GradientNoiseFastMixin", "ImprovedNoiseFastMixin", "MaterialRuleContextPoolMixin",
+				 "MaterialSystemFastMixin", "PerlinNoiseFastMixin", "RandomStatePoolMixin", "SmearedPerlinNoiseFastMixin",
+				 "VerticalGradientFastMixin", "XoroshiroPositionalFastMixin",
+				 "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess", "SurfaceRulesSequenceFastMixin" -> cfg.engineFastWorldgenNoise;
 			case "BiomeManagerFastMixin", "ClimateRTreeFastMixin", "ClimateRTreeNodeFastMixin" -> cfg.engineFastBiomeLookup;
 			case "UtilWorkerPriorityMixin" -> cfg.engineWorkerPriorityIsolation;
 			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin" -> cfg.engineFastLighting;
@@ -89,8 +92,18 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("SimpleBitStorageFastMixin", "lithium", "radium", "canary", "c2me");
 		registerYield("LinearPaletteFastMixin", "lithium", "radium", "canary", "c2me");
 		registerYield("PalettedContainerFastMixin", "lithium", "radium", "canary", "c2me");
+		registerYield("AquiferFastMixin", "c2me", "noisium");
+		registerYield("BlenderFastMixin", "c2me", "noisium");
+		registerYield("BlendingDataFastMixin", "c2me", "noisium");
+		registerYield("GradientNoiseFastMixin", "c2me", "noisium");
 		registerYield("ImprovedNoiseFastMixin", "c2me", "noisium");
+		registerYield("MaterialRuleContextPoolMixin", "c2me", "noisium");
+		registerYield("MaterialSystemFastMixin", "c2me", "noisium");
 		registerYield("PerlinNoiseFastMixin", "c2me", "noisium");
+		registerYield("RandomStatePoolMixin", "c2me", "noisium");
+		registerYield("SmearedPerlinNoiseFastMixin", "c2me", "noisium");
+		registerYield("VerticalGradientFastMixin", "c2me", "noisium");
+		registerYield("XoroshiroPositionalFastMixin", "c2me", "noisium");
 		registerYield("BeardifierFastMixin", "c2me", "lithium", "radium", "canary");
 		registerYield("NoiseChunkFastMixin", "c2me", "noisium");
 		registerYield("NoiseInterpolatorAccess", "c2me", "noisium");

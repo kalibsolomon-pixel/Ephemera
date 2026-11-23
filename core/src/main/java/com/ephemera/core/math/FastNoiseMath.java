@@ -34,6 +34,24 @@ public final class FastNoiseMath {
 		 1.0,  1.0, -1.0, -1.0,
 		 0.0,  1.0,  0.0, -1.0
 	};
+	private static final float[] GRAD_XF = {
+		 1.0f, -1.0f,  1.0f, -1.0f,
+		 1.0f, -1.0f,  1.0f, -1.0f,
+		 0.0f,  0.0f,  0.0f,  0.0f,
+		 1.0f,  0.0f, -1.0f,  0.0f
+	};
+	private static final float[] GRAD_YF = {
+		 1.0f,  1.0f, -1.0f, -1.0f,
+		 0.0f,  0.0f,  0.0f,  0.0f,
+		 1.0f, -1.0f,  1.0f, -1.0f,
+		 1.0f, -1.0f,  1.0f, -1.0f
+	};
+	private static final float[] GRAD_ZF = {
+		 0.0f,  0.0f,  0.0f,  0.0f,
+		 1.0f,  1.0f, -1.0f, -1.0f,
+		 1.0f,  1.0f, -1.0f, -1.0f,
+		 0.0f,  1.0f,  0.0f, -1.0f
+	};
 
 	private FastNoiseMath() {}
 
@@ -44,6 +62,23 @@ public final class FastNoiseMath {
 	public static double gradDot(int hash, double x, double y, double z) {
 		int g = hash & 15;
 		return (GRAD_X[g] * x + GRAD_Y[g] * y) + GRAD_Z[g] * z;
+	}
+
+	/** Branchless single-precision gradient dot product matching 26.3 {@code GradientNoise.gradDot}. */
+	public static float gradDotF(int hash, float x, float y, float z) {
+		int g = hash & 15;
+		return (GRAD_XF[g] * x + GRAD_YF[g] * y) + GRAD_ZF[g] * z;
+	}
+
+	/** Branchless single-precision XZ gradient dot product matching 26.3 {@code GradientNoise.Gradient.dotXz}. */
+	public static float gradDotXzF(int hash, float x, float z) {
+		int g = hash & 15;
+		return GRAD_XF[g] * x + GRAD_ZF[g] * z;
+	}
+
+	/** Single-precision Y gradient component matching 26.3 {@code (float) GradientNoise.Gradient.y()}. */
+	public static float gradYF(int hash) {
+		return GRAD_YF[hash & 15];
 	}
 
 	/** Exact quintic Perlin fade curve: {@code t^3 * (t * (6t - 15) + 10)}. */
