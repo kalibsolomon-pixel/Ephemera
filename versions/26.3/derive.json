@@ -13,6 +13,7 @@
     "client/java/com/ephemera/render/fastwrite/FastVertexLayout.java",
     "client/java/com/ephemera/render/gui/GuiTextBatcher.java",
     "client/java/com/ephemera/mixin/client/terrain/GlDeviceTerrainPatchMixin.java",
+    "client/java/com/ephemera/mixin/client/ui/WindowBorderlessMixin.java",
     "client/java/com/ephemera/mixin/client/terrain/GlProgramTerrainBatchMixin.java",
     "client/java/com/ephemera/mixin/client/terrain/LevelExtractorBlockEntityFastMixin.java",
     "client/java/com/ephemera/mixin/client/terrain/TerrainChunkSectionsToRenderMixin.java",

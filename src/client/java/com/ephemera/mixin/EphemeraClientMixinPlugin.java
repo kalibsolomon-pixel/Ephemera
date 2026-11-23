@@ -166,6 +166,9 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("ServerNameResolverFastMixin", "fast-ip-ping");
 		registerYield("ScreenEffectRendererFastMixin", "badoptimizations");
 
+		// Window
+		registerYield("WindowBorderlessMixin", "borderless-mining", "cubes-without-borders", "fullscreen-windowed");
+
 		// Visuals
 		registerYield("EntityRendererLightMixin", "lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights");
 	}

@@ -14,24 +14,38 @@ import net.minecraft.client.Minecraft;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Function;
 
-/** The six tabs of the settings screen and the rows each one shows. */
+/** The pages of the settings screen, in sidebar order, and the rows each one shows. */
 enum SettingsTab {
-	PERFORMANCE("performance"),
-	TERRAIN("terrain"),
-	CULLING("culling"),
-	ENGINE("engine"),
-	VISUALS("visuals"),
-	DIAGNOSTICS("diagnostics");
+	DISPLAY("display", Group.MINECRAFT),
+	QUALITY("quality", Group.MINECRAFT),
+	PERFORMANCE("performance", Group.EPHEMERA),
+	TERRAIN("terrain", Group.EPHEMERA),
+	CULLING("culling", Group.EPHEMERA),
+	ENGINE("engine", Group.EPHEMERA),
+	VISUALS("visuals", Group.EPHEMERA),
+	DIAGNOSTICS("diagnostics", Group.EPHEMERA);
+
+	enum Group {
+		MINECRAFT,
+		EPHEMERA;
+
+		String titleKey() {
+			return "ephemera.group." + name().toLowerCase(Locale.ROOT);
+		}
+	}
 
 	private static final List<Integer> ATLAS_SIZES = List.of(256, 512, 1024, 2048, 4096);
 	private static final List<Integer> PARTICLE_CAPS = List.of(512, 1024, 2048, 4096, 8192, 16384, 32768, 65536);
 	private static final List<Integer> ANISOTROPY = List.of(0, 2, 4, 8, 16);
 
 	final String id;
+	final Group group;
 
-	SettingsTab(String id) {
+	SettingsTab(String id, Group group) {
 		this.id = id;
+		this.group = group;
 	}
 
 	String titleKey() {
@@ -42,9 +56,15 @@ enum SettingsTab {
 		return "ephemera.tab." + id + ".short";
 	}
 
-	List<SettingRow> rows(EphemeraConfig c) {
+	String subtitleKey() {
+		return "ephemera.tab." + id + ".subtitle";
+	}
+
+	List<SettingRow> rows(EphemeraConfig c, VanillaVideoOptions vanilla) {
 		List<SettingRow> r = new ArrayList<>();
 		switch (this) {
+			case DISPLAY -> vanilla.display(r);
+			case QUALITY -> vanilla.quality(r);
 			case PERFORMANCE -> performance(r, c);
 			case TERRAIN -> terrain(r, c);
 			case CULLING -> culling(r, c);
@@ -61,13 +81,13 @@ enum SettingsTab {
 			"backendVulkanBufferViewCache", "backendVulkanModernGpu");
 		r.add(new SettingRow.Header("ephemera.section.gui"));
 		toggles(r, c, "guiLayerIndexing", "guiFastLtrText", "guiMergeTextDecorations", "guiFontAtlasResizing");
-		r.add(new SettingRow.Choice<>(c, "guiFontAtlasSize", ATLAS_SIZES, v -> v + " px"));
+		r.add(choice(c, "guiFontAtlasSize", ATLAS_SIZES, v -> v + " px"));
 		toggles(r, c, "guiAnimatedItemBaking", "guiGlintRateLimit");
-		r.add(new SettingRow.Slider(c, "guiGlintFps", 10, 240, 5, v -> v.intValue() + " fps"));
+		r.add(slider(c, "guiGlintFps", 10, 240, 5, v -> v.intValue() + " fps"));
 		toggles(r, c, "guiSkipTextTranslucencySort", "guiHudFrameCache");
 		r.add(new SettingRow.Header("ephemera.section.particles"));
 		toggles(r, c, "particleCulling", "particleOcclusionCulling", "particleLightmapCache", "particleAsyncTick");
-		r.add(new SettingRow.Choice<>(c, "maxParticlesPerSheet", PARTICLE_CAPS, v -> String.format(Locale.ROOT, "%,d", v)));
+		r.add(choice(c, "maxParticlesPerSheet", PARTICLE_CAPS, v -> String.format(Locale.ROOT, "%,d", v)));
 	}
 
 	private static void terrain(List<SettingRow> r, EphemeraConfig c) {
@@ -76,8 +96,8 @@ enum SettingsTab {
 			"terrainCompactVertexFormat", "terrainFogOcclusion", "terrainAsyncGraphUpdates", "terrainAnimateOnlyVisibleTextures",
 			"terrainFastTranslucentSort", "terrainPrefixSumBiomeBlend", "terrainVulkanMeshShaders", "terrainVulkanGpuCulling");
 		r.add(new SettingRow.Header("ephemera.section.chunkBuilding"));
-		r.add(new SettingRow.Slider(c, "chunkBuilderThreads", 0, 32, 1, v -> v.intValue() == 0 ? "Auto" : v.intValue() + " threads"));
-		r.add(new SettingRow.Slider(c, "maxSectionUploadsPerFrameMs", 1, 32, 1, v -> v.intValue() + " ms"));
+		r.add(slider(c, "chunkBuilderThreads", 0, 32, 1, v -> v.intValue() == 0 ? "Auto" : v.intValue() + " threads"));
+		r.add(slider(c, "maxSectionUploadsPerFrameMs", 1, 32, 1, v -> v.intValue() + " ms"));
 	}
 
 	private static void culling(List<SettingRow> r, EphemeraConfig c) {
@@ -85,9 +105,9 @@ enum SettingsTab {
 		toggles(r, c, "entityOcclusionCulling", "blockEntityOcclusionCulling", "entityRendererDirectCache", "blockEntityRendererDirectCache");
 		r.add(new SettingRow.Header("ephemera.section.blocks"));
 		toggles(r, c, "blockStateCulling");
-		r.add(new SettingRow.Choice<>(c, "leavesCullingMode", List.of(EphemeraConfig.LeavesCullingMode.values()),
+		r.add(choice(c, "leavesCullingMode", List.of(EphemeraConfig.LeavesCullingMode.values()),
 			m -> m.name().charAt(0) + m.name().substring(1).toLowerCase(Locale.ROOT).replace('_', ' ')));
-		r.add(new SettingRow.Slider(c, "leavesCullingDepth", 1, 4, 1, v -> v.intValue() + " blocks"));
+		r.add(slider(c, "leavesCullingDepth", 1, 4, 1, v -> v.intValue() + " blocks"));
 		r.add(new SettingRow.Header("ephemera.section.faces"));
 		toggles(r, c, "signTextBackfaceCulling", "itemFrameCulling", "paintingBackfaceCulling", "weatherCulling", "cloudFaceCulling");
 	}
@@ -104,9 +124,9 @@ enum SettingsTab {
 			"engineIdleShortCircuits", "networkFlushConsolidation", "networkFastVarInt");
 		r.add(new SettingRow.Header("ephemera.section.pacing"));
 		toggles(r, c, "framePacerEnabled", "framePacerLowLatency", "framePacerAdaptiveUploadBudget");
-		r.add(new SettingRow.Slider(c, "framePacerSpinTailMicros", 100, 3000, 50, v -> v.intValue() + " us"));
+		r.add(slider(c, "framePacerSpinTailMicros", 100, 3000, 50, v -> v.intValue() + " us"));
 		toggles(r, c, "unfocusedFpsLimitEnabled");
-		r.add(new SettingRow.Slider(c, "unfocusedFpsLimit", 5, 240, 5, v -> v.intValue() + " fps"));
+		r.add(slider(c, "unfocusedFpsLimit", 5, 240, 5, v -> v.intValue() + " fps"));
 		r.add(new SettingRow.Header("ephemera.section.compat"));
 		toggles(r, c, "modStandDownEnabled");
 	}
@@ -114,26 +134,26 @@ enum SettingsTab {
 	private static void visuals(List<SettingRow> r, EphemeraConfig c) {
 		r.add(new SettingRow.Header("ephemera.section.atmosphere"));
 		toggles(r, c, "visualSmoothFog", "visualGradientDithering");
-		r.add(new SettingRow.Slider(c, "visualDitherStrength", 0.0, 2.0, 0.05, v -> String.format(Locale.ROOT, "x%.2f", v)));
+		r.add(slider(c, "visualDitherStrength", 0.0, 2.0, 0.05, v -> String.format(Locale.ROOT, "x%.2f", v)));
 		toggles(r, c, "visualAtmosphericHorizon", "visualUnderwaterClarity");
 		r.add(new SettingRow.Action("reloadShaders", () -> Minecraft.getInstance().reloadResourcePacks()));
 		r.add(new SettingRow.Header("ephemera.section.lighting"));
 		toggles(r, c, "visualDynamicLights");
-		r.add(new SettingRow.Slider(c, "visualDynamicLightsUpdateIntervalMs", 0, 100, 4, v -> v.intValue() + " ms"));
+		r.add(slider(c, "visualDynamicLightsUpdateIntervalMs", 0, 100, 4, v -> v.intValue() + " ms"));
 		toggles(r, c, "visualEnhancedAmbientOcclusion");
-		r.add(new SettingRow.Slider(c, "visualAoStrength", 0.5, 1.5, 0.02, v -> String.format(Locale.ROOT, "%.2f", v)));
+		r.add(slider(c, "visualAoStrength", 0.5, 1.5, 0.02, v -> String.format(Locale.ROOT, "%.2f", v)));
 		r.add(new SettingRow.Header("ephemera.section.terrainVisuals"));
 		toggles(r, c, "visualSmoothChunkFade");
-		r.add(new SettingRow.Slider(c, "visualChunkFadeDurationSeconds", 0.0, 2.0, 0.05, v -> String.format(Locale.ROOT, "%.2f s", v)));
+		r.add(slider(c, "visualChunkFadeDurationSeconds", 0.0, 2.0, 0.05, v -> String.format(Locale.ROOT, "%.2f s", v)));
 		toggles(r, c, "visualCrispMipmaps");
-		r.add(new SettingRow.Choice<>(c, "visualAnisotropicLevel", ANISOTROPY, v -> v == 0 ? "Off" : v + "x"));
+		r.add(choice(c, "visualAnisotropicLevel", ANISOTROPY, v -> v == 0 ? "Off" : v + "x"));
 		r.add(new SettingRow.Header("ephemera.section.blockLook"));
 		toggles(r, c, "visualSmoothBiomeBlending", "visualBetterLeavesShading", "visualBetterGrass", "visualCleanGlassBorders");
 	}
 
 	private static void diagnostics(List<SettingRow> r, EphemeraConfig c) {
 		r.add(new SettingRow.Header("ephemera.section.live"));
-		r.add(new SettingRow.Stat("ephemera.stat.backend", VisualsDiagnostics::backendName, () -> UiTheme.ACCENT));
+		r.add(new SettingRow.Stat("ephemera.stat.backend", VisualsDiagnostics::backendName, () -> UiTheme.TEXT));
 		r.add(new SettingRow.Stat("ephemera.stat.fps", () -> {
 			FrameMetrics.Snapshot s = VisualsDiagnostics.snapshot();
 			return s.samples() == 0 ? "..." : String.format(Locale.ROOT, "%.0f avg / %d now", s.avgFps(), Minecraft.getInstance().getFps());
@@ -144,7 +164,7 @@ enum SettingsTab {
 		r.add(new SettingRow.Stat("ephemera.stat.pointOnePercentLow", () -> fps(VisualsDiagnostics.snapshot().pointOnePercentLowFps()),
 			() -> lowColor(VisualsDiagnostics.snapshot().pointOnePercentLowFps())));
 		r.add(new SettingRow.Stat("ephemera.stat.p99", () -> ms(VisualsDiagnostics.snapshot().p99Ms()), () -> UiTheme.TEXT));
-		r.add(new SettingRow.Stat("ephemera.stat.pacer", EphemeraPacerRuntime::statusLine, () -> UiTheme.ACCENT));
+		r.add(new SettingRow.Stat("ephemera.stat.pacer", EphemeraPacerRuntime::statusLine, () -> UiTheme.TEXT));
 		r.add(new SettingRow.Stat("ephemera.stat.memorySaved", () -> {
 			MemoryPressurePolicy.Snapshot mem = MemoryPressurePolicy.snapshot();
 			double mb = (mem.reclaimedNativeBytes() + mem.reclaimedHeapEstimateBytes()) / (1024.0 * 1024.0);
@@ -169,8 +189,18 @@ enum SettingsTab {
 
 	private static void toggles(List<SettingRow> rows, EphemeraConfig c, String... fields) {
 		for (String f : fields) {
-			rows.add(new SettingRow.Toggle(c, f));
+			rows.add(new SettingRow.Toggle(new Binding.Config<>(c, f, v -> v ? "On" : "Off")));
 		}
+	}
+
+	private static <T> SettingRow choice(EphemeraConfig c, String field, List<T> values, Function<T, String> format) {
+		return new SettingRow.Choice<>(new Binding.Config<>(c, field, format), values);
+	}
+
+	private static SettingRow slider(EphemeraConfig c, String field, double min, double max, double step, Function<Number, String> format) {
+		Binding.Config<Number> binding = new Binding.Config<>(c, field, format);
+		boolean integer = binding.get() instanceof Integer;
+		return new SettingRow.Slider<>(binding, SettingRow.SliderModel.range(min, max, step, integer), false);
 	}
 
 	private static EphemeraVisibilityProvider provider() {

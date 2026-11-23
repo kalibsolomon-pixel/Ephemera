@@ -19,6 +19,10 @@ Built as a standalone Fabric mod and the default managed performance engine bund
 | `src/main` | Common (client + dedicated server) chunk storage, lighting, worldgen noise/biome, and network optimizations |
 | `src/client` | Native Vulkan (`VK_EXT_mesh_shader` single-pass Task+Mesh terrain, ReBAR ring buffers, zero-alloc push-descriptor dispatch) and OpenGL regional multi-draw, entity/block-entity/particle occlusion, batched native vertex fast-write, and zero-coupling `ObjectShare` integration bridges for Aurora Client |
 
+## Settings
+
+Ephemera replaces vanilla Video Settings with a full-page settings screen. Its Minecraft pages carry every vanilla video option (with sliders for options vanilla only cycles, such as GUI Scale) and a Windowed / Borderless / Exclusive fullscreen mode; its Ephemera pages carry every Ephemera option and live diagnostics. The original screen stays one click away. See [docs/modules/visuals-ui.md](docs/modules/visuals-ui.md).
+
 ## Compatibility & Stand-Downs
 
 Ephemera uses a fail-soft mixin plugin (`EphemeraCommonMixinPlugin` / `EphemeraClientMixinPlugin`) that automatically stands down overlapping areas when specialized mods are installed (`sodium`, `iris`, `vulkanmod`, `lithium`, `c2me`, `noisium`, `immediatelyfast`, `entityculling`, `moreculling`, `ferritecore`, `scalablelux`, `krypton`, `aurora`).
