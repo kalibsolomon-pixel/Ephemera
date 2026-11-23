@@ -4,10 +4,10 @@ import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
 
 /**
- * Immutable snapshot of the GUI/text/item settings so mixin hot paths read plain final fields instead
- * of re-validating config values. {@link #init()} is called once from client initialisation; mixins that
- * run earlier (resource loading, first frame) lazily initialise through {@link #get()}.
- * Settings are fixed for the session; toggling them requires a restart (or another {@link #init()}).
+ * Immutable snapshot of the GUI/text/item and unfocused-FPS settings so mixin hot paths read plain
+ * final fields instead of re-validating config values. {@link #init()} is called at client startup
+ * and whenever settings are edited or reverted; font atlas dimensions take effect on the next
+ * resource reload (F3+T) or restart as new glyph pages are allocated.
  */
 public final class GuiFeatures {
 	private static volatile GuiFeatures current;
@@ -41,7 +41,11 @@ public final class GuiFeatures {
 	}
 
 	public static void init() {
-		current = new GuiFeatures(EphemeraCommon.config());
+		init(EphemeraCommon.config());
+	}
+
+	static void init(EphemeraConfig cfg) {
+		current = new GuiFeatures(cfg);
 	}
 
 	public static GuiFeatures get() {

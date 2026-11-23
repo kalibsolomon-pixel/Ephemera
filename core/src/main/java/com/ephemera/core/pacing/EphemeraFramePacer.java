@@ -46,8 +46,10 @@ public final class EphemeraFramePacer {
 	};
 
 	private static final long MIN_RESERVE_NS = 200_000L;      // 200 us minimum spin tail
+	private static final long CAPTURE_MIN_RESERVE_NS = 100_000L; // 100 us floor when yielding to capture encoders
 	private static final long MAX_RESERVE_NS = 3_500_000L;    // 3.5 ms safety cap on overshoot reserve
 	private static final long REPARK_EXTRA_MARGIN_NS = 750_000L;
+	private static final long CAPTURE_REPARK_EXTRA_MARGIN_NS = 150_000L;
 	private static final int MAX_REPARK_RETRIES = 2;
 
 	private final WaitOps ops;
@@ -89,6 +91,18 @@ public final class EphemeraFramePacer {
 	 * @return nanoseconds spent waiting (0 if arming, late, or inactive)
 	 */
 	public long paceFrameHead(int targetFps, boolean lowLatency, int configuredSpinTailMicros) {
+		return paceFrameHead(targetFps, lowLatency, configuredSpinTailMicros, false);
+	}
+
+	/**
+	 * Runs at frame head ({@code Minecraft.runTick} HEAD). When {@code lowLatency} is enabled and
+	 * {@code targetFps} is active ({@code 1..999}), paces here before input/tick/render.
+	 *
+	 * @param captureMode when true, enforces {@code configuredSpinTailMicros} as an upper bound on
+	 *                    the busy-spin reserve so idle frame time parks and yields CPU to encoders
+	 * @return nanoseconds spent waiting (0 if arming, late, or inactive)
+	 */
+	public long paceFrameHead(int targetFps, boolean lowLatency, int configuredSpinTailMicros, boolean captureMode) {
 		headWaitedThisFrame = false;
 		if (targetFps <= 0 || !lowLatency) {
 			if (activeOwner == HookPoint.FRAME_HEAD) {
@@ -101,7 +115,7 @@ public final class EphemeraFramePacer {
 			return 0L;
 		}
 		headWaitedThisFrame = true;
-		return waitUntil(deadline, configuredSpinTailMicros);
+		return waitUntil(deadline, configuredSpinTailMicros, captureMode);
 	}
 
 	/**
@@ -111,6 +125,10 @@ public final class EphemeraFramePacer {
 	 *         so vanilla's {@code FramerateLimiter} should be cancelled
 	 */
 	public boolean pacePostSwap(int targetFps, int configuredSpinTailMicros) {
+		return pacePostSwap(targetFps, configuredSpinTailMicros, false);
+	}
+
+	public boolean pacePostSwap(int targetFps, int configuredSpinTailMicros, boolean captureMode) {
 		if (activeOwner == HookPoint.FRAME_HEAD) {
 			if (targetFps > 0 && activeFps <= targetFps) {
 				// Frame-head owns this frame's cadence even when it only armed or re-anchored after a
@@ -130,7 +148,7 @@ public final class EphemeraFramePacer {
 			// Arming or recovering from a big hitch: already anchored, cancel vanilla to avoid double-drift.
 			return true;
 		}
-		waitUntil(deadline, configuredSpinTailMicros);
+		waitUntil(deadline, configuredSpinTailMicros, captureMode);
 		return true;
 	}
 
@@ -170,6 +188,15 @@ public final class EphemeraFramePacer {
 	 * Waits until {@code deadlineNs} using adaptive park + bounded re-park + precision spin tail.
 	 */
 	public long waitUntil(long deadlineNs, int configuredSpinTailMicros) {
+		return waitUntil(deadlineNs, configuredSpinTailMicros, false);
+	}
+
+	/**
+	 * Waits until {@code deadlineNs} using adaptive park + bounded re-park + precision spin tail.
+	 * In {@code captureMode}, the reserve is capped at {@code configuredSpinTailMicros} so OS wake
+	 * overshoot spikes never expand busy-spinning at the expense of capture encoders.
+	 */
+	public long waitUntil(long deadlineNs, int configuredSpinTailMicros, boolean captureMode) {
 		long startNs = ops.nanoTime();
 		long remaining = deadlineNs - startNs;
 		if (remaining <= 0L) {
@@ -177,13 +204,15 @@ public final class EphemeraFramePacer {
 			return 0L;
 		}
 
-		long baseSpinNs = Math.max(MIN_RESERVE_NS, configuredSpinTailMicros * 1_000L);
-		long reserveNs = effectiveReserveNs(baseSpinNs);
+		long minReserve = captureMode ? CAPTURE_MIN_RESERVE_NS : MIN_RESERVE_NS;
+		long baseSpinNs = Math.max(minReserve, configuredSpinTailMicros * 1_000L);
+		long reserveNs = effectiveReserveNs(baseSpinNs, captureMode);
+		long reparkMargin = captureMode ? CAPTURE_REPARK_EXTRA_MARGIN_NS : REPARK_EXTRA_MARGIN_NS;
 
 		int parks = 0;
 		long now = startNs;
 		while (remaining > reserveNs && parks <= MAX_REPARK_RETRIES) {
-			if (parks > 0 && (ops.isInterrupted() || remaining <= reserveNs + REPARK_EXTRA_MARGIN_NS)) {
+			if (parks > 0 && (ops.isInterrupted() || remaining <= reserveNs + reparkMargin)) {
 				break;
 			}
 			long parkRequest = remaining - reserveNs;
@@ -197,7 +226,7 @@ public final class EphemeraFramePacer {
 			observeParkOvershoot(parkRequest, actualPark);
 			parks++;
 			remaining = deadlineNs - now;
-			reserveNs = effectiveReserveNs(baseSpinNs);
+			reserveNs = effectiveReserveNs(baseSpinNs, captureMode);
 		}
 
 		while (now < deadlineNs) {
@@ -226,18 +255,25 @@ public final class EphemeraFramePacer {
 		if (overshoot > 0L) {
 			long clamped = Math.min(overshoot, MAX_RESERVE_NS);
 			if (clamped > overshootEstimateNs) {
-				overshootEstimateNs = overshootEstimateNs * 0.65 + clamped * 0.35;
+				overshootEstimateNs = overshootEstimateNs * 0.60 + clamped * 0.40;
 			} else {
 				overshootEstimateNs = overshootEstimateNs * 0.94 + clamped * 0.06;
 			}
 		} else {
-			// Early or exact wake: gently relax reserve toward floor.
-			overshootEstimateNs = Math.max(100_000.0, overshootEstimateNs * 0.97);
+			// Early or exact wake: relax slowly so one quiet burst never drops below OS wake jitter.
+			overshootEstimateNs = Math.max(200_000.0, overshootEstimateNs * 0.992);
 		}
 	}
 
 	public long effectiveReserveNs(long baseSpinNs) {
-		long adaptive = Math.round(overshootEstimateNs * 1.15) + 150_000L;
+		return effectiveReserveNs(baseSpinNs, false);
+	}
+
+	public long effectiveReserveNs(long baseSpinNs, boolean captureMode) {
+		if (captureMode) {
+			return Math.min(MAX_RESERVE_NS, Math.max(CAPTURE_MIN_RESERVE_NS, baseSpinNs));
+		}
+		long adaptive = Math.round(overshootEstimateNs * 1.25) + 180_000L;
 		long chosen = Math.max(baseSpinNs, adaptive);
 		return Math.min(MAX_RESERVE_NS, Math.max(MIN_RESERVE_NS, chosen));
 	}

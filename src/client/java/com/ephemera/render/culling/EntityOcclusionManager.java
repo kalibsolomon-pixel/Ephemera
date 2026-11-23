@@ -8,8 +8,10 @@ import com.ephemera.core.culling.CullingBounds;
 import com.ephemera.core.culling.ParticleCellOcclusion;
 import com.ephemera.mixin.client.culling.EntityRendererAccessor;
 import com.ephemera.platform.RenderPlatform;
+import com.ephemera.render.gui.WorldPreparedTextCache;
 import com.ephemera.mixin.client.culling.LeashDataAccessor;
 import com.ephemera.mixin.client.particle.FrustumAccessor;
+import com.mojang.math.Transformation;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -20,9 +22,11 @@ import net.minecraft.client.renderer.entity.MobRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Leashable;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.monster.Guardian;
 import net.minecraft.world.entity.animal.frog.Frog;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
@@ -40,6 +44,7 @@ import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3fc;
 
 /** Render-thread owner of all occlusion proofs. Unknown or unavailable data always fails open. */
 public final class EntityOcclusionManager {
@@ -90,6 +95,7 @@ public final class EntityOcclusionManager {
         frustum = camera.getCullFrustum();
         frameActive = true; cameraValid = current != null;
         frame++; now = System.nanoTime();
+        WorldPreparedTextCache.beginFrame();
         VisualsRuntime.tickFrame(now);
         occludedEntities = occludedBlockEntities = 0;
         SECTIONS.releaseSections();
@@ -110,6 +116,7 @@ public final class EntityOcclusionManager {
         hasGlobalBlockEntities = false;
         terrainChanged(); ENTITIES.clear(); BLOCK_ENTITIES.clear(); BOX_QUERIES.clear();
         FastShadowCache.invalidate();
+        WorldPreparedTextCache.invalidate();
         LEASH_HOLDERS.clear(); PACKET_HOLDERS.clear();
         occludedEntities = occludedBlockEntities = visibleSections = 0;
     }
@@ -135,36 +142,90 @@ public final class EntityOcclusionManager {
         if (holder != 0) { LEASH_HOLDERS.add(holder); PACKET_HOLDERS.add(holder); }
     }
     public static boolean excluded(Entity entity) {
-        return entity.hasCustomName() || entity.isCurrentlyGlowing() || entity.hasGlowingTag()
-                || entity.getTeam() != null || entity.shouldShowName() || entity.belowNameDisplay() != null
+        // Order cheap field/type checks before SynchedEntityData lookups.
+        // Note: CustomName without CustomNameVisible only shows on direct crosshair hit, which is
+        // impossible when occluded behind an opaque wall; entity.shouldShowName() checks visibility.
+        return entity.isPassenger() || entity.isVehicle()
                 || entity instanceof FishingHook || entity instanceof EnderDragon || entity instanceof WitherBoss
                 || entity instanceof Guardian || entity instanceof Frog
-                || entity.isPassenger() || entity.isVehicle() || LEASH_HOLDERS.contains(entity.getId())
-                || entity instanceof Leashable leashable && leashable.getLeashData() != null;
+                || LEASH_HOLDERS.contains(entity.getId())
+                || (entity instanceof Leashable leashable && leashable.getLeashData() != null)
+                || entity.shouldShowName() || entity.isCurrentlyGlowing()
+                || entity.getTeam() != null || entity.belowNameDisplay() != null;
     }
     public static boolean cullEntity(Entity entity, EntityRenderer<?, ?> renderer) {
-        if (!EphemeraCommon.config().entityOcclusionCulling || !ready() || excluded(entity)
-                || entity.level() != level || !(entity instanceof Mob || entity instanceof ItemEntity
-                || entity instanceof ItemFrame || entity instanceof Painting
-                || entity instanceof FallingBlockEntity)
-                || !VANILLA_CLASS.get(renderer.getClass())) return false;
-        AABB box = RenderPlatform.cullingBox(renderer, entity);
-        if (box.maxX - box.minX > 8 || box.maxY - box.minY > 8 || box.maxZ - box.minZ > 8) return false;
+        if (!EphemeraCommon.config().entityOcclusionCulling || !ready() || entity.level() != level) return false;
+        boolean isDisplay = entity instanceof Display;
+        if (!isDisplay && !(entity instanceof Mob || entity instanceof ArmorStand
+                || entity instanceof ItemEntity || entity instanceof ItemFrame
+                || entity instanceof Painting || entity instanceof FallingBlockEntity)) {
+            return false;
+        }
+        if (excluded(entity) || !VANILLA_CLASS.get(renderer.getClass())) return false;
+        double minX, minY, minZ, maxX, maxY, maxZ;
+        if (isDisplay) {
+            Display display = (Display) entity;
+            if (display instanceof Display.TextDisplay textDisplay
+                    && (textDisplay.getFlags() & Display.TextDisplay.FLAG_SEE_THROUGH) != 0) {
+                return false;
+            }
+            if (display.affectedByCulling()) {
+                AABB box = RenderPlatform.cullingBox(renderer, entity);
+                minX = box.minX; minY = box.minY; minZ = box.minZ;
+                maxX = box.maxX; maxY = box.maxY; maxZ = box.maxZ;
+            } else if (display instanceof Display.TextDisplay textDisplay) {
+                // Server plugins frequently spawn TextDisplay holograms with default width=0, height=0.
+                // Derive a conservative visual box from Transformation + lineWidth and fail open on large scales.
+                Display.RenderState rs = display.renderState();
+                if (rs == null) return false;
+                Transformation t = rs.transformation().get(1.0f);
+                Vector3fc scale = t.scale();
+                Vector3fc trans = t.translation();
+                float maxScale = Math.max(Math.abs(scale.x()), Math.max(Math.abs(scale.y()), Math.abs(scale.z())));
+                if (!Float.isFinite(maxScale) || maxScale <= 0f || maxScale > 2.0f
+                        || !Float.isFinite(trans.x()) || !Float.isFinite(trans.y()) || !Float.isFinite(trans.z())
+                        || Math.abs(trans.x()) > 2.0f || Math.abs(trans.y()) > 2.0f || Math.abs(trans.z()) > 2.0f) {
+                    return false;
+                }
+                double halfW = Math.min(3.5, Math.max(1.25, (textDisplay.getLineWidth() * 0.0125 + 0.25) * maxScale));
+                double halfH = Math.min(3.5, 1.5 * maxScale);
+                double cx = entity.getX() + trans.x();
+                double cy = entity.getY() + trans.y() + 0.25 * maxScale;
+                double cz = entity.getZ() + trans.z();
+                minX = cx - halfW; maxX = cx + halfW;
+                minY = cy - halfH; maxY = cy + halfH;
+                minZ = cz - halfW; maxZ = cz + halfW;
+            } else {
+                return false;
+            }
+        } else {
+            AABB box = RenderPlatform.cullingBox(renderer, entity);
+            minX = box.minX; minY = box.minY; minZ = box.minZ;
+            maxX = box.maxX; maxY = box.maxY; maxZ = box.maxZ;
+        }
+        if (maxX - minX > 8 || maxY - minY > 8 || maxZ - minZ > 8) return false;
         double dx = entity.xOld - entity.getX(), dy = entity.yOld - entity.getY(), dz = entity.zOld - entity.getZ();
-        BOUNDS.entity(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ,
+        BOUNDS.entity(minX, minY, minZ, maxX, maxY, maxZ,
                 dx, dy, dz, entity instanceof Mob mob ? mob.getScale() : 1);
         if (frameActive ? entityShadowsEnabled : Minecraft.getInstance().options.entityShadows().get()) {
             // Vanilla EntityRenderer/MobRenderer contracts, inspected from 26.2 bytecode. Unknown
             // radius overrides use the engine's absolute 32-block cap instead of an estimate.
-            float radius = 32;
-            if (STANDARD_SHADOW.get(renderer.getClass())) {
+            float radius;
+            if (isDisplay) {
+                Display.RenderState rs = ((Display) entity).renderState();
+                radius = rs != null ? Math.min(32, Math.max(0, rs.shadowRadius().get(1.0f))) : 0f;
+            } else if (STANDARD_SHADOW.get(renderer.getClass())) {
                 radius = ((EntityRendererAccessor) renderer).ephemera$shadowRadius();
                 if (entity instanceof Mob mob) radius = radius * mob.getScale() * mob.getAgeScale();
                 radius = Math.min(32, radius);
+            } else {
+                radius = 32;
             }
             if (!Float.isFinite(radius)) return false;
-            BOUNDS.shadow(entity.xOld, entity.yOld, entity.zOld,
-                    entity.getX(), entity.getY(), entity.getZ(), Math.max(0, radius));
+            if (radius > 0f) {
+                BOUNDS.shadow(entity.xOld, entity.yOld, entity.zOld,
+                        entity.getX(), entity.getY(), entity.getZ(), radius);
+            }
         }
         boolean hidden = cached(ENTITIES, entity.getId(), BOUNDS.x0, BOUNDS.y0, BOUNDS.z0,
                 BOUNDS.x1, BOUNDS.y1, BOUNDS.z1);
@@ -177,10 +238,14 @@ public final class EntityOcclusionManager {
                 || (hasGlobalBlockEntities && level.getGloballyRenderedBlockEntities().contains(entity))
                 || renderer == null || renderer.shouldRenderOffScreen()
                 || !VANILLA_CLASS.get(renderer.getClass())) return false;
-        // Type-specific envelopes cover moving lids, attached chest halves and hanging geometry.
+        // Type-specific envelopes cover moving lids, attached chest halves, hanging geometry, and hub props.
         if (!(entity instanceof ChestBlockEntity || entity instanceof EnderChestBlockEntity
                 || entity instanceof SignBlockEntity || entity instanceof ShulkerBoxBlockEntity
-                || entity instanceof BannerBlockEntity)
+                || entity instanceof BannerBlockEntity || entity instanceof SkullBlockEntity
+                || entity instanceof DecoratedPotBlockEntity || entity instanceof EnchantingTableBlockEntity
+                || entity instanceof LecternBlockEntity || entity instanceof CampfireBlockEntity
+                || entity instanceof BrushableBlockEntity || entity instanceof SpawnerBlockEntity
+                || entity instanceof ShelfBlockEntity)
                 || !VANILLA_CLASS.get(entity.getClass())) return false;
         BlockPos p = entity.getBlockPos();
         BOUNDS.block(p.getX(), p.getY(), p.getZ());
@@ -209,6 +274,9 @@ public final class EntityOcclusionManager {
         } else if (entity instanceof SignBlockEntity) {
             // Diagonal standing signs and their text can cross a block-cell corner.
             BOUNDS.x0 -= .25; BOUNDS.z0 -= .25; BOUNDS.x1 += .25; BOUNDS.z1 += .25;
+        } else if (entity instanceof EnchantingTableBlockEntity || entity instanceof LecternBlockEntity) {
+            // Include the floating / angled book above the block top.
+            BOUNDS.y1 = p.getY() + 1.5;
         }
         boolean hidden = cached(BLOCK_ENTITIES, p.asLong(), BOUNDS.x0, BOUNDS.y0, BOUNDS.z0,
                 BOUNDS.x1, BOUNDS.y1, BOUNDS.z1);

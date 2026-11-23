@@ -5,6 +5,8 @@ import com.ephemera.core.diagnostics.FrameMetrics;
 import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.api.EphemeraVisibilityProvider;
+import com.ephemera.platform.Win32DisplayRuntime;
+import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.visuals.DynamicLightTracker;
 import com.ephemera.visuals.VisualsDiagnostics;
@@ -127,6 +129,14 @@ enum SettingsTab {
 		r.add(slider(c, "framePacerSpinTailMicros", 100, 3000, 50, v -> v.intValue() + " us"));
 		toggles(r, c, "unfocusedFpsLimitEnabled");
 		r.add(slider(c, "unfocusedFpsLimit", 5, 240, 5, v -> v.intValue() + " fps"));
+		r.add(new SettingRow.Header("ephemera.section.displayCapture"));
+		toggles(r, c, "borderlessFlipOptimization", "windowsLowLatencyRuntime");
+		r.add(choice(c, "captureOptimizationMode", List.of(EphemeraConfig.CaptureOptimizationMode.values()), SettingsTab::title));
+		r.add(choice(c, "captureFpsCapMode", List.of(EphemeraConfig.CaptureFpsCapMode.values()), m -> switch (m) {
+			case OFF -> "Off";
+			case REFRESH_RATE -> "Refresh Rate";
+			default -> m.name().substring(4) + " fps";
+		}));
 		r.add(new SettingRow.Header("ephemera.section.compat"));
 		toggles(r, c, "modStandDownEnabled");
 	}
@@ -165,6 +175,9 @@ enum SettingsTab {
 			() -> lowColor(VisualsDiagnostics.snapshot().pointOnePercentLowFps())));
 		r.add(new SettingRow.Stat("ephemera.stat.p99", () -> ms(VisualsDiagnostics.snapshot().p99Ms()), () -> UiTheme.TEXT));
 		r.add(new SettingRow.Stat("ephemera.stat.pacer", EphemeraPacerRuntime::statusLine, () -> UiTheme.TEXT));
+		r.add(new SettingRow.Stat("ephemera.stat.capture", CaptureOptimizationService::statusLabel,
+			() -> CaptureOptimizationService.isCaptureActive() ? UiTheme.GOOD : UiTheme.TEXT_DIM));
+		r.add(new SettingRow.Stat("ephemera.stat.windowsRuntime", Win32DisplayRuntime::diagnosticsSummary, () -> UiTheme.TEXT));
 		r.add(new SettingRow.Stat("ephemera.stat.memorySaved", () -> {
 			MemoryPressurePolicy.Snapshot mem = MemoryPressurePolicy.snapshot();
 			double mb = (mem.reclaimedNativeBytes() + mem.reclaimedHeapEstimateBytes()) / (1024.0 * 1024.0);
@@ -201,6 +214,10 @@ enum SettingsTab {
 		Binding.Config<Number> binding = new Binding.Config<>(c, field, format);
 		boolean integer = binding.get() instanceof Integer;
 		return new SettingRow.Slider<>(binding, SettingRow.SliderModel.range(min, max, step, integer), false);
+	}
+
+	private static String title(Enum<?> value) {
+		return value.name().charAt(0) + value.name().substring(1).toLowerCase(Locale.ROOT).replace('_', ' ');
 	}
 
 	private static EphemeraVisibilityProvider provider() {

@@ -1,10 +1,16 @@
 package com.ephemera.mixin.client.backend;
 
+import com.ephemera.EphemeraCommon;
+import com.ephemera.core.pacing.CapturePacingPolicy;
+import com.ephemera.platform.BorderlessFlipWindow;
+import com.ephemera.platform.Win32DisplayRuntime;
 import com.ephemera.render.backend.VulkanAsyncPresenter;
+import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.ephemera.render.backend.VulkanDiagTracker;
 import com.ephemera.render.backend.VulkanModernCapabilities;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import com.mojang.blaze3d.systems.CommandEncoderBackend;
 import com.mojang.blaze3d.systems.GpuSurface;
 import com.mojang.blaze3d.systems.SurfaceException;
@@ -15,17 +21,25 @@ import com.mojang.blaze3d.vulkan.VulkanGpuSurface;
 import com.mojang.blaze3d.vulkan.VulkanUtils;
 import com.mojang.blaze3d.vulkan.checkpoints.CheckpointExtension;
 import it.unimi.dsi.fastutil.longs.LongList;
+import java.nio.LongBuffer;
 import java.util.List;
 import java.util.Set;
+import net.minecraft.client.Minecraft;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.EXTFullScreenExclusive;
 import org.lwjgl.vulkan.KHRSwapchain;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK12;
+import org.lwjgl.vulkan.VkAllocationCallbacks;
+import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSemaphoreSubmitInfo;
 import org.lwjgl.vulkan.VkSubmitInfo2;
+import org.lwjgl.vulkan.VkSurfaceCapabilitiesKHR;
+import org.lwjgl.vulkan.VkSurfaceFullScreenExclusiveInfoEXT;
+import org.lwjgl.vulkan.VkSwapchainCreateInfoKHR;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -71,15 +85,21 @@ abstract class VulkanGpuSurfaceMixin {
 	@Unique private boolean ephemera$preAcquirePending;
 	@Unique private boolean ephemera$deferredAcquire;
 	@Unique private boolean ephemera$skipPresent;
+	@Unique private int ephemera$lastSurfaceMinImages;
+	@Unique private int ephemera$lastSurfaceMaxImages;
+	@Unique private int ephemera$lastVanillaRequestedImages;
+	@Unique private int ephemera$lastRequestedImageCount;
+	@Unique private boolean ephemera$lastCaptureActive;
 
 	/**
 	 * Vanilla allocates only 2 binary acquire semaphores, which is tight when 2 GPU frames are in
-	 * flight plus 1 pre-acquired next-frame image. Expanding to 4 eliminates any binary-semaphore
-	 * reuse hazard; {@code <init>} and {@code close()} already iterate over {@code acquireSemaphores.length}.
+	 * flight plus 1 pre-acquired next-frame image and up to 4 swapchain images in borderless or
+	 * capture mode. Expanding to 6 eliminates any binary-semaphore reuse hazard; {@code <init>}
+	 * and {@code close()} already iterate over {@code acquireSemaphores.length}.
 	 */
 	@ModifyConstant(method = "<init>", constant = @Constant(intValue = 2, ordinal = 0))
 	private int ephemera$expandAcquireSemaphoreRing(int vanillaCount) {
-		return 4;
+		return 6;
 	}
 
 	// Swapchain destroy / close on the render thread drains every queued submit + present job first,
@@ -114,13 +134,96 @@ abstract class VulkanGpuSurfaceMixin {
 		ephemera$preAcquirePending = false;
 		ephemera$deferredAcquire = false;
 		ephemera$skipPresent = false;
+		ephemera$lastRequestedImageCount = 0;
+		VulkanAsyncPresenter.setSurfaceActive(false, false);
+	}
+
+	/**
+	 * Uncapped present modes in borderless fullscreen or under a capture hook: the compositor or
+	 * capture layer also holds the just-presented image, so a fourth image keeps
+	 * {@code vkAcquireNextImageKHR} from stalling. FIFO keeps vanilla's count (no added latency).
+	 */
+	@WrapOperation(method = "configure", at = @At(value = "INVOKE",
+		target = "Lorg/lwjgl/vulkan/VkSwapchainCreateInfoKHR;minImageCount(I)Lorg/lwjgl/vulkan/VkSwapchainCreateInfoKHR;"))
+	private VkSwapchainCreateInfoKHR ephemera$swapchainHeadroom(VkSwapchainCreateInfoKHR info, int count,
+			Operation<VkSwapchainCreateInfoKHR> original, @Local(argsOnly = true) GpuSurface.Configuration config,
+			@Local VkSurfaceCapabilitiesKHR caps) {
+		GpuSurface.PresentMode mode = config.presentMode();
+		boolean uncapped = mode == GpuSurface.PresentMode.IMMEDIATE || mode == GpuSurface.PresentMode.MAILBOX;
+		boolean captureActive = CaptureOptimizationService.isCaptureActive();
+		int desired = CapturePacingPolicy.preferredVulkanSwapchainImages(caps.minImageCount(),
+			caps.maxImageCount(), count, uncapped, Win32DisplayRuntime.isBorderlessActive(), captureActive);
+		ephemera$lastSurfaceMinImages = caps.minImageCount();
+		ephemera$lastSurfaceMaxImages = caps.maxImageCount();
+		ephemera$lastVanillaRequestedImages = count;
+		ephemera$lastRequestedImageCount = desired;
+		ephemera$lastCaptureActive = captureActive;
+		return original.call(info, desired);
+	}
+
+	/**
+	 * Chains {@code VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT} when creating a non-exclusive swapchain
+	 * on Windows so exact-monitor-size borderless windows qualify for Windows DWM Hardware
+	 * Independent Flip without ever triggering legacy Fullscreen Exclusive black-screen switches
+	 * or capture dropouts on Alt-Tab.
+	 */
+	@WrapOperation(
+		method = "configure",
+		at = @At(
+			value = "INVOKE",
+			target = "Lorg/lwjgl/vulkan/KHRSwapchain;vkCreateSwapchainKHR(Lorg/lwjgl/vulkan/VkDevice;Lorg/lwjgl/vulkan/VkSwapchainCreateInfoKHR;Lorg/lwjgl/vulkan/VkAllocationCallbacks;Ljava/nio/LongBuffer;)I"
+		)
+	)
+	private int ephemera$disallowImplicitFseInBorderless(VkDevice vkDevice,
+														 VkSwapchainCreateInfoKHR createInfo,
+														 VkAllocationCallbacks allocator,
+														 LongBuffer pSwapchain,
+														 Operation<Integer> original) {
+		boolean optimizeFlip = EphemeraCommon.config().borderlessFlipOptimization;
+		boolean exclusive = ephemera$isExclusiveFullscreen();
+		boolean disallowFse = Win32DisplayRuntime.IS_WINDOWS
+			&& optimizeFlip
+			&& !exclusive
+			&& VulkanModernCapabilities.get().fullScreenExclusiveEnabled();
+		long prevPNext = createInfo.pNext();
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			if (disallowFse) {
+				VkSurfaceFullScreenExclusiveInfoEXT fseInfo = VkSurfaceFullScreenExclusiveInfoEXT.calloc(stack)
+					.sType$Default()
+					.pNext(prevPNext)
+					.fullScreenExclusive(EXTFullScreenExclusive.VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT);
+				createInfo.pNext(fseInfo.address());
+			}
+			int res = original.call(vkDevice, createInfo, allocator, pSwapchain);
+			if (res == VK12.VK_SUCCESS) {
+				VulkanModernCapabilities.LOGGER.info(
+					"Vulkan swapchain configured: {}x{}, minImages={}, presentMode={}, fseDisallowed={}, borderless={}, capture={}",
+					createInfo.imageExtent().width(), createInfo.imageExtent().height(),
+					createInfo.minImageCount(), createInfo.presentMode(), disallowFse,
+					Win32DisplayRuntime.isBorderlessActive(), CaptureOptimizationService.isCaptureActive()
+				);
+			}
+			return res;
+		} finally {
+			createInfo.pNext(prevPNext);
+		}
+	}
+
+	@Unique
+	private static boolean ephemera$isExclusiveFullscreen() {
+		if (Win32DisplayRuntime.isBorderlessActive()) {
+			return false;
+		}
+		Minecraft mc = Minecraft.getInstance();
+		return mc != null && (Object) mc.getWindow() instanceof BorderlessFlipWindow window
+			&& window.ephemera$isExclusiveFullscreen();
 	}
 
 	@Inject(method = "configure", at = @At("RETURN"))
 	private void ephemera$noteConfigure(GpuSurface.Configuration config, CallbackInfo ci) {
 		GpuSurface.PresentMode mode = config.presentMode();
 		ephemera$uncappedMode = mode == GpuSurface.PresentMode.IMMEDIATE || mode == GpuSurface.PresentMode.MAILBOX;
-		VulkanAsyncPresenter.setUncappedPresent(ephemera$uncappedMode);
+		VulkanAsyncPresenter.setSurfaceActive(ephemera$uncappedMode, swapchain != 0L && !swapchainOutOfDate);
 		if (VulkanDiagTracker.ENABLED) {
 			VulkanDiagTracker.notePresentMode(String.valueOf(mode), swapchainImages.size(), "supported=" + supportedPresentModes);
 		}
@@ -130,6 +233,21 @@ abstract class VulkanGpuSurfaceMixin {
 	private void ephemera$deferAcquireWhenAsyncPresentActive(CallbackInfo ci) {
 		if (VulkanDiagTracker.ENABLED) ephemera$t0 = System.nanoTime();
 		ephemera$skipPresent = false;
+		// Coalesce capture transitions on the render thread and reconfigure only if desired image count changes.
+		boolean captureNow = CaptureOptimizationService.isCaptureActive();
+		if (captureNow != ephemera$lastCaptureActive && ephemera$lastSurfaceMinImages > 0 && swapchain != 0L && !swapchainOutOfDate) {
+			ephemera$lastCaptureActive = captureNow;
+			int desired = CapturePacingPolicy.preferredVulkanSwapchainImages(
+				ephemera$lastSurfaceMinImages, ephemera$lastSurfaceMaxImages,
+				ephemera$lastVanillaRequestedImages, ephemera$uncappedMode,
+				Win32DisplayRuntime.isBorderlessActive(), captureNow);
+			if (desired != ephemera$lastRequestedImageCount) {
+				Minecraft mc = Minecraft.getInstance();
+				if (mc != null) {
+					mc.invalidateSurfaceConfiguration();
+				}
+			}
+		}
 		if (eatenException == null && !swapchainOutOfDate && !swapchainSuboptimal
 			&& ephemera$preAcquirePending && VulkanAsyncPresenter.hasResult()) {
 			// Image is already being pre-acquired off-thread right behind vkQueuePresentKHR;
@@ -169,6 +287,7 @@ abstract class VulkanGpuSurfaceMixin {
 		if (presRes == KHRSwapchain.VK_ERROR_OUT_OF_DATE_KHR) {
 			swapchainSuboptimal = true;
 			swapchainOutOfDate = true;
+			VulkanAsyncPresenter.setSurfaceActive(false, false);
 			eatenException = new SurfaceException("Failed to present image, swapchain out of date");
 			ephemera$skipPresent = true;
 			ci.cancel();
@@ -195,6 +314,7 @@ abstract class VulkanGpuSurfaceMixin {
 		if (acqRes == KHRSwapchain.VK_ERROR_OUT_OF_DATE_KHR) {
 			swapchainSuboptimal = true;
 			swapchainOutOfDate = true;
+			VulkanAsyncPresenter.setSurfaceActive(false, false);
 			eatenException = new SurfaceException("Failed to acquire image, swapchain out of date");
 			currentImageIndex = -1;
 			ephemera$skipPresent = true;

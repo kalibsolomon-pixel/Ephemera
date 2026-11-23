@@ -149,4 +149,63 @@ final class EphemeraFramePacerTest {
 		long target2 = pacer.advanceDeadline(EphemeraFramePacer.HookPoint.FRAME_HEAD, 100, lateNow + 1_000_000L);
 		assertEquals(ops.nowNs + 2 * period + 1_500_000L, target2);
 	}
+
+	@Test
+	void captureModeCapsSpinReserveEvenAfterHeavyOvershoot() {
+		FakeWaitOps ops = new FakeWaitOps(1_000_000_000L);
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		// Fresh pacer: normal mode uses adaptive reserve (> 300 us), capture mode caps at 300 us
+		assertTrue(pacer.effectiveReserveNs(300_000L, false) > 600_000L);
+		assertEquals(300_000L, pacer.effectiveReserveNs(300_000L, true));
+
+		// Feed repeated 4 ms overshoots that push adaptive reserve to 3.5 ms in normal mode
+		for (int i = 0; i < 20; i++) {
+			pacer.observeParkOvershoot(1_000_000L, 5_000_000L);
+		}
+		assertEquals(3_500_000L, pacer.effectiveReserveNs(300_000L, false));
+		assertEquals(300_000L, pacer.effectiveReserveNs(300_000L, true));
+
+		// Clean wake in capture mode: parks almost the full 10 ms and spins <= 300 us (<= 6 * 50 us steps)
+		ops.parkOvershootNs = 0L;
+		long deadline1 = ops.nowNs + 10_000_000L;
+		pacer.waitUntil(deadline1, 300, true);
+		assertEquals(1, ops.parkRequests.size());
+		assertEquals(9_700_000L, ops.parkRequests.get(0));
+		assertTrue(ops.spins <= 6, "Capture spin tail must stay bounded at 300 us, got spins=" + ops.spins);
+
+		// Late wake in capture mode: zero busy-spinning after oversleeping past deadline
+		ops.parkRequests.clear();
+		ops.spins = 0;
+		ops.parkOvershootNs = 800_000L;
+		long deadline2 = ops.nowNs + 10_000_000L;
+		pacer.waitUntil(deadline2, 300, true);
+		assertEquals(1, ops.parkRequests.size());
+		assertEquals(0, ops.spins, "Late wake past deadline must not spin");
+	}
+
+	@Test
+	void endingWorkBeforeLimiterSleepPreservesUploadBudgetHeadroom() {
+		FrameBudgetPacer cleanBudget = new FrameBudgetPacer();
+		FrameBudgetPacer pollutedBudget = new FrameBudgetPacer();
+		long t = 1_000_000_000L;
+		long periodNs = 16_666_667L; // 60 fps
+		long workNs = 4_000_000L;    // 4 ms pure CPU work
+
+		cleanBudget.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, 60);
+		pollutedBudget.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, 60);
+
+		for (int i = 0; i < 10; i++) {
+			cleanBudget.beginFrameWork(t);
+			cleanBudget.endFrameWork(t + workNs); // ended before limiter sleep
+			pollutedBudget.beginFrameWork(t);
+			pollutedBudget.endFrameWork(t + periodNs); // erroneously included sleep
+			t += periodNs;
+		}
+
+		long cleanUploadNs = cleanBudget.computeUploadBudgetNs(8, true, t);
+		long pollutedUploadNs = pollutedBudget.computeUploadBudgetNs(8, true, t);
+		assertTrue(cleanUploadNs >= 5_000_000L, "4 ms work at 60 fps should leave >5 ms upload budget, got " + cleanUploadNs);
+		assertEquals(500_000L, pollutedUploadNs, "Including sleep collapses budget to 0.5 ms floor");
+	}
 }

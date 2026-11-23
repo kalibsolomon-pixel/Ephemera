@@ -10,6 +10,7 @@ import com.ephemera.render.gui.TextureSetupCache;
 import com.ephemera.render.terrain.ChunkRenderBatcher;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.ephemera.visuals.AnisotropyService;
+import com.ephemera.visuals.ShaderPatchService;
 import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -46,6 +47,7 @@ public final class RenderPlatform {
 	public static void onResourceReloadComplete() {
 		TextureSetupCache.clear();
 		AnisotropyService.clearCache();
+		ShaderPatchService.clearTextCache();
 	}
 
 	public static void refreshBlockAtlasAnisotropy() {
@@ -65,7 +67,7 @@ public final class RenderPlatform {
 	}
 
 	public static boolean isVulkanAsyncPresentActive() {
-		return VulkanAsyncPresenter.isEnabled();
+		return VulkanAsyncPresenter.isActive();
 	}
 
 	/** Backend name of the live device, or null before the device exists. */
