@@ -29,6 +29,7 @@ import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
 import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.decoration.painting.Painting;
+import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.FishingHook;
 import net.minecraft.world.level.block.entity.*;
@@ -144,7 +145,8 @@ public final class EntityOcclusionManager {
     public static boolean cullEntity(Entity entity, EntityRenderer<?, ?> renderer) {
         if (!EphemeraCommon.config().entityOcclusionCulling || !ready() || excluded(entity)
                 || entity.level() != level || !(entity instanceof Mob || entity instanceof ItemEntity
-                || entity instanceof ItemFrame || entity instanceof Painting)
+                || entity instanceof ItemFrame || entity instanceof Painting
+                || entity instanceof FallingBlockEntity)
                 || !VANILLA_CLASS.get(renderer.getClass())) return false;
         AABB box = RenderPlatform.cullingBox(renderer, entity);
         if (box.maxX - box.minX > 8 || box.maxY - box.minY > 8 || box.maxZ - box.minZ > 8) return false;
@@ -290,6 +292,17 @@ public final class EntityOcclusionManager {
         if (!finite(x0, y0, z0, x0 + 16, y0 + 16, z0 + 16)) return true;
         int result = ((FrustumAccessor) frustum).ephemera$cube(x0, y0, z0, x0 + 16, y0 + 16, z0 + 16);
         return (result == -1 || result == -2) && !boxOccluded(x0, y0, z0, x0 + 16, y0 + 16, z0 + 16);
+    }
+    /** Frustum- and occlusion-culls a 1x1x1 transient block; fails open when occlusion state is not ready. */
+    public static boolean shouldSubmitTransientBlock(BlockPos pos) {
+        if (pos == null || !EphemeraCommon.config().entityOcclusionCulling || !ready()) return true;
+        double x = pos.getX(), y = pos.getY(), z = pos.getZ();
+        if (frustum != null) {
+            int vis = ((FrustumAccessor) frustum).ephemera$cube(x, y, z, x + 1.0, y + 1.0, z + 1.0);
+            if (vis != -1 && vis != -2) return false;
+        }
+        try { return !cached(BOX_QUERIES, pos.asLong(), x, y, z, x + 1.0, y + 1.0, z + 1.0); }
+        finally { if (!frameActive) releaseSection(); }
     }
     public static int visibleSections() { return visibleSections; }
     public static int occludedEntities() { return occludedEntities; }

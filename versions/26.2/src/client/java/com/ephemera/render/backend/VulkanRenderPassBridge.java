@@ -20,6 +20,29 @@ public interface VulkanRenderPassBridge {
 	/** Clears cached pipeline/descriptor state after a custom mesh-shader draw so subsequent Blaze3D draws rebind cleanly. */
 	void ephemera$invalidateAfterExternalDraw();
 
+	/** Returns false after an external draw invalidated the currently bound Vulkan pipeline. */
+	default boolean ephemera$isPipelineValid() {
+		return true;
+	}
+
+	/** Monotonic counter bumped on every external Vulkan draw (e.g. mesh shaders) inside this pass. */
+	default int ephemera$externalDrawSeq() {
+		return 0;
+	}
+
+	/** Vulkan {@code VkFormat} of color attachment 0 for this dynamic render pass, or 0 if unavailable. */
+	default int ephemera$colorVkFormat() {
+		return 0;
+	}
+
+	/** Vulkan {@code VkFormat} of the depth attachment for this dynamic render pass, or 0 if unavailable. */
+	default int ephemera$depthVkFormat() {
+		return 0;
+	}
+
+	/** Records dynamic rendering attachment formats when the render pass opens (used on 26.3). */
+	default void ephemera$setAttachmentFormats(int colorVkFormat, int depthVkFormat) {}
+
 	/** Returns pooled descriptor binding arrays when the encoder finishes this render pass. */
 	void ephemera$releaseBindings();
 }

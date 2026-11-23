@@ -124,6 +124,24 @@ class FastNoiseMathTest {
 	}
 
 	@Test
+	void gradDotFloatMatchesVanillaBitForBit() {
+		Random rng = new Random(0x5EED5678L);
+		for (int h = -32; h < 288; h++) {
+			int[] g = VANILLA_GRADIENT[h & 15];
+			assertEquals(Float.floatToRawIntBits((float) g[1]), Float.floatToRawIntBits(FastNoiseMath.gradYF(h)));
+			for (int i = 0; i < 16; i++) {
+				float x = rng.nextFloat() * 2.0f - 1.0f;
+				float y = rng.nextFloat() * 2.0f - 1.0f;
+				float z = rng.nextFloat() * 2.0f - 1.0f;
+				float expected3 = (float) g[0] * x + (float) g[1] * y + (float) g[2] * z;
+				float expectedXz = (float) g[0] * x + (float) g[2] * z;
+				assertEquals(Float.floatToRawIntBits(expected3), Float.floatToRawIntBits(FastNoiseMath.gradDotF(h, x, y, z)));
+				assertEquals(Float.floatToRawIntBits(expectedXz), Float.floatToRawIntBits(FastNoiseMath.gradDotXzF(h, x, z)));
+			}
+		}
+	}
+
+	@Test
 	void wrapMatchesVanillaBitForBit() {
 		double[] special = {
 			0.0, -0.0, 1.0, -1.0, 16777215.99999, 16777216.0, -16777216.0, -16777216.0001,

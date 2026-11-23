@@ -53,6 +53,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		Set<String> legacyAuroraMixins = auroraNative ? Collections.emptySet() : loadAuroraDeclaredMixins();
 		// Terrain engine yields to Sodium when both are installed
 		String[] terrainMixins = {
+			"BlockModelLighterCacheFastMixin",
 			"BlockTintCacheFastMixin",
 			"ClientLevelTintBindMixin",
 			"FrustumFastMixin",
@@ -63,6 +64,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			"SectionCopyFastMixin",
 			"SectionDirtyStateEpochMixin",
 			"SectionOcclusionGraphExecutorMixin",
+			"SectionUpdateTrackerFastMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
 			"TerrainCompiledSectionMeshMixin",
@@ -81,13 +83,17 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			"TerrainSpriteContentsMixin",
 			"TerrainTextureAtlasMixin",
 			"TerrainUberGpuBufferHeapAccessor",
-			"TerrainUberGpuBufferMixin"
+			"TerrainUberGpuBufferMixin",
+			"VertexSortingFastMixin",
+			"VisGraphFastMixin"
 		};
 		for (String m : terrainMixins) {
 			registerYield(m, "sodium");
 		}
 
 		// Blaze3D backend dispatch & fast native vertex writers
+		registerYield("FrontendRenderPassMixin", "sodium", "vulkanmod");
+		registerYield("FrontendRenderPipelineMixin", "sodium", "vulkanmod");
 		registerYield("GlCommandEncoderMixin", "sodium", "vulkanmod");
 		registerYield("GlRenderPassMixin", "sodium", "vulkanmod");
 		registerYield("GlSamplerCacheMixin", "sodium", "vulkanmod");
@@ -99,6 +105,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
 		registerYield("SeparateVertexArrayCacheMixin", legacyAuroraMixins.contains("VertexArrayCacheSeparateMixin")
 			? new String[] { "sodium", "vulkanmod", "aurora" } : new String[] { "sodium", "vulkanmod" });
+		registerYield("VertexArrayIdAccess", "sodium", "vulkanmod");
+		registerYield("GlDeviceNoErrorMixin", "iris", "oculus", "vulkanmod");
 		registerYield("MinecraftGlDebugOptionsMixin", "iris", "oculus", "vulkanmod");
 		registerYield("WindowGlNoErrorMixin", "iris", "oculus", "vulkanmod");
 		registerYield("GlDeviceTerrainPatchMixin", "sodium", "iris", "oculus", "vulkanmod");
@@ -106,7 +114,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		for (String m : new String[] {
 			"CommandEncoderBackendAccessor", "RenderPassBackendAccessor",
 			"VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
-			"VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin", "VulkanRenderPassMixin",
+			"VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
+			"VulkanRenderPassMixin", "VulkanRenderPassFormatsMixin",
 			"VulkanTextureBindingAccess", "VulkanBufferViewMixin", "VulkanDirectBufferMixin"
 		}) {
 			registerYield(m, "vulkanmod");
@@ -135,6 +144,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Culling, shadows, particles & MoreCulling block states
 		registerYield("EntityRendererCacheMixin", "badoptimizations");
 		registerYield("EntityRendererFrustumFastMixin", "sodium", "entityculling", "badoptimizations");
+		registerYield("LevelExtractorPlayerStateFastMixin", "badoptimizations");
+		registerYield("LevelRendererTransientBlockCullMixin", "entityculling");
 		registerYield("BlockEntityRendererCacheMixin", "badoptimizations");
 		registerYield("ShadowGroundCacheMixin", "badoptimizations");
 		registerYield("ShadowFeatureRendererMixin", "badoptimizations");
@@ -216,13 +227,17 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
 		return switch (simpleName) {
 			// Backend
+			case "FrontendRenderPassMixin", "FrontendRenderPipelineMixin" ->
+				cfg.backendGlDispatchCache || cfg.backendVulkanDispatchCache || cfg.terrainVulkanMeshShaders;
 			case "GlCommandEncoderMixin", "GlRenderPassMixin", "GlSamplerCacheMixin",
 				 "GlStateManagerCacheMixin", "GlTextureBindingAccess",
-				 "GlTextureMixin", "FrameBufferCacheMixin", "SeparateVertexArrayCacheMixin" -> cfg.backendGlDispatchCache;
-			case "MinecraftGlDebugOptionsMixin", "WindowGlNoErrorMixin" -> cfg.backendGlNoErrorContext;
+				 "GlTextureMixin", "FrameBufferCacheMixin", "SeparateVertexArrayCacheMixin",
+				 "VertexArrayIdAccess" -> cfg.backendGlDispatchCache;
+			case "GlDeviceNoErrorMixin", "MinecraftGlDebugOptionsMixin", "WindowGlNoErrorMixin" -> cfg.backendGlNoErrorContext;
 			case "VulkanRenderPassMixin", "VulkanTextureBindingAccess" -> cfg.backendVulkanDispatchCache || cfg.terrainVulkanMeshShaders;
 			case "VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
 				 "VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
+				 "VulkanRenderPassFormatsMixin",
 				 "CommandEncoderBackendAccessor", "RenderPassBackendAccessor" ->
 				cfg.backendVulkanModernGpu || cfg.terrainVulkanMeshShaders;
 			case "VulkanBufferViewMixin", "VulkanDirectBufferMixin" -> cfg.backendVulkanBufferViewCache;

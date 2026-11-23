@@ -7,17 +7,21 @@ import com.ephemera.render.backend.VulkanModernCapabilities;
 import com.ephemera.render.fastwrite.FastGlyphWriter;
 import com.ephemera.render.fastwrite.FastLineWriter;
 import com.ephemera.render.gui.TextureSetupCache;
+import com.ephemera.render.terrain.ChunkRenderBatcher;
+import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.ephemera.visuals.AnisotropyService;
 import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.renderpearl.api.device.GpuDevice;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -26,9 +30,8 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 
 /**
- * Minecraft 26.3 side of the version seam. 26.3 moved the GPU layer to
- * {@code com.mojang.renderpearl} and the window to SDL. The Ephemera terrain engine (chunk
- * batcher, Vulkan mesh shaders) is not ported yet, so those hooks report inactive.
+ * Minecraft 26.3 side of the version seam (RenderPearl GPU layer, SDL3 window, native
+ * {@code MULTIDRAW_TERRAIN}, and full Ephemera terrain + Vulkan Task+Mesh engine).
  */
 public final class RenderPlatform {
 	private RenderPlatform() {}
@@ -36,6 +39,7 @@ public final class RenderPlatform {
 	/** Leaving a world: drop GPU-side caches tied to its render data. */
 	public static void onWorldUnload() {
 		TextureSetupCache.clear();
+		ChunkRenderBatcher.get().release();
 	}
 
 	/** Resource reload finished: textures and samplers were recreated. */
@@ -49,11 +53,15 @@ public final class RenderPlatform {
 	}
 
 	public static boolean isVulkanMeshShaderActive() {
-		return false;
+		try {
+			return VulkanMeshTerrainEngine.get().isAvailable();
+		} catch (Throwable ignored) {
+			return false;
+		}
 	}
 
 	public static String meshShaderLabel() {
-		return "none";
+		return VulkanMeshTerrainEngine.get().usesTaskShader() ? "VK_EXT_mesh_shader (Task+Mesh)" : "VK_EXT_mesh_shader";
 	}
 
 	public static boolean isVulkanAsyncPresentActive() {
@@ -115,5 +123,15 @@ public final class RenderPlatform {
 	public static AABB cullingBox(EntityRenderer<?, ?> renderer, Entity entity) {
 		// Partial tick 1 is the current box, matching 26.2 (callers add the xOld motion themselves).
 		return ((EntityRendererAccessor) renderer).ephemera$cullingBox(entity, 1.0f);
+	}
+
+	/** Standard (non-multidraw) terrain pipeline for {@code layer}. */
+	public static RenderPipeline terrainPipeline(ChunkSectionLayer layer) {
+		return layer.pipeline(false);
+	}
+
+	/** True on 26.3: {@code Globals} UBO packs {@code GlintAlpha}/{@code GameTime} into the vec3 tail pads. */
+	public static boolean packedGlobalsUbo() {
+		return true;
 	}
 }

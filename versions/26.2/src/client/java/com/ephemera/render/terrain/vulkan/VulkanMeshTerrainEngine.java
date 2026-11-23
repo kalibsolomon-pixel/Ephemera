@@ -511,7 +511,7 @@ public final class VulkanMeshTerrainEngine {
 				VulkanMeshShaders.TERRAIN_MESH_TASK_GLSL, Shaderc.shaderc_mesh_shader);
 		} else {
 			meshShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain_compute.mesh",
-				VulkanMeshShaders.TERRAIN_MESH_COMPUTE_GLSL, Shaderc.shaderc_mesh_shader);
+				VulkanMeshShaders.computeMeshGlsl(), Shaderc.shaderc_mesh_shader);
 		}
 
 		int taskStage = EXTMeshShader.VK_SHADER_STAGE_TASK_BIT_EXT;

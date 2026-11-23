@@ -2,6 +2,7 @@ package com.ephemera.render.terrain;
 
 import com.ephemera.core.terrain.QuadBuckets;
 import com.ephemera.mixin.client.terrain.TerrainUberGpuBufferHeapAccessor;
+import com.ephemera.platform.RenderPlatform;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.vertex.TlsfAllocator;
@@ -112,7 +113,7 @@ public final class SectionDrawState {
 		if (sizes == null) {
 			sizes = new int[LAYER_COUNT];
 			for (int l = 0; l < LAYER_COUNT; l++) {
-				sizes[l] = LAYERS[l].pipeline().getVertexFormatBinding(0).getVertexSize();
+				sizes[l] = RenderPlatform.terrainPipeline(LAYERS[l]).getVertexFormatBinding(0).getVertexSize();
 			}
 			vertexSizes = sizes;
 		}

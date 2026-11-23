@@ -17,6 +17,7 @@ import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
 import com.mojang.blaze3d.vulkan.VulkanGpuTexture;
 import com.mojang.blaze3d.vulkan.VulkanQueue;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
+import com.mojang.blaze3d.vulkan.VulkanTransientMemory;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import org.lwjgl.system.MemoryStack;
@@ -24,6 +25,7 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.EXTMeshShader;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK12;
+import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
@@ -82,15 +84,18 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 			| KHRSynchronization2.VK_ACCESS_2_TRANSFER_READ_BIT_KHR
 			| KHRSynchronization2.VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR;
 
-	// Scratch block layout: VkMemoryBarrier2 | VkDependencyInfo | uint64 semaphore counter value
+	// Scratch block layout: VkMemoryBarrier2 | VkDependencyInfo | uint64 semaphore counter | VkBufferCopy
 	@Unique
 	private static final int EPHEMERA$DEP_OFFSET = VkMemoryBarrier2.SIZEOF;
 	@Unique
 	private static final int EPHEMERA$SEM_VALUE_OFFSET = EPHEMERA$DEP_OFFSET + VkDependencyInfo.SIZEOF;
 	@Unique
-	private static final int EPHEMERA$SCRATCH_SIZE = (EPHEMERA$SEM_VALUE_OFFSET + 8 + 15) & ~15;
+	private static final int EPHEMERA$COPY_OFFSET = EPHEMERA$SEM_VALUE_OFFSET + 8;
+	@Unique
+	private static final int EPHEMERA$SCRATCH_SIZE = (EPHEMERA$COPY_OFFSET + VkBufferCopy.SIZEOF + 15) & ~15;
 
 	@Shadow @Final private VulkanDevice device;
+	@Shadow @Final private VulkanTransientMemory transientMemory;
 	@Shadow @Final private long submitSemaphore;
 	@Shadow private long currentSubmitIndex;
 	@Shadow private long completedSubmitIndex;
@@ -422,11 +427,32 @@ abstract class VulkanCommandEncoderMixin implements VulkanEncoderBridge {
 		}
 	}
 
-	@Inject(method = "writeToBuffer", at = @At("HEAD"))
+	@Inject(method = "writeToBuffer", at = @At("HEAD"), cancellable = true)
 	private void ephemera$syncBeforeWriteBuffer(GpuBufferSlice slice, ByteBuffer data, CallbackInfo ci) {
-		if (VulkanModernCapabilities.modernSyncActive()) {
-			long handle = slice != null && slice.buffer() instanceof VulkanGpuBuffer vk ? vk.vkBuffer() : 0L;
-			ephemera$syncBeforeDisjointWrite(handle);
+		if (!VulkanModernCapabilities.modernSyncActive()) {
+			return;
+		}
+		VulkanGpuBuffer dst = slice != null && slice.buffer() instanceof VulkanGpuBuffer vk ? vk : null;
+		long dstHandle = dst != null ? dst.vkBuffer() : 0L;
+		ephemera$syncBeforeDisjointWrite(dstHandle);
+		if (dst != null && data != null) {
+			long scratch = ephemera$scratch();
+			if (scratch != 0L) {
+				GpuBufferSlice staged = transientMemory.uploadStaging(data, 1L, 16);
+				long copy = scratch + EPHEMERA$COPY_OFFSET;
+				MemoryUtil.memPutLong(copy + VkBufferCopy.SRCOFFSET, staged.offset());
+				MemoryUtil.memPutLong(copy + VkBufferCopy.DSTOFFSET, slice.offset());
+				MemoryUtil.memPutLong(copy + VkBufferCopy.SIZE, data.remaining());
+				VK12.nvkCmdCopyBuffer(
+					commandBuffer(),
+					((VulkanGpuBuffer) staged.buffer()).vkBuffer(),
+					dstHandle,
+					1,
+					copy
+				);
+				ephemera$pendingTransfer = true;
+				ci.cancel();
+			}
 		}
 	}
 

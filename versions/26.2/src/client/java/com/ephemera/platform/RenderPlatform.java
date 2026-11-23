@@ -10,6 +10,7 @@ import com.ephemera.render.gui.TextureSetupCache;
 import com.ephemera.render.terrain.ChunkRenderBatcher;
 import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.ephemera.visuals.AnisotropyService;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.GpuDevice;
@@ -20,6 +21,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
@@ -131,5 +133,15 @@ public final class RenderPlatform {
 	/** The renderer's culling box for {@code entity} at its current position. */
 	public static AABB cullingBox(EntityRenderer<?, ?> renderer, Entity entity) {
 		return ((EntityRendererAccessor) renderer).ephemera$cullingBox(entity);
+	}
+
+	/** Standard (non-multidraw) terrain pipeline for {@code layer}. */
+	public static RenderPipeline terrainPipeline(ChunkSectionLayer layer) {
+		return layer.pipeline();
+	}
+
+	/** False on 26.2: {@code Globals} UBO places {@code GlintAlpha}/{@code GameTime} after {@code ScreenSize}. */
+	public static boolean packedGlobalsUbo() {
+		return false;
 	}
 }

@@ -27,6 +27,7 @@ abstract class VertexFormatFastMixin {
 	@Unique private VertexFormatElement ephemera$uv0;
 	@Unique private VertexFormatElement ephemera$uv1;
 	@Unique private VertexFormatElement ephemera$uv2;
+	@Unique private VertexFormatElement ephemera$uv3;
 	@Unique private VertexFormatElement ephemera$normal;
 	@Unique private VertexFormatElement ephemera$lineWidth;
 	@Unique private int ephemera$elementsHash;
@@ -38,6 +39,7 @@ abstract class VertexFormatFastMixin {
 		ephemera$uv0 = elements.get("UV0");
 		ephemera$uv1 = elements.get("UV1");
 		ephemera$uv2 = elements.get("UV2");
+		ephemera$uv3 = elements.get("UV3");
 		ephemera$normal = elements.get("Normal");
 		ephemera$lineWidth = elements.get("LineWidth");
 		ephemera$elementsHash = elements.hashCode();
@@ -66,6 +68,7 @@ abstract class VertexFormatFastMixin {
 		if (name == "UV0") { cir.setReturnValue(ephemera$uv0 != null); return; }
 		if (name == "UV1") { cir.setReturnValue(ephemera$uv1 != null); return; }
 		if (name == "UV2") { cir.setReturnValue(ephemera$uv2 != null); return; }
+		if (name == "UV3") { cir.setReturnValue(ephemera$uv3 != null); return; }
 		if (name == "Normal") { cir.setReturnValue(ephemera$normal != null); return; }
 		if (name == "LineWidth") { cir.setReturnValue(ephemera$lineWidth != null); }
 	}
@@ -77,6 +80,7 @@ abstract class VertexFormatFastMixin {
 		if (name == "UV0") { cir.setReturnValue(ephemera$uv0); return; }
 		if (name == "UV1") { cir.setReturnValue(ephemera$uv1); return; }
 		if (name == "UV2") { cir.setReturnValue(ephemera$uv2); return; }
+		if (name == "UV3") { cir.setReturnValue(ephemera$uv3); return; }
 		if (name == "Normal") { cir.setReturnValue(ephemera$normal); return; }
 		if (name == "LineWidth") { cir.setReturnValue(ephemera$lineWidth); }
 	}
