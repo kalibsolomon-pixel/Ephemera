@@ -105,7 +105,7 @@ public final class EphemeraConfig {
 	public boolean borderlessFlipOptimization = true;
 	public boolean windowsLowLatencyRuntime = true;
 	public CaptureOptimizationMode captureOptimizationMode = CaptureOptimizationMode.AUTO;
-	public CaptureFpsCapMode captureFpsCapMode = CaptureFpsCapMode.REFRESH_RATE;
+	public CaptureFpsCapMode captureFpsCapMode = CaptureFpsCapMode.OFF;
 
 	// --- Visual Improvements (Zero/Sub-0.05ms Overhead, Toggleable) ---
 	public boolean visualSmoothFog = true;

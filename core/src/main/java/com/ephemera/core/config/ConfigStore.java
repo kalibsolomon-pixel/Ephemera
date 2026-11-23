@@ -67,7 +67,7 @@ public final class ConfigStore {
 	public static void sanitize(EphemeraConfig c) {
 		if (c.leavesCullingMode == null) c.leavesCullingMode = EphemeraConfig.LeavesCullingMode.DEPTH;
 		if (c.captureOptimizationMode == null) c.captureOptimizationMode = EphemeraConfig.CaptureOptimizationMode.AUTO;
-		if (c.captureFpsCapMode == null) c.captureFpsCapMode = EphemeraConfig.CaptureFpsCapMode.REFRESH_RATE;
+		if (c.captureFpsCapMode == null) c.captureFpsCapMode = EphemeraConfig.CaptureFpsCapMode.OFF;
 		c.leavesCullingDepth = Math.max(1, Math.min(4, c.leavesCullingDepth));
 		c.chunkBuilderThreads = Math.max(0, Math.min(32, c.chunkBuilderThreads));
 		c.maxSectionUploadsPerFrameMs = Math.max(1, Math.min(32, c.maxSectionUploadsPerFrameMs));
