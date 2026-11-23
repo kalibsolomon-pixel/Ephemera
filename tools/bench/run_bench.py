@@ -7,12 +7,16 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import present_trace
 
 REPO = Path(__file__).resolve().parents[2]
 WIN_PS1 = REPO / "tools" / "bench" / "win.ps1"
@@ -191,7 +195,7 @@ def ps(*args: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout.strip()
 
 
-def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render_distance: int = 20) -> None:
+def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render_distance: int = 20, fps_cap: int = 0, vsync: bool = False) -> None:
     if run_dir.exists():
         shutil.rmtree(run_dir, ignore_errors=True)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -203,12 +207,13 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render
         src = find_mod(pat)
         shutil.copy2(src, mods_dst / src.name)
     # Clean standardized options.txt
+    effective_fps = max(10, min(260, fps_cap)) if fps_cap > 0 else 260
     opts = [
         "version:4792",
         f"renderDistance:{render_distance}",
         "simulationDistance:12",
-        "enableVsync:false",
-        "maxFps:260",
+        f"enableVsync:{'true' if vsync else 'false'}",
+        f"maxFps:{effective_fps}",
         "inactivityFpsLimit:\"minimized\"",
         "fullscreen:false",
         "guiScale:3",
@@ -228,19 +233,23 @@ def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render
     (run_dir / "options.txt").write_text("\n".join(opts) + "\n", encoding="utf-8")
 
 
-def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20, suite: str = "default", spark: bool = False, minecraft: str | None = None) -> dict | None:
+def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bool, extra_jvm: str = "", render_distance: int = 20, suite: str = "default", spark: bool = False, minecraft: str | None = None, fps_cap: int = 0, vsync: bool = False, borderless: bool = False, presentmon: str = "") -> dict | None:
     spec = MOD_SETS[target]
     minecraft = minecraft or default_minecraft()
     # Non-default Minecraft versions get their own run dir and a label suffix.
     mc_suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
     label = f"{target}{mc_suffix}"
     run_dir = REPO / "build" / "bench" / f"game-{label}-{backend.lower()}"
-    prepare_run_dir(run_dir, spec["mods"], backend, render_distance)
+    prepare_run_dir(run_dir, spec["mods"], backend, render_distance, fps_cap=fps_cap, vsync=vsync)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     result_file = out_dir / f"bench-{label}-{backend.lower()}.json"
     if result_file.exists():
         result_file.unlink()
+    pm_exe = present_trace.find_presentmon(presentmon) if presentmon else None
+    pm_csv = out_dir / f"presentmon-{label}-{backend.lower()}.csv"
+    if pm_csv.exists():
+        pm_csv.unlink()
 
     run_id = uuid.uuid4().hex
     cmd = [
@@ -258,13 +267,17 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         f"-Pephemera.benchDurationSec={duration_sec}",
         f"-Pephemera.benchRd={render_distance}",
         f"-Pephemera.benchSuite={suite}",
+        f"-Pephemera.benchFpsCap={fps_cap}",
+        f"-Pephemera.benchVsync={'true' if vsync else 'false'}",
+        f"-Pephemera.benchBorderless={'true' if borderless else 'false'}",
         f"-Pephemera.benchRunId={run_id}",
         "-I", str(REPO / "tools" / "bench" / "bench.init.gradle"),
     ]
     if extra_jvm:
         cmd.append(f"-Pephemera.extraJvmArgs={extra_jvm}")
     gradle_log = out_dir / f"gradle-{label}-{backend.lower()}.log"
-    print(f"\n=== BENCHMARK: {label} [{backend}] (suite={suite}, spark={spark}) ===", flush=True)
+    print(f"\n=== BENCHMARK: {label} [{backend}] (suite={suite}, spark={spark}, cap={fps_cap}, vsync={vsync}) ===", flush=True)
+    pm_proc: subprocess.Popen | None = None
     with open(gradle_log, "w", encoding="utf-8") as lf:
         proc = subprocess.Popen(cmd, cwd=REPO, stdout=lf, stderr=subprocess.STDOUT)
         started = time.time()
@@ -279,6 +292,16 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
                 if rc == 0 and "MOVED" in res:
                     moved = True
                     print(f"  Window placed on secondary portrait monitor ({res}).", flush=True)
+                    if pm_exe is not None and pm_proc is None:
+                        m_pid = re.search(r"pid=(\d+)", res)
+                        if m_pid:
+                            game_pid = int(m_pid.group(1))
+                            pm_cmd = present_trace.build_presentmon_command(pm_exe, game_pid, pm_csv)
+                            try:
+                                pm_proc = subprocess.Popen(pm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                print(f"  Attached PresentMon ({pm_exe.name}) to PID {game_pid}.", flush=True)
+                            except OSError as exc:
+                                print(f"  Warning: could not launch PresentMon ({exc}); continuing without display trace.", flush=True)
             if result_file.exists():
                 time.sleep(2)
                 break
@@ -303,10 +326,20 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
             except subprocess.TimeoutExpired:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
                 proc.wait(timeout=10)
+        if pm_proc is not None:
+            try:
+                pm_proc.terminate()
+                pm_proc.wait(timeout=10)
+            except Exception:
+                try:
+                    pm_proc.kill()
+                except Exception:
+                    pass
 
     latest_log = run_dir / "logs" / "latest.log"
+    copied_log = out_dir / f"latest-{label}-{backend.lower()}.log"
     if latest_log.exists():
-        shutil.copy2(latest_log, out_dir / f"latest-{label}-{backend.lower()}.log")
+        shutil.copy2(latest_log, copied_log)
     # Collect Spark profile dumps & CrashAssistant reports when present
     for spark_dir in (run_dir / "config" / "spark", run_dir / "spark"):
         if spark_dir.exists():
@@ -330,6 +363,18 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
                 f"0.1%L {sc['pointOnePercentLowFps']:5.1f} | alloc {sc['allocMbPerSec']:5.1f} MB/s",
                 flush=True,
             )
+        if pm_csv.exists():
+            pres_out = out_dir / f"presentation-{label}-{backend.lower()}.json"
+            pres = present_trace.correlate_run(result_file, pm_csv, copied_log if copied_log.exists() else None, pres_out)
+            ov = pres["overallPresentation"]
+            disp = ov["displayInterval"]
+            print(
+                f"  [PresentMon] displayed {disp['avgFps']:.1f} FPS | med {disp['medianMs']:.2f} ms | "
+                f"p99 {disp['p99Ms']:.2f} ms | 1%L {disp['onePercentLowFps']:.1f} | "
+                f"dropped {ov['droppedCount']}/{ov['presentCount']} ({ov['droppedPct']:.2f}%) | modes {ov['presentModes']}",
+                flush=True,
+            )
+            data["presentation"] = pres
         return data
     else:
         print(f"  FAILED: no {result_file.name} produced (exit {proc.returncode}). Check {gradle_log}", flush=True)
@@ -348,6 +393,10 @@ def main() -> None:
     ap.add_argument("--render-distance", type=int, default=20)
     ap.add_argument("--suite", default="default", choices=["default", "gameplay", "all"])
     ap.add_argument("--minecraft", default="", help="comma-separated Minecraft versions (default: gradle.properties)")
+    ap.add_argument("--fps-cap", type=int, default=0, help="explicit FPS cap for frame-pacing validation (0 = uncapped)")
+    ap.add_argument("--vsync", action="store_true", help="enable VSync during benchmark run")
+    ap.add_argument("--borderless", action="store_true", help="record borderless presentation mode metadata")
+    ap.add_argument("--presentmon", default="", help="attach PresentMon ('auto' or path to PresentMon-x64.exe)")
     args = ap.parse_args()
 
     out_dir = Path(args.out).resolve()
@@ -363,7 +412,11 @@ def main() -> None:
             for target in targets:
                 suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
                 key = f"{target}{suffix}_{backend.lower()}"
-                res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance, args.suite, args.spark, minecraft)
+                res = run_one(
+                    target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm,
+                    args.render_distance, args.suite, args.spark, minecraft,
+                    fps_cap=args.fps_cap, vsync=args.vsync, borderless=args.borderless, presentmon=args.presentmon,
+                )
                 if res:
                     summary[key] = res
                 else:

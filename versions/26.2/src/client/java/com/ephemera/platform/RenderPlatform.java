@@ -47,6 +47,7 @@ public final class RenderPlatform {
 	public static void onResourceReloadComplete() {
 		TextureSetupCache.clear();
 		AnisotropyService.clearCache();
+		VulkanMeshTerrainEngine.get().prewarm();
 	}
 
 	public static void refreshBlockAtlasAnisotropy() {

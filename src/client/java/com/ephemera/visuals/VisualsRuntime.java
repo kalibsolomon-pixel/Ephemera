@@ -4,6 +4,7 @@ import com.ephemera.EphemeraCommon;
 import com.ephemera.api.EphemeraApi;
 import com.ephemera.api.EphemeraShaderHooks;
 import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.core.diagnostics.MixinHealth;
 import net.fabricmc.loader.api.FabricLoader;
 
 /**
@@ -12,8 +13,16 @@ import net.fabricmc.loader.api.FabricLoader;
  * 100 ms (or on {@link #invalidate()}) so per-entity and per-quad callers pay one volatile read.
  */
 public final class VisualsRuntime {
-	private static final String[] DYNAMIC_LIGHT_MODS = {"lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights"};
-	private static final boolean DYNAMIC_LIGHT_COMPETITOR = anyLoaded(DYNAMIC_LIGHT_MODS);
+	private static final String[] DYNAMIC_LIGHT_MODS = {
+		"lambdynlights", "lambdynlights_api", "dynamiclights", "ryoamiclights",
+		"sodiumdynamiclights", "lucent", "shimmer", "tschipcraft_dynamiclights", "optifabric"
+	};
+	private static final String[] TERRAIN_SHADER_CONFLICT_MODS = {
+		"sodium", "vulkanmod", "canvas", "nvidium", "optifabric"
+	};
+	private static final String DYNAMIC_LIGHT_COMPETITOR_ID = firstLoaded(DYNAMIC_LIGHT_MODS);
+	private static final String TERRAIN_SHADER_CONFLICT_ID = firstLoaded(TERRAIN_SHADER_CONFLICT_MODS);
+	private static final boolean DYNAMIC_LIGHT_COMPETITOR = DYNAMIC_LIGHT_COMPETITOR_ID != null;
 	private static final long GATE_TTL_NS = 100_000_000L;
 
 	/** How much farther underwater fog reaches when underwater clarity is on. */
@@ -25,6 +34,7 @@ public final class VisualsRuntime {
 		boolean atmosphericHorizon,
 		boolean underwaterClarity,
 		boolean dynamicLights,
+		boolean heldWorldLight,
 		boolean smoothChunkFade,
 		boolean enhancedAmbientOcclusion,
 		int anisotropy
@@ -32,6 +42,7 @@ public final class VisualsRuntime {
 
 	private static volatile Gates gates;
 	private static volatile long gatesAtNs;
+	private static volatile int gateVersion;
 
 	private VisualsRuntime() {}
 
@@ -40,10 +51,16 @@ public final class VisualsRuntime {
 		IrisCompatService.init();
 	}
 
+	/** Monotonic version incremented whenever cached visual gates are recomputed or invalidated. */
+	public static int gateVersion() {
+		return gateVersion;
+	}
+
 	/** Forces the next gate read to re-evaluate config and shader-pack state. */
 	public static void invalidate() {
 		gatesAtNs = 0L;
 		gates = null;
+		gateVersion++;
 	}
 
 	/** Refreshes cached gates at most every 100 ms; called once per frame on the render thread. */
@@ -51,6 +68,7 @@ public final class VisualsRuntime {
 		if (gates == null || nowNs - gatesAtNs > GATE_TTL_NS) {
 			gates = compute();
 			gatesAtNs = nowNs;
+			gateVersion++;
 		}
 	}
 
@@ -86,6 +104,40 @@ public final class VisualsRuntime {
 		return gates().dynamicLights();
 	}
 
+	/**
+	 * True when Ephemera's optional held-item world (terrain) light is active and not standing down
+	 * for external shader packs, dynamic-lighting mods, or terrain-rendering replacements.
+	 */
+	public static boolean heldWorldLight() {
+		return gates().heldWorldLight();
+	}
+
+	/**
+	 * True when the standard {@code core/terrain} vertex shader may be patched to read
+	 * {@code EphemeraHeldLightPos}/{@code EphemeraHeldLightParam} from {@code uniform Globals}.
+	 * Requires {@code GlobalSettingsUniformMixin} to have applied so the UBO carries those fields.
+	 */
+	public static boolean heldWorldLightTerrainShader() {
+		return heldWorldLight() && MixinHealth.applied().contains("GlobalSettingsUniformMixin");
+	}
+
+	/** Human-readable stand-down reason for Diagnostics UI, or null when not standing down. */
+	public static String heldWorldLightStandDownReason() {
+		if (externalShadersActive()) {
+			return "shader pack";
+		}
+		if (DYNAMIC_LIGHT_COMPETITOR_ID != null) {
+			return DYNAMIC_LIGHT_COMPETITOR_ID;
+		}
+		if (TERRAIN_SHADER_CONFLICT_ID != null) {
+			return TERRAIN_SHADER_CONFLICT_ID;
+		}
+		if (cfg().visualHeldWorldLight && !hooks().ownsHeldWorldLight()) {
+			return "shader hooks";
+		}
+		return null;
+	}
+
 	public static boolean smoothChunkFade() {
 		return gates().smoothChunkFade();
 	}
@@ -108,6 +160,7 @@ public final class VisualsRuntime {
 		current = compute();
 		gates = current;
 		gatesAtNs = now;
+		gateVersion++;
 		return current;
 	}
 
@@ -115,25 +168,31 @@ public final class VisualsRuntime {
 		EphemeraConfig c = cfg();
 		EphemeraShaderHooks hooks = hooks();
 		boolean external = hooks.isExternalShaderPackActive();
+		boolean heldWorld = c.visualHeldWorldLight
+			&& !external
+			&& !DYNAMIC_LIGHT_COMPETITOR
+			&& TERRAIN_SHADER_CONFLICT_ID == null
+			&& hooks.ownsHeldWorldLight();
 		return new Gates(
 			hooks.ownsSmoothFog(),
 			hooks.ownsGradientDithering(),
 			c.visualAtmosphericHorizon && !external,
 			c.visualUnderwaterClarity && !external,
 			!DYNAMIC_LIGHT_COMPETITOR && hooks.ownsDynamicLighting(),
+			heldWorld,
 			c.visualSmoothChunkFade && !external,
 			c.visualEnhancedAmbientOcclusion && !external,
 			c.visualCrispMipmaps && !external ? c.visualAnisotropicLevel : 0
 		);
 	}
 
-	private static boolean anyLoaded(String[] ids) {
+	private static String firstLoaded(String[] ids) {
 		FabricLoader loader = FabricLoader.getInstance();
 		for (String id : ids) {
 			if (loader.isModLoaded(id)) {
-				return true;
+				return id;
 			}
 		}
-		return false;
+		return null;
 	}
 }

@@ -31,6 +31,10 @@ public final class ShaderPatchService {
 				if (type == ShaderType.VERTEX) {
 					String patched = singleMdi ? ShaderSourcePatcher.patchGlSingleMdiVertex(source, GlSingleMdiTerrain.maxEntries()) : source;
 					GlSingleMdiTerrain.recordVertexPatched(patched != source);
+					VisualsRuntime.init();
+					if (VisualsRuntime.heldWorldLightTerrainShader()) {
+						patched = ShaderSourcePatcher.patchExpandedTerrainHeldLightVertex(patched);
+					}
 					return patched;
 				}
 				if (type == ShaderType.FRAGMENT) {

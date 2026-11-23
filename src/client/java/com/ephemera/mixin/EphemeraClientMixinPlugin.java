@@ -172,7 +172,11 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("WindowBorderlessFlipMixin", "borderless-mining", "cubes-without-borders", "fullscreen-windowed");
 
 		// Visuals
-		registerYield("EntityRendererLightMixin", "lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights");
+		registerYield("EntityRendererLightMixin",
+			"lambdynlights", "lambdynlights_api", "dynamiclights", "ryoamiclights", "sodiumdynamiclights", "lucent", "shimmer", "tschipcraft_dynamiclights", "optifabric");
+		registerYield("GlobalSettingsUniformMixin",
+			"sodium", "vulkanmod", "canvas", "nvidium", "optifabric",
+			"lambdynlights", "lambdynlights_api", "dynamiclights", "ryoamiclights", "sodiumdynamiclights", "lucent", "shimmer", "tschipcraft_dynamiclights");
 	}
 
 	@Override

@@ -7,24 +7,30 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 
-/** Sixty-four exact section keys and lazy per-section opacity bitsets persisted across frames while terrainStamp is unchanged. */
+/** 256 exact section keys and lazy per-section opacity bitsets persisted across frames while terrainStamp is unchanged. */
 final class SectionBlockCache {
-    private static final int SLOTS = 64;
+    private static final int SLOTS = 256;
     private static final int MASK = SLOTS - 1;
     private final LevelChunkSection[] sections = new LevelChunkSection[SLOTS];
     private final int[] xs = new int[SLOTS], ys = new int[SLOTS], zs = new int[SLOTS];
     private final long[] stamps = new long[SLOTS];
     private final long[] sectionFrames = new long[SLOTS];
     private final long[][] known = new long[SLOTS][64], opaque = new long[SLOTS][64];
+    private boolean hasSectionRefs;
 
     /** Releases MC chunk-section references at frame end without discarding valid opacity bitsets. */
     void releaseSections() {
+        if (!hasSectionRefs) {
+            return;
+        }
+        hasSectionRefs = false;
         Arrays.fill(sections, null);
         Arrays.fill(sectionFrames, 0L);
     }
 
     /** Full invalidation on terrain revision or world change. */
     void clear() {
+        hasSectionRefs = false;
         Arrays.fill(sections, null);
         Arrays.fill(sectionFrames, 0L);
         Arrays.fill(stamps, 0L);
@@ -59,6 +65,7 @@ final class SectionBlockCache {
             section = chunk == null ? null : chunk.getSection(level.getSectionIndex(y));
             sections[slot] = section;
             sectionFrames[slot] = frame;
+            hasSectionRefs = true;
         }
         if (section == null || section.hasOnlyAir()) {
             known[slot][word] |= bit;

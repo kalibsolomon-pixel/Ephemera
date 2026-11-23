@@ -55,6 +55,11 @@ public interface SectionMeshRenderCache {
 	/** True when animated sprites on this mesh must be stamped for {@code spriteGeneration}. */
 	boolean ephemera$needsSpriteStamp(int spriteGeneration);
 
+	/** Last wall-clock millisecond this mesh's animated sprites were stamped. */
+	long ephemera$lastSpriteStampMs();
+
+	void ephemera$setLastSpriteStampMs(long nowMs);
+
 	/** Vanilla {@code getSectionDraw(layer)} without the {@code EnumMap} lookup. */
 	SectionMesh.@Nullable SectionDraw ephemera$draw(int layerOrdinal);
 

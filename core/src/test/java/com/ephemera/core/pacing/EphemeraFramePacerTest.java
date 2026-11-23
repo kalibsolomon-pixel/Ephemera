@@ -206,6 +206,6 @@ final class EphemeraFramePacerTest {
 		long cleanUploadNs = cleanBudget.computeUploadBudgetNs(8, true, t);
 		long pollutedUploadNs = pollutedBudget.computeUploadBudgetNs(8, true, t);
 		assertTrue(cleanUploadNs >= 5_000_000L, "4 ms work at 60 fps should leave >5 ms upload budget, got " + cleanUploadNs);
-		assertEquals(500_000L, pollutedUploadNs, "Including sleep collapses budget to 0.5 ms floor");
+		assertEquals(0L, pollutedUploadNs, "Including sleep collapses capped budget to 0 ns instead of inflating to a 0.5 ms floor");
 	}
 }

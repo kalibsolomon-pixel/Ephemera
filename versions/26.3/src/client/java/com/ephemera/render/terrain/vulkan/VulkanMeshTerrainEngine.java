@@ -4,13 +4,16 @@ import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.terrain.BakedSectionMeshlets;
 import com.ephemera.core.terrain.VulkanFrustumMath;
+import com.ephemera.core.terrain.VulkanMeshPipelinePolicy;
 import com.ephemera.core.visuals.ShaderSourcePatcher;
 import com.ephemera.mixin.client.backend.CommandEncoderBackendAccessor;
 import com.ephemera.mixin.client.backend.RenderPassBackendAccessor;
 import com.ephemera.render.backend.VulkanEncoderBridge;
 import com.ephemera.render.backend.VulkanModernCapabilities;
 import com.ephemera.render.backend.VulkanRenderPassBridge;
+import com.ephemera.visuals.HeldWorldLightTracker;
 import com.ephemera.visuals.VisualsRuntime;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
@@ -30,6 +33,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
@@ -96,15 +100,17 @@ public final class VulkanMeshTerrainEngine {
 	private long meshPipelineLayout;
 	private long taskShaderModule;
 	private long meshShaderModule;
-	private long solidPipeline;
-	private long cutoutPipeline;
+	private long heldLightMeshShaderModule;
+	private final VulkanMeshPipelinePolicy pipelinePolicy = new VulkanMeshPipelinePolicy();
 	private int compiledColorFormat;
 	private int compiledDepthFormat;
 	// Primitive copy of the compiled ShaderSourcePatcher.Options (zero-alloc per-frame check)
 	private boolean compiledVisualValid;
+	private int compiledVisualGateVersion = Integer.MIN_VALUE;
 	private boolean compiledSmoothFog;
 	private boolean compiledDither;
 	private boolean compiledHorizon;
+	private boolean compiledHeldWorldLight;
 	private float compiledDitherStrength;
 	private long pipelineCache;
 
@@ -148,7 +154,39 @@ public final class VulkanMeshTerrainEngine {
 		return taskShaderMode;
 	}
 
-	/** Called at the start of {@code prepareRegional} / {@code reuseRegional} before any uploads. */
+	/**
+	 * Eagerly compiles Task/Mesh/Fragment shaders and SOLID+CUTOUT graphics pipelines outside the
+	 * active render pass (called on resource reload / world entry) to avoid first-draw hitches.
+	 */
+	public void prewarm() {
+		if (!RenderSystem.isOnRenderThread() || !isAvailable()) {
+			return;
+		}
+		try {
+			VulkanEncoderBridge bridge = currentBridge();
+			if (bridge == null) {
+				return;
+			}
+			VulkanDevice vkDev = bridge.ephemera$device();
+			VulkanCommandEncoder encoder = (VulkanCommandEncoder) bridge;
+			ensureInitialized(vkDev, encoder);
+			RenderTarget target = mainRenderTarget();
+			if (target != null && target.getColorTexture() != null && target.getDepthTexture() != null) {
+				int colorFmt = VulkanConst.toVk(target.getColorTexture().getFormat());
+				int depthFmt = VulkanConst.toVk(target.getDepthTexture().getFormat());
+				ensureGraphicsPipelines(vkDev, encoder, colorFmt, depthFmt);
+			}
+		} catch (Throwable t) {
+			disable(t);
+		}
+	}
+
+	/**
+	 * Called at the start of {@code prepareRegional} / {@code reuseRegional} before any uploads.
+	 * Prepares BOTH SOLID and CUTOUT graphics pipelines before returning {@code true} so that any
+	 * shader/pipeline failure falls back to indexed draws on the exact same frame with zero missing
+	 * terrain sections.
+	 */
 	public boolean beginFrame() {
 		if (!isAvailable()) {
 			frameSolidTasks = 0;
@@ -161,8 +199,22 @@ public final class VulkanMeshTerrainEngine {
 			if (bridge == null) {
 				return false;
 			}
-			ensureInitialized(bridge.ephemera$device(), (VulkanCommandEncoder) bridge);
-			arena.beginFrame((VulkanCommandEncoder) bridge);
+			VulkanDevice vkDev = bridge.ephemera$device();
+			VulkanCommandEncoder encoder = (VulkanCommandEncoder) bridge;
+			ensureInitialized(vkDev, encoder);
+			RenderTarget target = mainRenderTarget();
+			if (target == null || target.getColorTexture() == null || target.getDepthTexture() == null) {
+				return false;
+			}
+			int colorFmt = VulkanConst.toVk(target.getColorTexture().getFormat());
+			int depthFmt = VulkanConst.toVk(target.getDepthTexture().getFormat());
+			if (!ensureGraphicsPipelines(vkDev, encoder, colorFmt, depthFmt)) {
+				frameSolidTasks = 0;
+				frameCutoutTasks = 0;
+				frameActiveLayerMask = 0;
+				return false;
+			}
+			arena.beginFrame(encoder);
 			frameSolidTasks = 0;
 			frameCutoutTasks = 0;
 			frameActiveLayerMask = 0;
@@ -171,6 +223,11 @@ public final class VulkanMeshTerrainEngine {
 			disable(t);
 			return false;
 		}
+	}
+
+	private static @Nullable RenderTarget mainRenderTarget() {
+		Minecraft mc = Minecraft.getInstance();
+		return mc != null && mc.gameRenderer != null ? mc.gameRenderer.mainRenderTarget() : null;
 	}
 
 	public int arenaEpoch() {
@@ -221,7 +278,7 @@ public final class VulkanMeshTerrainEngine {
 	 * In Task+Mesh mode: zero compute dispatch, zero compute->mesh barrier, zero transfer barriers
 	 * on steady frames! In compute fallback mode: runs the compute culling dispatch.
 	 */
-	public void prepareFrame(int[] solidTasks, int solidTaskCount,
+	public boolean prepareFrame(int[] solidTasks, int solidTaskCount,
 							 int[] cutoutTasks, int cutoutTaskCount,
 							 long taskListVersion, int activeLayerMask,
 							 int[] visUpdateSlots, float[] visUpdateValues, int visUpdateCount,
@@ -234,13 +291,14 @@ public final class VulkanMeshTerrainEngine {
 		frameCutoutTasks = 0;
 		frameActiveLayerMask = 0;
 		int totalTasks = solidTaskCount + cutoutTaskCount;
-		if (failed || arena == null || totalTasks <= 0 || activeLayerMask == 0) {
-			return;
+		if (failed || arena == null || totalTasks <= 0 || activeLayerMask == 0
+			|| pipelinePolicy.solidPipeline() == 0L || pipelinePolicy.cutoutPipeline() == 0L) {
+			return false;
 		}
 		try {
 			VulkanEncoderBridge bridge = currentBridge();
 			if (bridge == null) {
-				return;
+				return false;
 			}
 			VulkanCommandEncoder encoder = (VulkanCommandEncoder) bridge;
 
@@ -286,7 +344,7 @@ public final class VulkanMeshTerrainEngine {
 			MemoryUtil.memPutInt(cp + 156L, 0);
 			arena.flushAllocation(cullParams, VulkanMeshArena.CULL_PARAMS_BYTES);
 
-			// Write 80-byte MeshFrame UBO straight into mapped ReBAR ring buffer
+			// Write MeshFrame UBO straight into mapped ReBAR ring buffer (80 bytes on lean default path; 112 with held light / compute fallback)
 			VulkanMeshArena.GpuBuf meshFrame = arena.meshFrameBuf();
 			long mf = meshFrame.mappedPtr;
 			modelView.get(clipFloats);
@@ -297,7 +355,27 @@ public final class VulkanMeshTerrainEngine {
 			MemoryUtil.memPutInt(mf + 68L, atlasH);
 			MemoryUtil.memPutInt(mf + 72L, 0);
 			MemoryUtil.memPutInt(mf + 76L, 0);
-			arena.flushAllocation(meshFrame, VulkanMeshArena.MESH_FRAME_BYTES);
+			if (compiledHeldWorldLight || !taskShaderMode) {
+				if (compiledHeldWorldLight && HeldWorldLightTracker.isEmitting()) {
+					MemoryUtil.memPutFloat(mf + 80L, HeldWorldLightTracker.relX());
+					MemoryUtil.memPutFloat(mf + 84L, HeldWorldLightTracker.relY());
+					MemoryUtil.memPutFloat(mf + 88L, HeldWorldLightTracker.relZ());
+					MemoryUtil.memPutFloat(mf + 92L, HeldWorldLightTracker.invRadius());
+					MemoryUtil.memPutFloat(mf + 96L, HeldWorldLightTracker.blockLight240());
+				} else {
+					MemoryUtil.memPutFloat(mf + 80L, 0.0f);
+					MemoryUtil.memPutFloat(mf + 84L, 0.0f);
+					MemoryUtil.memPutFloat(mf + 88L, 0.0f);
+					MemoryUtil.memPutFloat(mf + 92L, 0.0f);
+					MemoryUtil.memPutFloat(mf + 96L, 0.0f);
+				}
+				MemoryUtil.memPutFloat(mf + 100L, 0.0f);
+				MemoryUtil.memPutFloat(mf + 104L, 0.0f);
+				MemoryUtil.memPutFloat(mf + 108L, 0.0f);
+				arena.flushAllocation(meshFrame, VulkanMeshArena.MESH_FRAME_BYTES);
+			} else {
+				arena.flushAllocation(meshFrame, 80L);
+			}
 
 			if (!taskShaderMode) {
 				VkCommandBuffer cmd = bridge.ephemera$commandBuffer();
@@ -321,8 +399,10 @@ public final class VulkanMeshTerrainEngine {
 			frameSolidTasks = solidTaskCount;
 			frameCutoutTasks = cutoutTaskCount;
 			frameActiveLayerMask = activeLayerMask;
+			return true;
 		} catch (Throwable t) {
 			disable(t);
+			return false;
 		}
 	}
 
@@ -367,9 +447,11 @@ public final class VulkanMeshTerrainEngine {
 			if (colorFmt == 0 || depthFmt == 0) {
 				return false;
 			}
-			ensureGraphicsPipelines(rp.ephemera$device(), rp.ephemera$encoder(), colorFmt, depthFmt);
+			if (!ensureGraphicsPipelines(rp.ephemera$device(), rp.ephemera$encoder(), colorFmt, depthFmt)) {
+				return false;
+			}
 
-			long vkPipeline = layer == ChunkSectionLayer.SOLID ? solidPipeline : cutoutPipeline;
+			long vkPipeline = layer == ChunkSectionLayer.SOLID ? pipelinePolicy.solidPipeline() : pipelinePolicy.cutoutPipeline();
 			if (vkPipeline == 0L) {
 				return false;
 			}
@@ -428,9 +510,12 @@ public final class VulkanMeshTerrainEngine {
 			meshPipelineLayout = 0L;
 			taskShaderModule = 0L;
 			meshShaderModule = 0L;
-			solidPipeline = 0L;
-			cutoutPipeline = 0L;
+			heldLightMeshShaderModule = 0L;
+			pipelinePolicy.resetDeviceState();
+			compiledColorFormat = 0;
+			compiledDepthFormat = 0;
 			compiledVisualValid = false;
+			compiledVisualGateVersion = Integer.MIN_VALUE;
 		}
 		device = vkDev;
 		taskShaderMode = VulkanModernCapabilities.get().taskShaderEnabled();
@@ -526,7 +611,7 @@ public final class VulkanMeshTerrainEngine {
 			bindings.get(0).binding(0).descriptorType(VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1).stageFlags(taskShaderMode ? taskStage : meshStage);
 			bindings.get(1).binding(1).descriptorType(VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1).stageFlags(fragStage);
 			bindings.get(2).binding(2).descriptorType(VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1).stageFlags(taskShaderMode ? fragStage : (meshStage | fragStage));
-			bindings.get(3).binding(3).descriptorType(VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1).stageFlags((taskShaderMode ? taskStage : meshStage) | fragStage);
+			bindings.get(3).binding(3).descriptorType(VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).descriptorCount(1).stageFlags((taskShaderMode ? (taskStage | meshStage) : meshStage) | fragStage);
 			bindings.get(4).binding(4).descriptorType(VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(fragStage);
 			bindings.get(5).binding(5).descriptorType(VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1).stageFlags(fragStage);
 			bindings.get(6).binding(6).descriptorType(VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).stageFlags(meshStage);
@@ -558,46 +643,83 @@ public final class VulkanMeshTerrainEngine {
 		}
 	}
 
-	private void ensureGraphicsPipelines(VulkanDevice vkDev, VulkanCommandEncoder encoder,
-										 int colorFormat, int depthFormat) {
+	private boolean ensureGraphicsPipelines(VulkanDevice vkDev, VulkanCommandEncoder encoder,
+											int colorFormat, int depthFormat) {
+		int gateVersion = VisualsRuntime.gateVersion();
+		if (compiledVisualValid
+			&& gateVersion == compiledVisualGateVersion
+			&& colorFormat == compiledColorFormat && depthFormat == compiledDepthFormat
+			&& !pipelinePolicy.hasFailed()
+			&& pipelinePolicy.solidPipeline() != 0L && pipelinePolicy.cutoutPipeline() != 0L) {
+			return true;
+		}
 		EphemeraConfig cfg = EphemeraCommon.config();
 		boolean smoothFog = VisualsRuntime.smoothFog();
 		boolean dither = VisualsRuntime.gradientDithering();
 		float ditherStrength = cfg.visualDitherStrength;
 		boolean horizon = VisualsRuntime.atmosphericHorizon();
-		// Primitive compare first: the steady-state path never allocates an Options record.
-		if (solidPipeline != 0L && cutoutPipeline != 0L
+		boolean heldWorldLight = VisualsRuntime.heldWorldLight();
+		// Primitive compare first: the steady-state path never allocates a VisualKey / Options record.
+		if (!pipelinePolicy.hasFailed()
+			&& pipelinePolicy.solidPipeline() != 0L && pipelinePolicy.cutoutPipeline() != 0L
 			&& colorFormat == compiledColorFormat && depthFormat == compiledDepthFormat
 			&& compiledVisualValid
 			&& smoothFog == compiledSmoothFog && dither == compiledDither && horizon == compiledHorizon
+			&& heldWorldLight == compiledHeldWorldLight
 			&& Float.compare(ditherStrength, compiledDitherStrength) == 0) {
-			return;
+			compiledVisualGateVersion = gateVersion;
+			return true;
 		}
+		VulkanMeshPipelinePolicy.VisualKey key = new VulkanMeshPipelinePolicy.VisualKey(smoothFog, dither, ditherStrength, horizon, heldWorldLight);
 		ShaderSourcePatcher.Options visualOpts = new ShaderSourcePatcher.Options(smoothFog, dither, ditherStrength, horizon);
 		VkDevice dev = vkDev.vkDevice();
-		if (solidPipeline != 0L) {
-			long old = solidPipeline;
-			solidPipeline = 0L;
-			encoder.queueForDestroy(() -> VK12.vkDestroyPipeline(dev, old, null));
+		boolean ready = pipelinePolicy.ensureReady(
+			colorFormat, depthFormat, key, false,
+			(cf, df, vk) -> {
+				long activeMeshModule = resolveMeshShaderModule(dev, vk.heldWorldLight());
+				RenderPipeline solidTemplate = ChunkSectionLayer.SOLID.pipeline(false);
+				RenderPipeline cutoutTemplate = ChunkSectionLayer.CUTOUT.pipeline(false);
+				float cutoutThreshold = parseAlphaCutout(cutoutTemplate, 0.1f);
+				long builtSolid = 0L;
+				try {
+					builtSolid = buildMeshGraphicsPipeline(dev, activeMeshModule, solidTemplate, 0.0f, visualOpts, cf, df);
+					long builtCutout = buildMeshGraphicsPipeline(dev, activeMeshModule, cutoutTemplate, cutoutThreshold, visualOpts, cf, df);
+					return new VulkanMeshPipelinePolicy.PipelinePair(builtSolid, builtCutout);
+				} catch (Throwable t) {
+					if (builtSolid != 0L) {
+						long cleanup = builtSolid;
+						encoder.queueForDestroy(() -> VK12.vkDestroyPipeline(dev, cleanup, null));
+					}
+					throw t;
+				}
+			},
+			oldHandle -> encoder.queueForDestroy(() -> VK12.vkDestroyPipeline(dev, oldHandle, null))
+		);
+		if (!ready) {
+			disable(new IllegalStateException("Vulkan mesh graphics pipelines failed to build for formats (" + colorFormat + ", " + depthFormat + ")"));
+			return false;
 		}
-		if (cutoutPipeline != 0L) {
-			long old = cutoutPipeline;
-			cutoutPipeline = 0L;
-			encoder.queueForDestroy(() -> VK12.vkDestroyPipeline(dev, old, null));
-		}
-
-		RenderPipeline solidTemplate = ChunkSectionLayer.SOLID.pipeline(false);
-		RenderPipeline cutoutTemplate = ChunkSectionLayer.CUTOUT.pipeline(false);
-		float cutoutThreshold = parseAlphaCutout(cutoutTemplate, 0.1f);
-		solidPipeline = buildMeshGraphicsPipeline(dev, solidTemplate, 0.0f, visualOpts, colorFormat, depthFormat);
-		cutoutPipeline = buildMeshGraphicsPipeline(dev, cutoutTemplate, cutoutThreshold, visualOpts, colorFormat, depthFormat);
 		compiledColorFormat = colorFormat;
 		compiledDepthFormat = depthFormat;
 		compiledSmoothFog = smoothFog;
 		compiledDither = dither;
 		compiledDitherStrength = ditherStrength;
 		compiledHorizon = horizon;
+		compiledHeldWorldLight = heldWorldLight;
+		compiledVisualGateVersion = gateVersion;
 		compiledVisualValid = true;
+		return true;
+	}
+
+	private long resolveMeshShaderModule(VkDevice dev, boolean heldWorldLight) {
+		if (!heldWorldLight || !taskShaderMode) {
+			return meshShaderModule;
+		}
+		if (heldLightMeshShaderModule == 0L) {
+			heldLightMeshShaderModule = VulkanMeshShaders.compileShaderModule(dev, "ephemera_terrain_task_heldlight.mesh",
+				VulkanMeshShaders.taskMeshGlsl(true), Shaderc.shaderc_mesh_shader);
+		}
+		return heldLightMeshShaderModule;
 	}
 
 	/** Empty in-memory pipeline cache shared by every mesh/compute pipeline build on this device; 0 on failure. */
@@ -613,7 +735,7 @@ public final class VulkanMeshTerrainEngine {
 		}
 	}
 
-	private long buildMeshGraphicsPipeline(VkDevice dev, RenderPipeline template, float alphaCutout,
+	private long buildMeshGraphicsPipeline(VkDevice dev, long activeMeshModule, RenderPipeline template, float alphaCutout,
 										   ShaderSourcePatcher.Options visualOpts, int colorFormat, int depthFormat) {
 		String fragGlsl = VulkanMeshShaders.buildFragmentGlsl(alphaCutout, visualOpts);
 		long fragModule = VulkanMeshShaders.compileShaderModule(dev,
@@ -627,7 +749,7 @@ public final class VulkanMeshTerrainEngine {
 			if (taskShaderMode) {
 				stages.get(s++).sType$Default().stage(EXTMeshShader.VK_SHADER_STAGE_TASK_BIT_EXT).module(taskShaderModule).pName(entry);
 			}
-			stages.get(s++).sType$Default().stage(EXTMeshShader.VK_SHADER_STAGE_MESH_BIT_EXT).module(meshShaderModule).pName(entry);
+			stages.get(s++).sType$Default().stage(EXTMeshShader.VK_SHADER_STAGE_MESH_BIT_EXT).module(activeMeshModule).pName(entry);
 			stages.get(s).sType$Default().stage(VK12.VK_SHADER_STAGE_FRAGMENT_BIT).module(fragModule).pName(entry);
 
 			VkPipelineRasterizationStateCreateInfo raster = VkPipelineRasterizationStateCreateInfo.calloc(stack)

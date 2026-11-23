@@ -135,6 +135,8 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 				"Refines block corner ambient occlusion contrast with negligible frame cost.", "Visuals", c.visualEnhancedAmbientOcclusion, false),
 			new EphemeraOptionDescriptor("visualDynamicLights", "Dynamic Entity Lights",
 				"Smoothly illuminates held light sources and glowing entities without shaders.", "Visuals", c.visualDynamicLights, false),
+			new EphemeraOptionDescriptor("visualHeldWorldLight", "Held World Light (Terrain)",
+				"Softly illuminates nearby cave walls around your held light source in the terrain shader with zero chunk rebuilds. Stands down for shader packs and dynamic-light mods.", "Visuals", c.visualHeldWorldLight, false),
 			new EphemeraOptionDescriptor("visualSmoothChunkFade", "Smooth Chunk Fade-In",
 				"Gently fades newly loaded terrain sections into view.", "Visuals", c.visualSmoothChunkFade, false),
 			new EphemeraOptionDescriptor("diagnosticsHudOverlay", "Ephemera Diagnostics HUD",
@@ -182,6 +184,7 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			case "memoryLeakGuard" -> c.memoryLeakGuard;
 			case "visualEnhancedAmbientOcclusion" -> c.visualEnhancedAmbientOcclusion;
 			case "visualDynamicLights" -> c.visualDynamicLights;
+			case "visualHeldWorldLight" -> c.visualHeldWorldLight;
 			case "visualSmoothChunkFade" -> c.visualSmoothChunkFade;
 			case "diagnosticsHudOverlay" -> c.diagnosticsHudOverlay;
 			default -> false;
@@ -204,6 +207,7 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			case "memoryLeakGuard" -> { c.memoryLeakGuard = value; yield true; }
 			case "visualEnhancedAmbientOcclusion" -> { c.visualEnhancedAmbientOcclusion = value; VisualsRuntime.invalidate(); yield true; }
 			case "visualDynamicLights" -> { c.visualDynamicLights = value; VisualsRuntime.invalidate(); yield true; }
+			case "visualHeldWorldLight" -> { c.visualHeldWorldLight = value; VisualsRuntime.invalidate(); yield true; }
 			case "visualSmoothChunkFade" -> { c.visualSmoothChunkFade = value; VisualsRuntime.invalidate(); yield true; }
 			case "diagnosticsHudOverlay" -> { c.diagnosticsHudOverlay = value; yield true; }
 			default -> false;

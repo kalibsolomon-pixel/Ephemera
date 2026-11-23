@@ -12,4 +12,9 @@ public interface EphemeraShaderHooks {
 	boolean ownsGradientDithering();
 
 	boolean ownsDynamicLighting();
+
+	/** True when Ephemera may illuminate nearby terrain around the player's held light source. */
+	default boolean ownsHeldWorldLight() {
+		return false;
+	}
 }

@@ -308,6 +308,103 @@ class ShaderSourcePatcherTest {
 	}
 
 	@Test
+	void heldWorldLightPatchesGlobalsAndTerrainVertexCleanlyAndComposesWithGlSingleMdiAndOit() {
+		String expanded262 = """
+			#version 330
+
+			layout(std140) uniform Globals {
+			    ivec3 CameraBlockPos;
+			    vec3 CameraOffset;
+			    vec2 ScreenSize;
+			    float GlintAlpha;
+			    float GameTime;
+			    int MenuBlurRadius;
+			    int UseRgss;
+			};
+
+			layout(std140) uniform ChunkSection {
+			    mat4 ModelViewMat;
+			    float ChunkVisibility;
+			    ivec2 TextureSize;
+			    ivec3 ChunkPosition;
+			};
+
+			in vec3 Position;
+			in vec4 Color;
+			in vec2 UV0;
+			in ivec2 UV2;
+			uniform sampler2D Sampler2;
+			out vec4 vertexColor;
+
+			void main() {
+			    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+			    gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
+			    vertexColor = Color * sample_lightmap(Sampler2, UV2);
+			}
+			""";
+		// Composes with OpenGL Single-MDI on 26.2
+		String mdi = ShaderSourcePatcher.patchGlSingleMdiVertex(expanded262, 4096);
+		String both = ShaderSourcePatcher.patchExpandedTerrainHeldLightVertex(mdi);
+		assertNotSame(mdi, both);
+		assertTrue(both.contains("vec4 EphemeraHeldLightPos;"));
+		assertTrue(both.contains("vec4 EphemeraHeldLightParam;"));
+		assertTrue(both.contains("ephemeraHeldLightUv"));
+		assertTrue(both.contains("EphemeraBatchEntries[gl_BaseInstanceARB - 1]"));
+		assertTrue(balanced(both));
+		assertEquals(both, ShaderSourcePatcher.patchExpandedTerrainHeldLightVertex(both), "idempotent");
+
+		// 26.3 separate globals.glsl include + terrain.vsh with OIT_ALPHA_ONLY guard
+		String globals263 = """
+			#ifndef MINECRAFT_GLOBALS_GLSL
+			#define MINECRAFT_GLOBALS_GLSL
+
+			layout(std140) uniform Globals {
+			    ivec3 CameraBlockPos;
+			    float GlintAlpha;
+			    vec3 CameraOffset;
+			    float GameTime;
+			    vec2 ScreenSize;
+			    int MenuBlurRadius;
+			    int UseRgss;
+			};
+
+			#endif
+			""";
+		String patchedGlobals = ShaderSourcePatcher.patchGlobalsForHeldLight(globals263);
+		assertNotSame(globals263, patchedGlobals);
+		assertTrue(patchedGlobals.contains("vec4 EphemeraHeldLightPos;"));
+		assertTrue(patchedGlobals.contains("vec4 EphemeraHeldLightParam;"));
+		assertTrue(balanced(patchedGlobals));
+		assertEquals(patchedGlobals, ShaderSourcePatcher.patchGlobalsForHeldLight(patchedGlobals), "idempotent");
+
+		String terrain263 = """
+			#version 330
+			#include <minecraft:globals.glsl>
+			void main() {
+			    vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+			    #ifndef OIT_ALPHA_ONLY
+			    vertexColor = Color * sample_lightmap(Sampler2, UV2);
+			    #else
+			    vertexColor = Color;
+			    #endif
+			}
+			""";
+		String patched263 = ShaderSourcePatcher.patchTerrainHeldLightVertex(terrain263);
+		assertNotSame(terrain263, patched263);
+		assertTrue(patched263.contains("#ifndef OIT_ALPHA_ONLY"));
+		assertTrue(patched263.contains("#else\n    vertexColor = Color;"));
+		assertTrue(patched263.contains("ephemeraHeldLightUv"));
+		assertTrue(balanced(patched263));
+		assertEquals(patched263, ShaderSourcePatcher.patchTerrainHeldLightVertex(patched263), "idempotent");
+
+		// Fails soft when Globals block or sample_lightmap anchor is absent
+		String noGlobals = "#version 330\nvoid main() { vec3 pos = vec3(0.0); vertexColor = Color * sample_lightmap(Sampler2, UV2); }\n";
+		assertSame(noGlobals, ShaderSourcePatcher.patchExpandedTerrainHeldLightVertex(noGlobals));
+		String customLight = expanded262.replace("sample_lightmap(Sampler2, UV2)", "custom_lightmap(Sampler2, UV2)");
+		assertSame(customLight, ShaderSourcePatcher.patchExpandedTerrainHeldLightVertex(customLight));
+	}
+
+	@Test
 	void matchingBraceSkipsCommentsAndNesting() {
 		String s = "{ a { b } // } \n /* } */ c }";
 		assertEquals(s.length() - 1, ShaderSourcePatcher.matchingBrace(s, 0));

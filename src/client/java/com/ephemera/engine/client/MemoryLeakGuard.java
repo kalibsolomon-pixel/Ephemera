@@ -9,6 +9,7 @@ import com.ephemera.render.culling.FastShadowCache;
 import com.ephemera.render.culling.ParticleCullingManager;
 import com.ephemera.render.gui.GuiItemStateCache;
 import com.ephemera.visuals.DynamicLightTracker;
+import com.ephemera.visuals.HeldWorldLightTracker;
 
 /**
  * Central lifecycle guard that actively prevents world-unload, server-switch, and resource-reload
@@ -32,6 +33,7 @@ public final class MemoryLeakGuard {
 		FastShadowCache.invalidate();
 		GuiItemStateCache.clear();
 		DynamicLightTracker.clear();
+		HeldWorldLightTracker.clear();
 		RenderPlatform.onWorldUnload();
 		StateInterning.trim();
 		MemoryPressurePolicy.recordWorldUnloadSweep();

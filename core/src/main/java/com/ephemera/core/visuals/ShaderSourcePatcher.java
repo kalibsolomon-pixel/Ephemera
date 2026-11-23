@@ -23,6 +23,11 @@ public final class ShaderSourcePatcher {
 	private static final String MAIN_DECL = "void main()";
 	private static final String VANILLA_TERRAIN_POS = "vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;";
 	private static final String VANILLA_FADE_ARG = ", ChunkVisibility);";
+	private static final String VANILLA_TERRAIN_LIGHTMAP = "vertexColor = Color * sample_lightmap(Sampler2, UV2);";
+	public static final String HELD_LIGHT_POS_UNIFORM = "EphemeraHeldLightPos";
+	public static final String HELD_LIGHT_PARAM_UNIFORM = "EphemeraHeldLightParam";
+	private static final String HELD_LIGHT_LOCAL = "ephemeraHeldLightUv";
+	private static final Pattern GLOBALS_UBO_DECL = Pattern.compile("layout\\s*\\(\\s*std140\\s*\\)\\s*uniform\\s+Globals\\s*\\{");
 
 	private static final Pattern LINEAR_FOG_DECL = Pattern.compile("\\bfloat\\s+linear_fog_value\\s*\\(");
 	private static final Pattern LINEAR_FOG_RETURN = Pattern.compile(
@@ -189,6 +194,75 @@ public final class ShaderSourcePatcher {
 			+ "\nflat in float " + GL_BATCH_VISIBILITY + ";\n\n"
 			+ source.substring(insertAt);
 		return out.replace(VANILLA_FADE_ARG, ", " + GL_BATCH_VISIBILITY + ");");
+	}
+
+	/**
+	 * Appends Ephemera's held-world-light uniforms to the end of {@code layout(std140) uniform Globals}.
+	 * Safe for both 26.2 expanded terrain shaders and 26.3's {@code minecraft:globals.glsl} include;
+	 * returns {@code source} unchanged if {@code Globals} is absent or already patched.
+	 */
+	public static String patchGlobalsForHeldLight(String source) {
+		if (source == null || source.isEmpty() || source.contains(HELD_LIGHT_POS_UNIFORM)) {
+			return source;
+		}
+		Matcher m = GLOBALS_UBO_DECL.matcher(source);
+		if (!m.find()) {
+			return source;
+		}
+		int openBrace = m.end() - 1;
+		int closeBrace = matchingBrace(source, openBrace);
+		if (closeBrace <= openBrace) {
+			return source;
+		}
+		return source.substring(0, closeBrace)
+			+ "    vec4 " + HELD_LIGHT_POS_UNIFORM + ";\n"
+			+ "    vec4 " + HELD_LIGHT_PARAM_UNIFORM + ";\n"
+			+ source.substring(closeBrace);
+	}
+
+	/**
+	 * Patches {@code core/terrain.vsh} to blend the single interpolated held-item light into the
+	 * block-light channel before sampling {@code Sampler2}. Keeps {@code OIT_ALPHA_ONLY} and
+	 * {@code GlSingleMdiTerrain} untouched and stays plain GLSL 330 across OpenGL and Vulkan.
+	 *
+	 * <p>Expects {@link #patchGlobalsForHeldLight} to have been applied to {@code Globals} (either
+	 * inline on 26.2 or via the {@code minecraft:globals.glsl} include on 26.3). Returns {@code source}
+	 * unchanged when the vanilla lightmap line is not found.
+	 */
+	public static String patchTerrainHeldLightVertex(String source) {
+		if (source == null || source.isEmpty() || source.contains(HELD_LIGHT_LOCAL)
+			|| !source.contains(VANILLA_TERRAIN_LIGHTMAP) || !source.contains("vec3 pos = ")) {
+			return source;
+		}
+		String replacement =
+			"vec2 " + HELD_LIGHT_LOCAL + " = vec2(UV2);\n"
+				+ "    if (" + HELD_LIGHT_PARAM_UNIFORM + ".x > 0.001) {\n"
+				+ "        float ephemeraHeldDist = length(pos - " + HELD_LIGHT_POS_UNIFORM + ".xyz);\n"
+				+ "        float ephemeraHeldT = 1.0 - ephemeraHeldDist * " + HELD_LIGHT_POS_UNIFORM + ".w;\n"
+				+ "        if (ephemeraHeldT > 0.0) {\n"
+				+ "            float ephemeraHeldDyn = " + HELD_LIGHT_PARAM_UNIFORM + ".x * ephemeraHeldT * ephemeraHeldT;\n"
+				+ "            " + HELD_LIGHT_LOCAL + ".x = max(" + HELD_LIGHT_LOCAL + ".x, min(240.0, ephemeraHeldDyn));\n"
+				+ "        }\n"
+				+ "    }\n"
+				+ "    vertexColor = Color * texture(Sampler2, clamp((" + HELD_LIGHT_LOCAL + " / 256.0) + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)));";
+		return source.replace(VANILLA_TERRAIN_LIGHTMAP, replacement);
+	}
+
+	/**
+	 * Atomic 26.2 convenience helper for already-expanded {@code core/terrain.vsh}: patches both
+	 * {@code uniform Globals} and the lightmap sample, or returns {@code source} unchanged if either
+	 * anchor is missing.
+	 */
+	public static String patchExpandedTerrainHeldLightVertex(String source) {
+		if (source == null || source.isEmpty() || source.contains(HELD_LIGHT_LOCAL)) {
+			return source;
+		}
+		String withGlobals = patchGlobalsForHeldLight(source);
+		if (withGlobals == source && !source.contains(HELD_LIGHT_POS_UNIFORM)) {
+			return source;
+		}
+		String withBody = patchTerrainHeldLightVertex(withGlobals);
+		return withBody == withGlobals ? source : withBody;
 	}
 
 	/**

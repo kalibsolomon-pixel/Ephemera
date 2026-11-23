@@ -37,6 +37,17 @@ public final class FrameBudgetPacer {
 	private long throttledUploadCount;
 	private long completedFrames;
 
+	// Unified per-frame chunk-streaming budget shared across section snapshots and Vulkan mesh uploads.
+	// Uncapped frames budget ACTUAL streaming work spent (so unrelated CPU work between stages never
+	// starves Vulkan mesh uploads); capped frames ALSO enforce a hard display-period wall-clock deadline.
+	private static final long UNCAPPED_STREAMING_BASE_BUDGET_NS = 3_000_000L; // 3.0 ms shared across both stages
+	private boolean frameStreamingDeadlineSet;
+	private long frameStreamingBudgetNs;
+	private long frameStreamingSpentNs;
+	private long frameStreamingDeadlineNs;
+	private int frameStreamingItemsDone;
+	private int frameStreamingThrottled;
+
 	public void reset() {
 		lastFrameStartNs = 0L;
 		currentFrameWorkStartNs = 0L;
@@ -45,6 +56,16 @@ public final class FrameBudgetPacer {
 		ewmaJitterNs = 0.0;
 		throttledUploadCount = 0L;
 		completedFrames = 0L;
+		resetFrameStreaming();
+	}
+
+	private void resetFrameStreaming() {
+		frameStreamingDeadlineSet = false;
+		frameStreamingBudgetNs = 0L;
+		frameStreamingSpentNs = 0L;
+		frameStreamingDeadlineNs = Long.MAX_VALUE;
+		frameStreamingItemsDone = 0;
+		frameStreamingThrottled = 0;
 	}
 
 	/** Called by Aurora Client via the {@code ephemera:frame_pacer} ObjectShare bridge at frame head. */
@@ -99,6 +120,7 @@ public final class FrameBudgetPacer {
 		}
 		lastFrameStartNs = nowNs;
 		currentFrameWorkStartNs = nowNs;
+		resetFrameStreaming();
 	}
 
 	/**
@@ -121,11 +143,12 @@ public final class FrameBudgetPacer {
 	}
 
 	/**
-	 * Computes the dynamic per-frame terrain GPU upload budget in nanoseconds.
+	 * Computes the dynamic per-frame terrain streaming budget in nanoseconds.
 	 *
 	 * <p>Respects {@code configuredMaxMs}, and when an FPS cap is active (or recent frame jitter is
 	 * elevated), automatically scales the budget to fit inside the remaining frame headroom so
-	 * chunk streaming does not cause deadline misses.
+	 * chunk streaming does not cause deadline misses. When capped, never inflates remaining
+	 * headroom above what is actually left in the frame period.
 	 */
 	public long computeUploadBudgetNs(int configuredMaxMs, boolean adaptiveEnabled, long nowNs) {
 		long configuredNs = Math.max(1, configuredMaxMs) * 1_000_000L;
@@ -140,13 +163,18 @@ public final class FrameBudgetPacer {
 			long periodNs = 1_000_000_000L / targetFps;
 			long elapsedWorkNs = currentFrameWorkStartNs != 0L ? Math.max(0L, nowNs - currentFrameWorkStartNs) : 0L;
 			long baselineWorkNs = Math.max(elapsedWorkNs, Math.round(ewmaWorkNs));
-			// Reserve 1.0 ms (or 15% of frame period) safety cushion for remaining draw + swap + pacer spin.
+			// Reserve 15% of frame period (clamped to [0.4 ms, 1.5 ms]) for remaining draw + swap + spin.
 			long safetyCushionNs = Math.min(1_500_000L, Math.max(400_000L, periodNs / 6L));
-			long headroomNs = periodNs - baselineWorkNs - safetyCushionNs;
-			long capByPeriod = Math.max(MIN_UPLOAD_BUDGET_NS, Math.min(periodNs / 3L, headroomNs));
+			long headroomNs = Math.max(0L, periodNs - baselineWorkNs - safetyCushionNs);
+			long capByPeriod = Math.min(periodNs / 3L, headroomNs);
 			budget = Math.min(budget, capByPeriod);
+			// 2. If recent jitter is high (> 1.5 ms MAD), gently tighten non-urgent streaming by 35%.
+			if (ewmaJitterNs > 1_500_000.0) {
+				budget = (budget * 65L) / 100L;
+			}
+			return Math.max(0L, budget);
 		} else if (ewmaWorkNs > 0.0) {
-			// Uncapped: cap uploads to 35% of typical frame work so chunk streaming never doubles frame time.
+			// Uncapped: cap streaming to 35% of typical frame work so chunk streaming never doubles frame time.
 			long smoothCap = Math.max(MIN_UPLOAD_BUDGET_NS, Math.round(ewmaWorkNs * 0.35));
 			budget = Math.min(budget, smoothCap);
 		}
@@ -157,6 +185,179 @@ public final class FrameBudgetPacer {
 		}
 
 		return Math.max(MIN_UPLOAD_BUDGET_NS, budget);
+	}
+
+	/**
+	 * Latches ONE shared chunk-streaming budget for the active frame so section snapshots and
+	 * Vulkan mesh uploads spend from the same budget instead of stacking independent budgets.
+	 *
+	 * <p>On uncapped frames, returns {@code Long.MAX_VALUE} for the wall-clock hard deadline and
+	 * gates both stages by actual cumulative streaming work ({@link #frameStreamingSpentNs}) against
+	 * {@link #frameStreamingBudgetNs} so unrelated CPU work between stages never starves GPU uploads.
+	 * On FPS-capped frames, ALSO latches a hard wall-clock deadline inside the frame period.
+	 *
+	 * @param maxBudgetNs optional ceiling (e.g. capture-mode clamp), or {@code Long.MAX_VALUE}
+	 * @return hard wall-clock {@code System.nanoTime()} deadline for capped frames, or {@code Long.MAX_VALUE}
+	 */
+	public long resolveStreamingDeadlineNs(int configuredMaxMs, boolean adaptiveEnabled, long maxBudgetNs, long nowNs) {
+		if (!adaptiveEnabled) {
+			return Long.MAX_VALUE;
+		}
+		if (!frameStreamingDeadlineSet) {
+			int targetFps = effectiveTargetFps;
+			long computed;
+			if (targetFps > 0) {
+				computed = computeUploadBudgetNs(configuredMaxMs, true, nowNs);
+			} else {
+				long configuredNs = Math.max(1, configuredMaxMs) * 1_000_000L;
+				long uncapped = ewmaWorkNs > 0.0
+					? Math.max(UNCAPPED_STREAMING_BASE_BUDGET_NS, Math.round(ewmaWorkNs * 0.50))
+					: Math.min(configuredNs, UNCAPPED_STREAMING_BASE_BUDGET_NS);
+				computed = Math.min(configuredNs, uncapped);
+				if (ewmaJitterNs > 1_500_000.0) {
+					computed = Math.max(MIN_UPLOAD_BUDGET_NS, (computed * 65L) / 100L);
+				}
+			}
+			long clamped = Math.max(0L, Math.min(computed, maxBudgetNs));
+			frameStreamingBudgetNs = clamped;
+			if (targetFps > 0) {
+				long periodNs = 1_000_000_000L / targetFps;
+				long safetyCushionNs = Math.min(1_500_000L, Math.max(400_000L, periodNs / 6L));
+				long byBudget = nowNs + clamped;
+				long byPeriod = currentFrameWorkStartNs != 0L
+					? Math.max(nowNs, currentFrameWorkStartNs + periodNs - safetyCushionNs)
+					: byBudget;
+				frameStreamingDeadlineNs = Math.min(byBudget, byPeriod);
+			} else {
+				frameStreamingDeadlineNs = Long.MAX_VALUE;
+			}
+			frameStreamingDeadlineSet = true;
+		}
+		return frameStreamingDeadlineNs;
+	}
+
+	/**
+	 * Fast check for whether the shared streaming budget still has unspent headroom for the
+	 * snapshot stage (stopping at 75% of the shared budget when {@code reserveGpuUploadSlice} is
+	 * true so Vulkan mesh uploads later in the frame are never starved by snapshot bursts).
+	 */
+	public boolean hasSnapshotStreamingHeadroom(boolean reserveGpuUploadSlice) {
+		if (!frameStreamingDeadlineSet) {
+			return true;
+		}
+		long cap = reserveGpuUploadSlice ? (frameStreamingBudgetNs * 3L) / 4L : frameStreamingBudgetNs;
+		if (frameStreamingSpentNs >= cap) {
+			return false;
+		}
+		long hardDeadline = frameStreamingDeadlineNs;
+		return hardDeadline == Long.MAX_VALUE || System.nanoTime() < hardDeadline;
+	}
+
+	/**
+	 * Snapshot-stage gate respecting both the shared budget (optionally leaving 25% reserved for
+	 * Vulkan mesh uploads within the same single frame budget) and the nearby priority floor.
+	 */
+	public boolean allowSnapshotStreamingWork(int priorityFloor, boolean reserveGpuUploadSlice) {
+		if (!frameStreamingDeadlineSet) {
+			return true;
+		}
+		int minItems = Math.max(1, priorityFloor);
+		if (frameStreamingItemsDone < minItems) {
+			return true;
+		}
+		long cap = reserveGpuUploadSlice ? (frameStreamingBudgetNs * 3L) / 4L : frameStreamingBudgetNs;
+		if (frameStreamingSpentNs >= cap) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		long hardDeadline = frameStreamingDeadlineNs;
+		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Fast-path check for whether a streaming stage (section snapshot or Vulkan mesh upload) may
+	 * process another non-urgent item under the shared frame budget. Zero {@code System.nanoTime()}
+	 * calls on uncapped frames; checks wall-clock hard deadline only on FPS-capped frames.
+	 */
+	public boolean allowStreamingWork(int priorityFloor) {
+		if (!frameStreamingDeadlineSet) {
+			return true;
+		}
+		int minItems = Math.max(1, priorityFloor);
+		if (frameStreamingItemsDone < minItems) {
+			return true;
+		}
+		if (frameStreamingSpentNs >= frameStreamingBudgetNs) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		long hardDeadline = frameStreamingDeadlineNs;
+		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Deterministic-clock check used by unit tests and explicit-timestamp callers.
+	 */
+	public boolean allowStreamingWork(long nowNs, long deadlineNs, int priorityFloor) {
+		if (!frameStreamingDeadlineSet && deadlineNs == Long.MAX_VALUE) {
+			return true;
+		}
+		int minItems = Math.max(1, priorityFloor);
+		if (frameStreamingItemsDone < minItems) {
+			return true;
+		}
+		if (frameStreamingDeadlineSet && frameStreamingSpentNs >= frameStreamingBudgetNs) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		if (deadlineNs != Long.MAX_VALUE && nowNs >= deadlineNs) {
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
+		return true;
+	}
+
+	/** Records one completed non-urgent chunk-streaming item and its actual CPU/upload duration. */
+	public void recordStreamingWork(long elapsedNs) {
+		frameStreamingItemsDone++;
+		if (elapsedNs > 0L) {
+			frameStreamingSpentNs += elapsedNs;
+		}
+	}
+
+	/** Records one completed non-urgent chunk-streaming item without an explicit duration. */
+	public void recordStreamingWork() {
+		frameStreamingItemsDone++;
+	}
+
+	public long frameStreamingSpentNs() {
+		return frameStreamingSpentNs;
+	}
+
+	public int frameStreamingItemsDone() {
+		return frameStreamingItemsDone;
+	}
+
+	public int frameStreamingThrottled() {
+		return frameStreamingThrottled;
+	}
+
+	public long frameStreamingBudgetNs() {
+		return frameStreamingBudgetNs;
 	}
 
 	/**

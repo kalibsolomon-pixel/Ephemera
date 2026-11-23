@@ -118,6 +118,17 @@ public final class ChunkRenderBatcher {
 	private VulkanMeshSectionHandle[] meshFadingHandles = new VulkanMeshSectionHandle[64];
 	private int meshFadingCount;
 
+	// Decoupled, O(1) two-tier (nearby <= 48 blocks vs distant) pending Vulkan mesh upload queue
+	// drained under the shared frame streaming budget without rebuilding the draw plan every frame.
+	private static final int DISTANT_PROMOTE_BATCH = 32;
+	private SectionMeshRenderCache[] nearPendingCaches = new SectionMeshRenderCache[32];
+	private float[] nearPendingVis = new float[32];
+	private int nearPendingCount;
+	private SectionMeshRenderCache[] farPendingCaches = new SectionMeshRenderCache[64];
+	private float[] farPendingVis = new float[64];
+	private int farPendingCount;
+	private int pendingPromotedCount;
+
 	private int lastSectionCount;
 	private int lastFogCulled;
 	private boolean lastRegional;
@@ -223,6 +234,7 @@ public final class ChunkRenderBatcher {
 		planSectionCount = 0;
 		clearFading();
 		clearMeshFading();
+		clearPendingMeshUploads(true);
 		if (fadingSections.length > 4096) {
 			fadingSections = new SectionRenderDispatcher.RenderSection[32];
 			fadingIndices = new int[32];
@@ -311,12 +323,20 @@ public final class ChunkRenderBatcher {
 
 		boolean trackSprites = VisibleSpriteTracker.trackingFrame();
 		boolean meshActive = !wireframe && VulkanMeshTerrainEngine.get().beginFrame();
+		if (meshActive && (nearPendingCount | farPendingCount) != 0) {
+			VulkanMeshTerrainEngine engine = VulkanMeshTerrainEngine.get();
+			if (drainPendingMeshUploads(engine, engine.arenaEpoch())) {
+				planValid = false;
+			}
+			meshActive = engine.isAvailable();
+		}
 		if (canReusePlan(dispatcher, epoch, visibleSections, trackSprites, cullMask, meshActive, sortTranslucent)) {
 			ChunkSectionsToRender reused = reuseRegional(trackSprites, now, meshActive, cull);
 			if (reused != null) {
 				lastRegional = true;
 				return reused;
 			}
+			meshActive = !wireframe && VulkanMeshTerrainEngine.get().isAvailable();
 		}
 		ChunkSectionsToRender regional = prepareRegional(dispatcher, epoch, visibleSections, now,
 			trackSprites, cullMask, meshActive, cull, sortTranslucent);
@@ -457,14 +477,17 @@ public final class ChunkRenderBatcher {
 					i++;
 				}
 			}
-			VulkanMeshTerrainEngine.get().prepareFrame(
+			if (!VulkanMeshTerrainEngine.get().prepareFrame(
 				meshSolidTasks, meshSolidTaskCount,
 				meshCutoutTasks, meshCutoutTaskCount,
 				meshTaskVersion, meshActiveLayerMask,
 				meshVisUpdateSlots, meshVisUpdateValues, visUpdateCount,
 				frameModelView, camProjection, camBlockX, camBlockY, camBlockZ,
 				camOffX, camOffY, camOffZ, atlasWidth, atlasHeight,
-				fogCull, envEnd, rdEnd, dirCull);
+				fogCull, envEnd, rdEnd, dirCull)) {
+				planValid = false;
+				return null;
+			}
 		}
 
 		GpuBufferSlice terrainTransformUbo = RenderSystem.getDynamicUniforms()
@@ -503,6 +526,7 @@ public final class ChunkRenderBatcher {
 		planValid = false;
 		clearFading();
 		clearMeshFading();
+		clearPendingMeshUploads(false);
 		meshSolidTaskCount = 0;
 		meshCutoutTaskCount = 0;
 		meshSectionCount = 0;
@@ -557,11 +581,9 @@ public final class ChunkRenderBatcher {
 		int cutoutCount = 0;
 		int meshSections = 0;
 		int activeMeshMask = 0;
-		int meshUploadedThisFrame = 0;
-		long meshUploadElapsedNs = 0L;
-		long meshUploadBudgetNs = meshEngine != null ? EphemeraPacerRuntime.currentUploadBudgetNs() : 0L;
 		FrameBudgetPacer budgetPacer = EphemeraPacerRuntime.budget();
-		boolean deferredMeshUpload = false;
+		boolean streamingBudgetChecked = false;
+		boolean streamingBudgetActive = false;
 		int spriteGeneration = trackSprites ? VisibleSpriteTracker.generation().id : 0;
 		boolean useSwapHook = SWAP_HOOK;
 		long effectiveFadeMs = frameEffectiveFadeMs;
@@ -630,13 +652,23 @@ public final class ChunkRenderBatcher {
 					if (h == null) {
 						layout = cache.ephemera$layout();
 						if (layout != null && layout.meshlets != null) {
-							if (budgetPacer.allowSectionUpload(meshUploadedThisFrame, meshUploadElapsedNs, meshUploadBudgetNs)) {
-								long tUp = System.nanoTime();
+							if (!streamingBudgetChecked) {
+								streamingBudgetActive = EphemeraPacerRuntime.beginFrameStreamingBudget();
+								streamingBudgetChecked = true;
+							}
+							double sdx = (layout.sectionX + 8.0) - cx;
+							double sdy = (layout.sectionY + 8.0) - cy;
+							double sdz = (layout.sectionZ + 8.0) - cz;
+							boolean near = (sdx * sdx + sdy * sdy + sdz * sdz) <= 2304.0; // <= 48 blocks (~3 sections)
+							int priorityFloor = near ? 2 : 1;
+							if (!streamingBudgetActive || budgetPacer.allowStreamingWork(priorityFloor)) {
+								long tUp = streamingBudgetActive ? System.nanoTime() : 0L;
 								h = meshEngine.uploadSection(layout.meshlets, visibility);
-								meshUploadElapsedNs += Math.max(0L, System.nanoTime() - tUp);
 								cache.ephemera$setMeshHandle(h);
 								if (h != null) {
-									meshUploadedThisFrame++;
+									if (streamingBudgetActive) {
+										budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
+									}
 									long freed = layout.releaseCpuMeshlets();
 									if (freed > 0L) {
 										MemoryPressurePolicy.recordHeapReclaimed(freed);
@@ -644,7 +676,7 @@ public final class ChunkRenderBatcher {
 								}
 							} else {
 								h = null;
-								deferredMeshUpload = true;
+								enqueuePendingMeshUpload(cache, visibility, near);
 							}
 						} else {
 							h = null;
@@ -803,14 +835,18 @@ public final class ChunkRenderBatcher {
 		}
 		if (meshEngine != null && (meshSolidTaskCount + meshCutoutTaskCount) > 0) {
 			meshTaskVersion++;
-			meshEngine.prepareFrame(
+			if (!meshEngine.prepareFrame(
 				meshSolidTasks, meshSolidTaskCount,
 				meshCutoutTasks, meshCutoutTaskCount,
 				meshTaskVersion, meshActiveLayerMask,
 				meshVisUpdateSlots, meshVisUpdateValues, meshVisUpdates,
 				frameModelView, camProjection, camBlockX, camBlockY, camBlockZ,
 				camOffX, camOffY, camOffZ, atlasWidth, atlasHeight,
-				fogCull, envEnd, rdEnd, dirCull);
+				fogCull, envEnd, rdEnd, dirCull)) {
+				// Same-frame indexed fallback so no opaque terrain disappears on mesh failure.
+				return prepareRegional(dispatcher, epoch, visibleSections, now,
+					trackSprites, cullMask, false, dirCull, sortTranslucent);
+			}
 		}
 
 		lastSectionCount = instCount;
@@ -865,8 +901,115 @@ public final class ChunkRenderBatcher {
 		planSortTranslucent = sortTranslucent;
 		planFadeMs = frameEffectiveFadeMs;
 		planSmoothFade = frameSmoothFade;
-		planValid = !deferredMeshUpload;
+		// Deferred mesh sections already have valid indexed draws in this plan; pending uploads
+		// drain separately at frame head without forcing a full draw-plan rebuild every frame.
+		planValid = true;
 		return result;
+	}
+
+	private void clearPendingMeshUploads(boolean trim) {
+		if (nearPendingCount > 0) {
+			java.util.Arrays.fill(nearPendingCaches, 0, nearPendingCount, null);
+			nearPendingCount = 0;
+		}
+		if (farPendingCount > 0) {
+			java.util.Arrays.fill(farPendingCaches, 0, farPendingCount, null);
+			farPendingCount = 0;
+		}
+		pendingPromotedCount = 0;
+		if (trim) {
+			if (nearPendingCaches.length > 2048) {
+				nearPendingCaches = new SectionMeshRenderCache[32];
+				nearPendingVis = new float[32];
+			}
+			if (farPendingCaches.length > 4096) {
+				farPendingCaches = new SectionMeshRenderCache[64];
+				farPendingVis = new float[64];
+			}
+		}
+	}
+
+	private void enqueuePendingMeshUpload(SectionMeshRenderCache cache, float vis, boolean near) {
+		if (near) {
+			int n = nearPendingCount;
+			if (n == nearPendingCaches.length) {
+				int next = n * 2;
+				nearPendingCaches = java.util.Arrays.copyOf(nearPendingCaches, next);
+				nearPendingVis = java.util.Arrays.copyOf(nearPendingVis, next);
+			}
+			nearPendingCaches[n] = cache;
+			nearPendingVis[n] = vis;
+			nearPendingCount = n + 1;
+		} else {
+			int n = farPendingCount;
+			if (n == farPendingCaches.length) {
+				int next = n * 2;
+				farPendingCaches = java.util.Arrays.copyOf(farPendingCaches, next);
+				farPendingVis = java.util.Arrays.copyOf(farPendingVis, next);
+			}
+			farPendingCaches[n] = cache;
+			farPendingVis[n] = vis;
+			farPendingCount = n + 1;
+		}
+	}
+
+	private boolean drainPendingMeshUploads(VulkanMeshTerrainEngine meshEngine, int meshEpoch) {
+		boolean budgetActive = EphemeraPacerRuntime.beginFrameStreamingBudget();
+		FrameBudgetPacer budgetPacer = EphemeraPacerRuntime.budget();
+		int uploaded = 0;
+		boolean promotedNear = false;
+		while ((nearPendingCount | farPendingCount) != 0 && meshEngine.isAvailable()) {
+			boolean near = nearPendingCount > 0;
+			int priorityFloor = near ? 2 : 1;
+			if (budgetActive && !budgetPacer.allowStreamingWork(priorityFloor)) {
+				break;
+			}
+			SectionMeshRenderCache cache;
+			float vis;
+			if (near) {
+				int idx = --nearPendingCount;
+				cache = nearPendingCaches[idx];
+				vis = nearPendingVis[idx];
+				nearPendingCaches[idx] = null;
+			} else {
+				int idx = --farPendingCount;
+				cache = farPendingCaches[idx];
+				vis = farPendingVis[idx];
+				farPendingCaches[idx] = null;
+			}
+			if (cache == null) {
+				continue;
+			}
+			VulkanMeshSectionHandle existing = cache.ephemera$meshHandle();
+			if (existing != null && !existing.released && existing.arenaEpoch == meshEpoch) {
+				continue;
+			}
+			SectionLayout layout = cache.ephemera$layout();
+			if (layout == null || layout.meshlets == null) {
+				continue;
+			}
+			long tUp = budgetActive ? System.nanoTime() : 0L;
+			VulkanMeshSectionHandle h = meshEngine.uploadSection(layout.meshlets, vis);
+			cache.ephemera$setMeshHandle(h);
+			if (h != null) {
+				uploaded++;
+				if (near) {
+					promotedNear = true;
+				}
+				if (budgetActive) {
+					budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
+				}
+				long freed = layout.releaseCpuMeshlets();
+				if (freed > 0L) {
+					MemoryPressurePolicy.recordHeapReclaimed(freed);
+				}
+			}
+		}
+		if (uploaded <= 0) {
+			return false;
+		}
+		pendingPromotedCount += uploaded;
+		return promotedNear || (nearPendingCount | farPendingCount) == 0 || pendingPromotedCount >= DISTANT_PROMOTE_BATCH;
 	}
 
 	private int findOrAddRegionInstance(long key, int originX, int originY, int originZ) {

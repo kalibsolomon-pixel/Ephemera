@@ -43,11 +43,16 @@ public final class Win32DisplayRuntime {
 	private static final int DWMWA_COLOR_NONE = 0xFFFFFFFE;
 	private static final int DWMWA_COLOR_DEFAULT = 0xFFFFFFFF;
 
-	// Win32 ProcessPowerThrottling (Windows 10 1709+ / Windows 11 22H2+)
+	// Win32 ProcessPowerThrottling & ThreadPowerThrottling (Windows 10 1709+ / Windows 11 22H2+)
 	private static final int PROCESS_POWER_THROTTLING = 4;
 	private static final int PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;
 	private static final int PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
 	private static final int PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4;
+	private static final int THREAD_POWER_THROTTLING = 3;
+	private static final int THREAD_POWER_THROTTLING_CURRENT_VERSION = 1;
+	private static final int THREAD_POWER_THROTTLING_EXECUTION_SPEED = 0x1;
+	private static final int THREAD_PRIORITY_NORMAL = 0;
+	private static final int THREAD_PRIORITY_ABOVE_NORMAL = 1;
 
 	// Win32 High-Resolution Waitable Timer (Windows 10 1803+ / Windows 11)
 	private static final int CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
@@ -202,14 +207,20 @@ public final class Win32DisplayRuntime {
 	private static long pDwmSetWindowAttribute;
 	private static long pGetCurrentProcess;
 	private static long pSetProcessInformation;
+	private static long pGetCurrentThread;
+	private static long pSetThreadInformation;
+	private static long pSetThreadPriority;
 	private static long pCreateWaitableTimerExW;
 	private static long pSetWaitableTimer;
 	private static long pWaitForSingleObject;
 	private static long pCloseHandle;
 
+	private static volatile Thread renderThread;
 	private static volatile boolean runtimeEnabled;
 	private static volatile boolean highResTimerActive;
 	private static volatile boolean powerThrottlingOptedOut;
+	private static volatile boolean renderThreadHighQosActive;
+	private static volatile boolean renderThreadPriorityBoosted;
 	private static volatile boolean borderlessActive;
 	private static volatile boolean exactBorderlessActive;
 	private static volatile boolean shutdownHookRegistered;
@@ -264,18 +275,19 @@ public final class Win32DisplayRuntime {
 
 	private Win32DisplayRuntime() {}
 
-	/** Called once during client startup. */
+	/** Called once during client startup on the render thread. */
 	public static void init() {
 		if (!IS_WINDOWS) {
 			return;
 		}
+		renderThread = Thread.currentThread();
 		ensureLibrariesLoaded();
 		applyRuntimeSettings();
 	}
 
 	/**
 	 * Applies or reverts the 1 ms timer resolution, high-resolution waitable timer usage, and
-	 * Power Throttling / EcoQoS opt-out live from settings.
+	 * Power Throttling / EcoQoS opt-out (process + render thread HighQoS) live from settings.
 	 */
 	public static synchronized void applyRuntimeSettings() {
 		if (!IS_WINDOWS) {
@@ -288,9 +300,11 @@ public final class Win32DisplayRuntime {
 			enableHighResTimer();
 			initHighResWaitTimer();
 			optOutPowerThrottling();
+			boostRenderThreadScheduling();
 			registerShutdownHook();
 		} else {
 			disableHighResTimer();
+			restoreRenderThreadScheduling();
 			restorePowerThrottling();
 		}
 	}
@@ -313,6 +327,9 @@ public final class Win32DisplayRuntime {
 		if (kernel32Lib != null) {
 			pGetCurrentProcess = kernel32Lib.getFunctionAddress("GetCurrentProcess");
 			pSetProcessInformation = kernel32Lib.getFunctionAddress("SetProcessInformation");
+			pGetCurrentThread = kernel32Lib.getFunctionAddress("GetCurrentThread");
+			pSetThreadInformation = kernel32Lib.getFunctionAddress("SetThreadInformation");
+			pSetThreadPriority = kernel32Lib.getFunctionAddress("SetThreadPriority");
 			pCreateWaitableTimerExW = kernel32Lib.getFunctionAddress("CreateWaitableTimerExW");
 			pSetWaitableTimer = kernel32Lib.getFunctionAddress("SetWaitableTimer");
 			pWaitForSingleObject = kernel32Lib.getFunctionAddress("WaitForSingleObject");
@@ -396,6 +413,65 @@ public final class Win32DisplayRuntime {
 		state.put(2, stateMask);
 		long addr = MemoryUtil.memAddress(state);
 		return JNI.invokePPI(hProcess, PROCESS_POWER_THROTTLING, addr, 12, pSetProcessInformation) != 0;
+	}
+
+	/**
+	 * Marks the render thread as HighQoS ({@code ThreadPowerThrottling} disabled) and
+	 * {@code THREAD_PRIORITY_ABOVE_NORMAL} so Windows 11 hybrid CPU schedulers (Intel P/E cores,
+	 * AMD X3D) keep rendering on performance cores even when unfocused or on a secondary monitor.
+	 */
+	private static void boostRenderThreadScheduling() {
+		if (Thread.currentThread() != renderThread || pGetCurrentThread == 0L) {
+			return;
+		}
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long hThread = JNI.invokeP(pGetCurrentThread);
+			if (!renderThreadHighQosActive && pSetThreadInformation != 0L) {
+				if (setThreadPowerThrottling(stack, hThread, THREAD_POWER_THROTTLING_EXECUTION_SPEED, 0)) {
+					renderThreadHighQosActive = true;
+				}
+			}
+			if (!renderThreadPriorityBoosted && pSetThreadPriority != 0L) {
+				if (JNI.invokePI(hThread, THREAD_PRIORITY_ABOVE_NORMAL, pSetThreadPriority) != 0) {
+					renderThreadPriorityBoosted = true;
+				}
+			}
+			if (renderThreadHighQosActive || renderThreadPriorityBoosted) {
+				LOGGER.info("Enabled render-thread HighQoS P-core scheduling (threadHighQoS={}, aboveNormalPriority={})",
+					renderThreadHighQosActive, renderThreadPriorityBoosted);
+			}
+		} catch (Throwable t) {
+			LOGGER.debug("Render-thread HighQoS scheduling unavailable: {}", t.toString());
+		}
+	}
+
+	private static void restoreRenderThreadScheduling() {
+		if (Thread.currentThread() != renderThread || pGetCurrentThread == 0L) {
+			return;
+		}
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long hThread = JNI.invokeP(pGetCurrentThread);
+			if (renderThreadHighQosActive && pSetThreadInformation != 0L) {
+				if (setThreadPowerThrottling(stack, hThread, 0, 0)) {
+					renderThreadHighQosActive = false;
+				}
+			}
+			if (renderThreadPriorityBoosted && pSetThreadPriority != 0L) {
+				if (JNI.invokePI(hThread, THREAD_PRIORITY_NORMAL, pSetThreadPriority) != 0) {
+					renderThreadPriorityBoosted = false;
+				}
+			}
+		} catch (Throwable ignored) {
+		}
+	}
+
+	private static boolean setThreadPowerThrottling(MemoryStack stack, long hThread, int controlMask, int stateMask) {
+		IntBuffer state = stack.callocInt(3);
+		state.put(0, THREAD_POWER_THROTTLING_CURRENT_VERSION);
+		state.put(1, controlMask);
+		state.put(2, stateMask);
+		long addr = MemoryUtil.memAddress(state);
+		return JNI.invokePPI(hThread, THREAD_POWER_THROTTLING, addr, 12, pSetThreadInformation) != 0;
 	}
 
 	private static void initHighResWaitTimer() {
