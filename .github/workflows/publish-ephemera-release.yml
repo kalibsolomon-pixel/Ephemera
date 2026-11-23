@@ -2,6 +2,7 @@ name: Publish Ephemera Release
 
 # Manual release publication producing immutable SHA-256 verified GitHub releases
 # discoverable by Aurora Launcher (asset naming: ephemera-<version>-mc<mc>.jar).
+# Builds and publishes every Minecraft version marked "supported" in gradle/minecraft-versions.json.
 on:
   workflow_dispatch:
     inputs:
@@ -32,16 +33,13 @@ concurrency:
 
 jobs:
   validate:
-    name: Verify and build candidate
+    name: Verify and build candidates
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
-      jar_name: ${{ steps.inspect.outputs.jar_name }}
-      jar_sha256: ${{ steps.inspect.outputs.jar_sha256 }}
-      jar_size: ${{ steps.inspect.outputs.jar_size }}
-      mc_version: ${{ steps.inspect.outputs.mc_version }}
+      mc_versions: ${{ steps.inspect.outputs.mc_versions }}
     steps:
       - name: Require master branch workflow
         shell: bash
@@ -79,35 +77,52 @@ jobs:
         with:
           java-version: '25'
           distribution: 'microsoft'
-      - name: Build and verify tests
-        shell: bash
-        run: |
-          chmod +x ./gradlew
-          ./gradlew --no-daemon check build --console=plain
-      - name: Verify JAR identity and digest
+      - name: Build, verify tests, and collect supported JARs
         id: inspect
         shell: bash
         run: |
-          mc="$(grep '^minecraft_version=' gradle.properties | cut -d= -f2 | tr -d '\r')"
+          chmod +x ./gradlew
+          default_mc="$(grep '^minecraft_version=' gradle.properties | cut -d= -f2 | tr -d '\r')"
           mod_ver="$(grep '^mod_version=' gradle.properties | cut -d= -f2 | tr -d '\r')"
           if [[ "$mod_ver" != "${{ inputs.version }}" ]]; then
             echo "gradle.properties mod_version ($mod_ver) != input version (${{ inputs.version }})" >&2
             exit 1
           fi
-          jar="build/libs/ephemera-${mod_ver}-mc${mc}.jar"
-          if [[ ! -f "$jar" ]]; then
-            echo "Expected JAR missing: $jar" >&2
+
+          mkdir -p release-bundle
+          : > release-bundle/SHA256SUMS.txt
+          : > release-bundle/manifest.tsv
+          versions_list=()
+
+          while IFS= read -r mc; do
+            [[ -z "$mc" ]] && continue
+            echo "=== Building and verifying Ephemera ${mod_ver} for Minecraft ${mc} ==="
+            ./gradlew --no-daemon -Pephemera.minecraft="${mc}" check build --console=plain
+            if [[ "$mc" == "$default_mc" ]]; then
+              jar="build/libs/ephemera-${mod_ver}-mc${mc}.jar"
+            else
+              jar="build/minecraft-${mc}/libs/ephemera-${mod_ver}-mc${mc}.jar"
+            fi
+            if [[ ! -f "$jar" ]]; then
+              echo "Expected JAR missing: $jar" >&2
+              exit 1
+            fi
+            name="$(basename "$jar")"
+            sha="$(sha256sum "$jar" | awk '{print $1}')"
+            size="$(stat -c%s "$jar")"
+            cp "$jar" "release-bundle/${name}"
+            printf '%s  %s\n' "$sha" "$name" >> release-bundle/SHA256SUMS.txt
+            printf '%s\t%s\t%s\t%s\n' "$mc" "$name" "$size" "$sha" >> release-bundle/manifest.tsv
+            versions_list+=("$mc")
+          done < <(jq -r 'to_entries[] | select(.value.status == "supported") | .key' gradle/minecraft-versions.json)
+
+          if [[ ${#versions_list[@]} -eq 0 ]]; then
+            echo "No supported Minecraft versions found in gradle/minecraft-versions.json" >&2
             exit 1
           fi
-          sha="$(sha256sum "$jar" | awk '{print $1}')"
-          size="$(stat -c%s "$jar")"
-          mkdir -p release-bundle
-          cp "$jar" "release-bundle/$(basename "$jar")"
-          echo "jar_name=$(basename "$jar")" >> "$GITHUB_OUTPUT"
-          echo "jar_sha256=$sha" >> "$GITHUB_OUTPUT"
-          echo "jar_size=$size" >> "$GITHUB_OUTPUT"
-          echo "mc_version=$mc" >> "$GITHUB_OUTPUT"
-      - name: Hand off verified artifact
+          joined="$(IFS=', '; echo "${versions_list[*]}")"
+          echo "mc_versions=$joined" >> "$GITHUB_OUTPUT"
+      - name: Hand off verified artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ephemera-release-candidate
@@ -122,7 +137,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download verified artifact
+      - name: Download verified artifacts
         uses: actions/download-artifact@v8
         with:
           name: ephemera-release-candidate
@@ -132,29 +147,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          jar="release-bundle/${{ needs.validate.outputs.jar_name }}"
-          actual="$(sha256sum "$jar" | awk '{print $1}')"
-          if [[ "$actual" != "${{ needs.validate.outputs.jar_sha256 }}" ]]; then
-            echo "Handoff SHA-256 mismatch!" >&2
-            exit 1
-          fi
+          (cd release-bundle && sha256sum -c SHA256SUMS.txt)
           tag="v${{ inputs.version }}"
-          cat > release-notes.md <<EOF
-          Ephemera ${{ inputs.version }} for Minecraft ${{ needs.validate.outputs.mc_version }}.
+          {
+            echo "Ephemera ${{ inputs.version }} for Minecraft ${{ needs.validate.outputs.mc_versions }}."
+            echo ""
+            echo "Source commit: \`${{ needs.validate.outputs.source_sha }}\`"
+            echo ""
+            echo "| Minecraft | Runtime JAR | Size | SHA-256 |"
+            echo "| --- | --- | ---: | --- |"
+            while IFS=$'\t' read -r mc name size sha; do
+              echo "| ${mc} | \`${name}\` | ${size} bytes | \`${sha}\` |"
+            done < release-bundle/manifest.tsv
+          } > release-notes.md
 
-          Source commit: \`${{ needs.validate.outputs.source_sha }}\`
-
-          Runtime JAR: \`${{ needs.validate.outputs.jar_name }}\` (${{ needs.validate.outputs.jar_size }} bytes)
-
-          SHA-256: \`${{ needs.validate.outputs.jar_sha256 }}\`
-          EOF
           flags=(--latest="${{ inputs.make_latest }}")
           if [[ "${{ inputs.channel }}" != "stable" ]]; then
             flags+=(--prerelease --latest=false)
           fi
+
           gh release create "$tag" -R "$GITHUB_REPOSITORY" \
             --draft --target "${{ needs.validate.outputs.source_sha }}" \
             --title "Ephemera ${{ inputs.version }}" \
             --notes-file release-notes.md "${flags[@]}"
-          gh release upload "$tag" "$jar" -R "$GITHUB_REPOSITORY"
+
+          while IFS=$'\t' read -r _mc name _size _sha; do
+            gh release upload "$tag" "release-bundle/${name}" -R "$GITHUB_REPOSITORY"
+          done < release-bundle/manifest.tsv
+
           gh release edit "$tag" --draft=false --latest="${{ inputs.make_latest }}" -R "$GITHUB_REPOSITORY"

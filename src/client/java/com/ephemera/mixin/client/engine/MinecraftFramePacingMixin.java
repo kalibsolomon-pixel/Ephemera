@@ -9,10 +9,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Coordinates Ephemera's frame-head pacer and per-frame CPU work budget measurement.
- *
- * <p>Uses priority {@code 10500} (after Aurora Client's {@code 10000}) so when both mods are
- * installed, Aurora's frame-head hook reports ownership first and Ephemera seamlessly yields the
- * blocking wait while syncing its adaptive terrain-upload budget to Aurora's exact target FPS.
+ * Paired Aurora clients provide their FPS cap before frame hooks read it.
  */
 @Mixin(value = Minecraft.class, priority = 10500)
 abstract class MinecraftFramePacingMixin {

@@ -20,10 +20,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
+import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -88,12 +90,15 @@ final class EphemeraClientBridge implements EphemeraSettingsBridge {
 			MethodHandle afterPark = lookup.findStatic(EphemeraPacerRuntime.class, "onAuroraAfterPark",
 				MethodType.methodType(void.class, long.class, long.class));
 			Map<String, Object> map = new LinkedHashMap<>();
-			map.put("protocolVersion", 1);
+			map.put("protocolVersion", 2);
 			map.put("reportAurora", reportAurora);
 			map.put("beforeWait", beforeWait);
 			map.put("afterPark", afterPark);
 			map.put("isVulkanAsyncPresentActive", (BooleanSupplier) EphemeraPacerRuntime::isVulkanAsyncPresentActive);
 			map.put("recommendedOvershootMicros", (IntSupplier) EphemeraPacerRuntime::recommendedOvershootMicros);
+			map.put("setAuroraLimits", (BiConsumer<IntUnaryOperator, BooleanSupplier>)
+				EphemeraPacerRuntime::setAuroraLimits);
+			map.put("ownsAuroraPacing", (BooleanSupplier) EphemeraPacerRuntime::ownsAuroraPacing);
 			map.put("statusLine", (Supplier<String>) EphemeraPacerRuntime::statusLine);
 			return Map.copyOf(map);
 		} catch (Throwable t) {
