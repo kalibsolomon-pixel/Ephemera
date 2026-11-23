@@ -1,35 +1,70 @@
 package com.ephemera.ui;
 
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 
-/** Dark-glass palette shared by the settings screen and the diagnostics HUD (ARGB). */
+/** Flat gray-and-black palette shared by the settings screen and the diagnostics HUD (ARGB). */
 final class UiTheme {
-	static final int DIM = 0xA0070910;
-	static final int PANEL = 0xE60E1118;
-	static final int PANEL_EDGE = 0x40FFFFFF;
-	static final int HEADER = 0xF0141822;
-	static final int ROW = 0x12FFFFFF;
-	static final int ROW_HOVER = 0x26FFFFFF;
-	static final int TRACK = 0x40FFFFFF;
-	static final int ACCENT = 0xFF6FB7FF;
-	static final int ACCENT_SOFT = 0x556FB7FF;
-	static final int TEXT = 0xFFE8ECF4;
-	static final int TEXT_DIM = 0xFF8C95A8;
-	static final int GOOD = 0xFF6EE7A0;
-	static final int WARN = 0xFFFFC857;
-	static final int BAD = 0xFFFF6B6B;
+	/** Scrim over the world or panorama behind the full-page screen. */
+	static final int BACKDROP = 0xD0080808;
+	static final int SIDEBAR = 0xF40A0A0A;
+	static final int SURFACE = 0xE8161616;
+	static final int SURFACE_HOVER = 0xF0242424;
+	static final int SURFACE_SUNKEN = 0xFF0C0C0C;
+	static final int BORDER = 0xFF2E2E2E;
+	static final int DIVIDER = 0x26FFFFFF;
+	static final int TRACK = 0xFF303030;
+	static final int TICK = 0xFF4C4C4C;
+	/** Dark gray fill for active controls (switch on, selected segment, primary button). */
+	static final int ACCENT = 0xFF4A4A4A;
+	static final int ACCENT_HOVER = 0xFF5C5C5C;
+	/** Text and knobs drawn on an {@link #ACCENT} fill. */
+	static final int ON_ACCENT = 0xFFF2F2F2;
+	static final int SLIDER_FILL = 0xFF808080;
+	static final int CHIP = 0x30FFFFFF;
+	static final int KNOB = 0xFFF2F2F2;
+	static final int TEXT = 0xFFF2F2F2;
+	static final int TEXT_DIM = 0xFF9C9C9C;
+	static final int TEXT_FAINT = 0xFF5E5E5E;
+	static final int GOOD = 0xFF34D399;
+	static final int WARN = 0xFFFBBF24;
+	static final int BAD = 0xFFF87171;
 	static final int HUD_BACK = 0x90080A10;
 	static final int LOGO_BG = 0xFF000000;
 	static final int LOGO_FG = 0xFFFFFFFF;
 
+	private static final String ELLIPSIS = "...";
+
 	private UiTheme() {}
 
-	/** One-pixel rectangle outline. */
-	static void frame(GuiGraphicsExtractor g, int x, int y, int w, int h, int color) {
+	/** Filled square-cornered rectangle. */
+	static void box(GuiGraphicsExtractor g, int x, int y, int w, int h, int color) {
+		g.fill(x, y, x + w, y + h, color);
+	}
+
+	/** One-pixel outline of a rectangle. */
+	static void outline(GuiGraphicsExtractor g, int x, int y, int w, int h, int color) {
 		g.fill(x, y, x + w, y + 1, color);
 		g.fill(x, y + h - 1, x + w, y + h, color);
 		g.fill(x, y + 1, x + 1, y + h - 1, color);
 		g.fill(x + w - 1, y + 1, x + w, y + h - 1, color);
+	}
+
+	/** {@code text} cut to {@code maxWidth} with a trailing ellipsis when it does not fit. */
+	static String fit(Font font, String text, int maxWidth) {
+		if (font.width(text) <= maxWidth) {
+			return text;
+		}
+		int room = maxWidth - font.width(ELLIPSIS);
+		if (room <= 0) {
+			return "";
+		}
+		return font.plainSubstrByWidth(text, room).stripTrailing() + ELLIPSIS;
+	}
+
+	/** Vertical text offset that centers one line in a box of height {@code h}. */
+	static int centerY(Font font, int y, int h) {
+		return y + (h - font.lineHeight) / 2 + 1;
 	}
 
 	/**

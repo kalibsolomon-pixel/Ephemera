@@ -68,6 +68,7 @@
     "terrain.TerrainTextureAtlasMixin",
     "terrain.TerrainUberGpuBufferHeapAccessor",
     "terrain.TerrainUberGpuBufferMixin",
+    "ui.WindowBorderlessMixin",
     "visuals.AbstractTextureAccessor",
     "visuals.RenderSectionFadeMixin",
     "visuals.ShaderSourceMixin",

@@ -51,7 +51,10 @@ No access wideners are needed. No refmap is needed (unobfuscated names).
 | `visuals.TextureAtlasAnisotropyMixin` | `TextureAtlas` | `upload` TAIL (block atlas only) | `visualCrispMipmaps` + `visualAnisotropicLevel` | — |
 | `visuals.AbstractTextureAccessor` | `AbstractTexture` | `@Accessor sampler` (setter) | — | — |
 | `visuals.WaterFogEnvironmentMixin` | `WaterFogEnvironment` | `setupFog` TAIL | `visualUnderwaterClarity` | — |
-| `ui.VideoSettingsScreenMixin` | `VideoSettingsScreen` | `addOptions` TAIL: adds the "Ephemera..." button | always | — |
+| `ui.GuiVideoSettingsMixin` | `Gui` | `setScreen` HEAD arg: swaps a plain `VideoSettingsScreen` for `EphemeraSettingsScreen` | always (not while the screen opens vanilla on purpose) | — |
+| `ui.VideoSettingsScreenMixin` | `VideoSettingsScreen` | `addOptions` TAIL: adds the "Ephemera..." button when vanilla still shows | always | — |
+| `ui.OptionInstanceAccessor`, `ui.TooltipAccessor`, `ui.OptionsSubScreenAccessor` | vanilla options | `@Accessor` caption / labels / tooltip / default, tooltip text, parent screen | — | — |
+| `ui.WindowBorderlessMixin` (26.2 only) | `Window` | `setMode` HEAD: borderless window instead of monitor-attached fullscreen when Exclusive Fullscreen is off | always (off on macOS) | `borderless-mining`, `cubes-without-borders`, `fullscreen-windowed` |
 | `ui.GuiFrameMetricsMixin` | `Gui` | `extractRenderState(DeltaTracker, boolean, boolean)` HEAD | only samples while HUD/Diagnostics tab is watching | — |
 | `ui.HudDiagnosticsMixin` | `Hud` | `extractRenderState(GuiGraphicsExtractor, DeltaTracker)` TAIL | `diagnosticsHudOverlay` | — |
 
@@ -111,19 +114,36 @@ GLSL-to-SPIR-V path. Verified by compiling every patched vanilla fog-using fragm
 
 ## Settings UI
 
-`com.ephemera.ui.EphemeraSettingsScreen` (opened with `minecraft.gui.setScreen(...)`), six tabs:
-Performance, Terrain, Culling, Engine & Memory, Visuals, Diagnostics. Every `EphemeraConfig` field appears in exactly one tab,
-bound by field name (`ephemera.option.<field>` label, optional `ephemera.tooltip.<field>`).
+`com.ephemera.ui.EphemeraSettingsScreen` replaces vanilla Video Settings, the way Sodium does: `GuiVideoSettingsMixin`
+swaps it in wherever a plain `VideoSettingsScreen` would open (Options menu, pause menu, other mods). It is a full-page
+screen with a sidebar of pages:
 
-- Changes apply to the live config immediately; **Save & Close** / Esc persists, **Revert Changes** restores what the screen
-  opened with, **Reset Defaults** (two-click) restores `new EphemeraConfig()`.
-- Tab / Shift+Tab switch tabs; wheel, arrows, PgUp/PgDn scroll.
-- Diagnostics tab: backend (OpenGL/Vulkan), FPS, median, p99, 1% / 0.1% low (`FrameMetrics`), `MixinHealth` summary and failed
-  mixins, visible sections and occluded entities / block entities (`EphemeraApi.visibility()`), shader-pack state, dynamic
-  light emitters.
+- **Minecraft**: Display (fullscreen mode, resolution, graphics API, frame rate, GUI scale, brightness, menu blur,
+  HUD preferences) and Quality (preset, distances, chunk updates and fade, biome blend, lighting, clouds, weather,
+  particles, shadows, leaves, transparency, mipmaps, filtering). Every vanilla Video Settings option is here
+  (`VanillaVideoOptions`), including the screen-local Fullscreen Resolution option.
+- **Ephemera**: Performance, Terrain, Culling, Engine & Memory, Visuals, Diagnostics. Every `EphemeraConfig` field appears
+  in exactly one page, bound by field name (`ephemera.option.<field>` label, optional `ephemera.tooltip.<field>`).
+
+Rows edit a `Binding` (an `EphemeraConfig` field or a vanilla `OptionInstance`), so the controls are shared. Anything
+sliderable gets a slider, including options vanilla only cycles (GUI Scale commits on release because it resizes the
+screen). Booleans get switches, and fixed lists get a segmented control or a cycling chip. The hovered option's description
+and default show in a side panel (bottom panel or tooltip on small windows).
+
+- **Fullscreen Mode** (Windowed / Borderless / Exclusive) maps onto vanilla Fullscreen + Exclusive Fullscreen. Borderless is
+  native on 26.3; on 26.2 `WindowBorderlessMixin` supplies it (undecorated window at the monitor's desktop mode, one pixel
+  taller so drivers do not promote it to exclusive). F11 uses the same mode.
+- Changes apply live; **Done** / Esc saves (Ephemera config, `options.txt`, fullscreen video mode, texture reload when
+  mipmaps or filtering changed). **Undo** restores what the screen opened with. **Reset Page** (two-click) restores the
+  current page's defaults.
+- Tab / Shift+Tab switch pages; wheel, Up/Down, PgUp/PgDn, Home/End scroll; Left/Right adjust the hovered option.
+- "Vanilla screen..." at the bottom of the sidebar opens the original Video Settings.
+- Diagnostics page: backend (OpenGL/Vulkan), FPS, median, p99, 1% / 0.1% low (`FrameMetrics`), `MixinHealth` summary and
+  failed mixins, visible sections and occluded entities / block entities (`EphemeraApi.visibility()`), shader-pack state,
+  dynamic light emitters.
 - `diagnosticsHudOverlay` draws a compact top-left readout (hidden while F3 is open).
-- Entry point: "Ephemera..." button at the bottom of Video Settings. If Sodium (or another mod) replaces the video screen,
-  `VideoSettingsScreenMixin` never runs, so another entry point is needed there.
+- If Sodium (or another mod) replaces the video screen before it reaches `Gui.setScreen`, its screen wins; Ephemera stays
+  reachable through the settings bridge (`openConfigScreen`).
 
 ## Not covered here
 

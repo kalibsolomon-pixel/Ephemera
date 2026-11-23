@@ -61,7 +61,7 @@ public final class DiagnosticsHud {
 			if (lines[i].isEmpty()) {
 				continue;
 			}
-			int color = i == 0 ? UiTheme.ACCENT : i == 1 ? lowColor(s.onePercentLowFps()) : UiTheme.TEXT;
+			int color = i == 0 ? UiTheme.TEXT : i == 1 ? lowColor(s.onePercentLowFps()) : UiTheme.TEXT;
 			int textX = MARGIN + PAD;
 			if (i == 0) {
 				UiTheme.drawLogo(g, textX, y, logoSize);
