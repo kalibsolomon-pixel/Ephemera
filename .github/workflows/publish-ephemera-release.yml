@@ -60,15 +60,29 @@ jobs:
         run: |
           sha="$(git rev-parse HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-      - name: Reject existing tag or release
+      - name: Reject existing published release or mismatched draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           tag="v${{ inputs.version }}"
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null || gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Tag or release ${tag} already exists." >&2
+          sha="${{ steps.source.outputs.sha }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Git tag ${tag} already exists." >&2
             exit 1
+          fi
+          if release_json="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft,targetCommitish 2>/dev/null)"; then
+            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+            target_sha="$(jq -r '.targetCommitish' <<<"$release_json")"
+            if [[ "$is_draft" != 'true' ]]; then
+              echo "Published release ${tag} already exists." >&2
+              exit 1
+            fi
+            if [[ "$target_sha" != "$sha" ]]; then
+              echo "Draft release ${tag} targets ${target_sha}, expected ${sha}." >&2
+              exit 1
+            fi
+            echo "Resuming matching draft release ${tag} for ${sha}."
           fi
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v6
@@ -161,18 +175,53 @@ jobs:
             done < release-bundle/manifest.tsv
           } > release-notes.md
 
-          flags=(--latest="${{ inputs.make_latest }}")
-          if [[ "${{ inputs.channel }}" != "stable" ]]; then
-            flags+=(--prerelease --latest=false)
+          source_sha="${{ needs.validate.outputs.source_sha }}"
+          is_stable=false
+          latest_flag="false"
+          if [[ "${{ inputs.channel }}" == "stable" ]]; then
+            is_stable=true
+            latest_flag="${{ inputs.make_latest }}"
           fi
 
-          gh release create "$tag" -R "$GITHUB_REPOSITORY" \
-            --draft --target "${{ needs.validate.outputs.source_sha }}" \
-            --title "Ephemera ${{ inputs.version }}" \
-            --notes-file release-notes.md "${flags[@]}"
+          create_flags=(--draft --target "$source_sha" --title "Ephemera ${{ inputs.version }}" --notes-file release-notes.md --latest="$latest_flag")
+          edit_flags=(--title "Ephemera ${{ inputs.version }}" --notes-file release-notes.md --latest="$latest_flag")
+          if [[ "$is_stable" != 'true' ]]; then
+            create_flags+=(--prerelease)
+            edit_flags+=(--prerelease)
+          else
+            edit_flags+=(--prerelease=false)
+          fi
 
+          if release_json="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft,targetCommitish,assets 2>/dev/null)"; then
+            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+            target_sha="$(jq -r '.targetCommitish' <<<"$release_json")"
+            if [[ "$is_draft" != 'true' ]]; then
+              echo "Published release ${tag} already exists; refusing to modify." >&2
+              exit 1
+            fi
+            if [[ "$target_sha" != "$source_sha" ]]; then
+              echo "Existing draft ${tag} targets ${target_sha}, expected ${source_sha}." >&2
+              exit 1
+            fi
+            echo "Resuming draft release ${tag} for ${source_sha}."
+            gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft "${edit_flags[@]}"
+          else
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" "${create_flags[@]}"
+          fi
+
+          # Upload every verified asset idempotently (--clobber replaces any partial upload from an earlier attempt).
           while IFS=$'\t' read -r _mc name _size _sha; do
-            gh release upload "$tag" "release-bundle/${name}" -R "$GITHUB_REPOSITORY"
+            gh release upload "$tag" "release-bundle/${name}" --clobber -R "$GITHUB_REPOSITORY"
           done < release-bundle/manifest.tsv
 
-          gh release edit "$tag" --draft=false --latest="${{ inputs.make_latest }}" -R "$GITHUB_REPOSITORY"
+          # Verify every expected asset is present on the draft with the exact expected byte size before publishing.
+          final_assets="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets)"
+          while IFS=$'\t' read -r _mc name size _sha; do
+            remote_size="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' <<<"$final_assets")"
+            if [[ "$remote_size" != "$size" ]]; then
+              echo "Draft asset verification failed for ${name}: expected ${size} bytes, got '${remote_size}'." >&2
+              exit 1
+            fi
+          done < release-bundle/manifest.tsv
+
+          gh release edit "$tag" --draft=false "${edit_flags[@]}" -R "$GITHUB_REPOSITORY"

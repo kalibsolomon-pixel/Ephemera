@@ -7,8 +7,10 @@ import com.ephemera.api.EphemeraShaderHooks;
 import com.ephemera.api.EphemeraVisibilityProvider;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.diagnostics.MixinHealth;
+import com.ephemera.platform.Win32DisplayRuntime;
 import com.ephemera.render.culling.EphemeraVisibilityService;
 import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.ephemera.visuals.IrisCompatService;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.api.ClientModInitializer;
@@ -76,6 +78,8 @@ public final class EphemeraClient implements ClientModInitializer {
 		IrisCompatService.init();
 		EphemeraVisibilityService.init();
 		GuiFeatures.init();
+		Win32DisplayRuntime.init();
+		CaptureOptimizationService.init();
 
 		if (cfg.engineWorkerPriorityIsolation) {
 			try {

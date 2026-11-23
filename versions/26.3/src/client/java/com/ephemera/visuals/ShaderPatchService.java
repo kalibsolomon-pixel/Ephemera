@@ -6,7 +6,10 @@ import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.visuals.ShaderSourcePatcher;
 import com.mojang.renderpearl.api.pipeline.ShaderSource;
 import com.mojang.renderpearl.api.pipeline.ShaderType;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.util.shaderc.ShadercIncludeResult;
 
@@ -19,9 +22,20 @@ import org.lwjgl.util.shaderc.ShadercIncludeResult;
  * {@code core/*} shaders applies smooth fog, gradient dithering, and atmospheric horizon across
  * both backends without ever introducing fragment-only builtins ({@code gl_FragCoord}) into
  * vertex shaders.
+ *
+ * <p>Only patched Java text is cached (in a small bounded LRU); native {@code CachedIncludeSource}
+ * structs are owned per compilation call and freed immediately once shaderc finishes compiling.
  */
 public final class ShaderPatchService {
-	private static final ConcurrentHashMap<IncludeKey, ShaderSource.CachedIncludeSource> PATCHED_FOG_CACHE = new ConcurrentHashMap<>();
+	private static final int MAX_TEXT_CACHE_ENTRIES = 32;
+	private static final String UNCHANGED_SENTINEL = new String("");
+
+	private static final Map<IncludeKey, String> PATCHED_TEXT_CACHE = new LinkedHashMap<>(16, 0.75f, true) {
+		@Override
+		protected boolean removeEldestEntry(Map.Entry<IncludeKey, String> eldest) {
+			return size() > MAX_TEXT_CACHE_ENTRIES;
+		}
+	};
 	private static volatile boolean failureLogged;
 
 	private record IncludeKey(String rawSource, ShaderSourcePatcher.Options options) {}
@@ -46,48 +60,52 @@ public final class ShaderPatchService {
 		return new FogPatchingShaderSource(delegate, options, shaderName);
 	}
 
+	/** Frees any native {@code CachedIncludeSource} entries created during a single compilation. */
+	public static void releaseStageResources(ShaderSource shaderSource) {
+		if (shaderSource instanceof FogPatchingShaderSource wrapper) {
+			wrapper.releasePatchedIncludes();
+		}
+	}
+
+	/** Drops cached patched Java strings on resource reload so old pack fog sources are not retained. */
+	public static void clearTextCache() {
+		synchronized (PATCHED_TEXT_CACHE) {
+			PATCHED_TEXT_CACHE.clear();
+		}
+	}
+
 	private static boolean isCoreShader(String shaderName) {
 		int colon = shaderName.indexOf(':');
 		String path = colon >= 0 ? shaderName.substring(colon + 1) : shaderName;
 		return path.startsWith("core/");
 	}
 
-	private static ShaderSource.CachedIncludeSource patchFogInclude(Identifier id, ShaderSource.CachedIncludeSource raw,
-			ShaderSourcePatcher.Options options, String shaderName) {
-		if (raw == null || raw.includeResultPtr() == 0L) {
-			return raw;
-		}
-		try {
-			String rawText = ShadercIncludeResult.create(raw.includeResultPtr()).contentString();
-			if (rawText == null || rawText.isEmpty()) {
-				return raw;
-			}
-			IncludeKey key = new IncludeKey(rawText, options);
-			ShaderSource.CachedIncludeSource cached = PATCHED_FOG_CACHE.get(key);
+	private static String resolvePatchedText(String rawText, ShaderSourcePatcher.Options options, String shaderName) {
+		IncludeKey key = new IncludeKey(rawText, options);
+		synchronized (PATCHED_TEXT_CACHE) {
+			String cached = PATCHED_TEXT_CACHE.get(key);
 			if (cached != null) {
-				return cached;
+				return cached == UNCHANGED_SENTINEL ? null : cached;
 			}
-			ShaderSourcePatcher.Result result = ShaderSourcePatcher.patch(rawText, options);
-			if (!result.changed()) {
-				return raw;
-			}
+		}
+		ShaderSourcePatcher.Result result = ShaderSourcePatcher.patch(rawText, options);
+		String value = result.changed() ? result.source() : UNCHANGED_SENTINEL;
+		synchronized (PATCHED_TEXT_CACHE) {
+			PATCHED_TEXT_CACHE.put(key, value);
+		}
+		if (result.changed()) {
 			EphemeraClient.LOGGER.debug("Patched fog include for {} (smoothFog={}, applyFog={})",
 				shaderName, result.smoothFogApplied(), result.applyFogRewritten());
-			return PATCHED_FOG_CACHE.computeIfAbsent(key, k -> ShaderSource.CachedIncludeSource.create(id, result.source()));
-		} catch (RuntimeException e) {
-			if (!failureLogged) {
-				failureLogged = true;
-				EphemeraClient.LOGGER.warn("Shader patching failed for {}; using vanilla include: {}", shaderName, e.toString());
-				MixinHealth.recordFailed("ShaderSourceMixin", e.toString());
-			}
-			return raw;
+			return result.source();
 		}
+		return null;
 	}
 
 	private static final class FogPatchingShaderSource implements ShaderSource {
 		private final ShaderSource delegate;
 		private final ShaderSourcePatcher.Options options;
 		private final String shaderName;
+		private final List<CachedIncludeSource> ownedIncludes = new ArrayList<>(1);
 
 		FogPatchingShaderSource(ShaderSource delegate, ShaderSourcePatcher.Options options, String shaderName) {
 			this.delegate = delegate;
@@ -103,14 +121,51 @@ public final class ShaderPatchService {
 		@Override
 		public CachedIncludeSource getInclude(Identifier id) {
 			CachedIncludeSource raw = delegate.getInclude(id);
-			if (id != null && "minecraft".equals(id.getNamespace()) && "fog.glsl".equals(id.getPath())) {
-				return patchFogInclude(id, raw, options, shaderName);
+			if (id == null || !"minecraft".equals(id.getNamespace()) || !"fog.glsl".equals(id.getPath())) {
+				return raw;
 			}
-			return raw;
+			if (raw == null || raw.includeResultPtr() == 0L) {
+				return raw;
+			}
+			try {
+				String rawText = ShadercIncludeResult.create(raw.includeResultPtr()).contentString();
+				if (rawText == null || rawText.isEmpty()) {
+					return raw;
+				}
+				String patchedText = resolvePatchedText(rawText, options, shaderName);
+				if (patchedText == null) {
+					return raw;
+				}
+				CachedIncludeSource nativeInclude = CachedIncludeSource.create(id, patchedText);
+				synchronized (ownedIncludes) {
+					ownedIncludes.add(nativeInclude);
+				}
+				return nativeInclude;
+			} catch (RuntimeException e) {
+				if (!failureLogged) {
+					failureLogged = true;
+					EphemeraClient.LOGGER.warn("Shader patching failed for {}; using vanilla include: {}", shaderName, e.toString());
+					MixinHealth.recordFailed("ShaderSourceMixin", e.toString());
+				}
+				return raw;
+			}
+		}
+
+		void releasePatchedIncludes() {
+			synchronized (ownedIncludes) {
+				for (CachedIncludeSource inc : ownedIncludes) {
+					try {
+						inc.close();
+					} catch (Throwable ignored) {
+					}
+				}
+				ownedIncludes.clear();
+			}
 		}
 
 		@Override
 		public void close() {
+			releasePatchedIncludes();
 			delegate.close();
 		}
 	}

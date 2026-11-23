@@ -57,6 +57,7 @@
     "gui.GuiRenderStateMixin",
     "gui.GuiRenderStateNodeMixin",
     "gui.GuiRendererMixin",
+    "gui.GuiTextRenderStateCacheMixin",
     "gui.ItemStackRenderStateAccessor",
     "gui.LayerRenderStateAccessor",
     "gui.PatchedDataComponentMapMixin",

@@ -2,14 +2,19 @@ package com.ephemera.mixin.client.gui;
 
 import com.ephemera.core.gui.TextDecorationRunMerger;
 import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.render.gui.PreparedTextCacheable;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.gui.font.TextRenderable;
+import net.minecraft.client.gui.font.glyphs.BakedGlyph;
 import net.minecraft.client.gui.font.glyphs.EffectGlyph;
+import net.minecraft.network.chat.Style;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -20,7 +25,7 @@ import java.util.List;
  * list to 32 entries to avoid repeated {@code ArrayList.grow} reallocations on normal HUD/chat lines.
  */
 @Mixin(targets = "net.minecraft.client.gui.Font$PreparedTextBuilder")
-abstract class FontPreparedTextBuilderMixin {
+abstract class FontPreparedTextBuilderMixin implements PreparedTextCacheable {
 	private static final String ACCEPT = "accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z";
 	private static final String CREATE_EFFECT = "Lnet/minecraft/client/gui/font/glyphs/EffectGlyph;createEffect(FFFFFIIF)Lnet/minecraft/client/gui/font/TextRenderable;";
 
@@ -31,6 +36,19 @@ abstract class FontPreparedTextBuilderMixin {
 	@Unique private TextDecorationRunMerger ephemera$underline;
 	@Unique private TextRenderable ephemera$lastStrikethrough;
 	@Unique private TextRenderable ephemera$lastUnderline;
+	@Unique private boolean ephemera$hasObfuscated;
+
+	@Inject(method = ACCEPT, at = @At("HEAD"))
+	private void ephemera$trackObfuscated(int pos, Style style, BakedGlyph glyph, CallbackInfoReturnable<Boolean> cir) {
+		if (style.isObfuscated()) {
+			ephemera$hasObfuscated = true;
+		}
+	}
+
+	@Override
+	public boolean ephemera$isCacheable() {
+		return !ephemera$hasObfuscated;
+	}
 
 	@WrapOperation(
 		method = "<init>(Lnet/minecraft/client/gui/Font;FFIIZZ)V",

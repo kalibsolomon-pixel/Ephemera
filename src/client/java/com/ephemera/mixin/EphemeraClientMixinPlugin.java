@@ -70,6 +70,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("GlRenderPassMixin", "sodium", "vulkanmod");
 		registerYield("GlSamplerCacheMixin", "sodium", "vulkanmod");
 		registerYield("GlStateManagerCacheMixin", "sodium", "vulkanmod");
+		registerYield("GlSurfaceMixin", "vulkanmod");
 		registerYield("GlTextureBindingAccess", "sodium", "vulkanmod");
 		registerYield("GlTextureMixin", "sodium", "vulkanmod");
 		registerYield("FrameBufferCacheMixin", "sodium", "vulkanmod");
@@ -83,7 +84,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		for (String m : new String[] {
 			"CommandEncoderBackendAccessor", "RenderPassBackendAccessor",
 			"VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
-			"VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
+			"VulkanGpuSurfaceMixin", "VulkanInstanceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
 			"VulkanRenderPassMixin", "VulkanRenderPassFormatsMixin",
 			"VulkanTextureBindingAccess", "VulkanBufferViewMixin", "VulkanDirectBufferMixin"
 		}) {
@@ -168,6 +169,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 		// Window
 		registerYield("WindowBorderlessMixin", "borderless-mining", "cubes-without-borders", "fullscreen-windowed");
+		registerYield("WindowBorderlessFlipMixin", "borderless-mining", "cubes-without-borders", "fullscreen-windowed");
 
 		// Visuals
 		registerYield("EntityRendererLightMixin", "lambdynlights", "dynamiclights", "ryoamiclights", "sodiumdynamiclights");

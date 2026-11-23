@@ -3,11 +3,13 @@ package com.ephemera.render.backend;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.platform.VulkanFeatureDefs;
+import com.ephemera.platform.Win32DisplayRuntime;
 import com.mojang.blaze3d.vulkan.VulkanPhysicalDevice;
 import com.mojang.blaze3d.vulkan.init.VulkanFeature;
 import java.util.Collection;
 import java.util.Set;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.EXTFullScreenExclusive;
 import org.lwjgl.vulkan.EXTMeshShader;
 import org.lwjgl.vulkan.VK11;
 import org.lwjgl.vulkan.VK12;
@@ -46,6 +48,7 @@ public final class VulkanModernCapabilities {
 	private static volatile Snapshot current = Snapshot.INACTIVE;
 	private static volatile boolean checkpointsBypassed;
 	private static volatile String bypassedCheckpointExt;
+	private static volatile boolean surfaceCapabilities2Enabled;
 	private static volatile boolean meshEngineActive;
 
 	public record Snapshot(
@@ -58,6 +61,7 @@ public final class VulkanModernCapabilities {
 		boolean meshShaderEnabled,
 		boolean taskShaderEnabled,
 		boolean drawIndirectCountEnabled,
+		boolean fullScreenExclusiveEnabled,
 		boolean computeSubgroupBallot,
 		boolean taskSubgroupBallot,
 		int preferredMeshWorkGroupSize,
@@ -66,7 +70,7 @@ public final class VulkanModernCapabilities {
 		int maxMeshWorkGroupCountX
 	) {
 		static final Snapshot INACTIVE = new Snapshot(
-			false, 0, "", 0, false, false, false, false, false, false, false, 0, 0, 0, 0
+			false, 0, "", 0, false, false, false, false, false, false, false, false, 0, 0, 0, 0
 		);
 
 		public String vendorLabel() {
@@ -113,6 +117,10 @@ public final class VulkanModernCapabilities {
 		bypassedCheckpointExt = extensionName;
 	}
 
+	public static void noteSurfaceCapabilities2Enabled() {
+		surfaceCapabilities2Enabled = true;
+	}
+
 	/**
 	 * Probes optional modern GPU extensions/features on {@code physicalDevice} and adds the
 	 * supported ones to {@code extensions} and {@code features} prior to {@code vkCreateDevice}.
@@ -130,6 +138,7 @@ public final class VulkanModernCapabilities {
 		boolean meshEnabled = false;
 		boolean taskEnabled = false;
 		boolean drawIndirectCount = false;
+		boolean fullScreenExclusive = false;
 		boolean subgroupBallot = false;
 		boolean taskSubgroupBallot = false;
 		int preferredMeshWg = 32;
@@ -198,6 +207,12 @@ public final class VulkanModernCapabilities {
 				drawIndirectCount = true;
 			}
 
+			if (Win32DisplayRuntime.IS_WINDOWS && surfaceCapabilities2Enabled
+				&& physicalDevice.hasDeviceExtension(EXTFullScreenExclusive.VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME)) {
+				extensions.add(EXTFullScreenExclusive.VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+				fullScreenExclusive = true;
+			}
+
 			if (hasMeshExt && meshFeats != null && meshProps != null && meshFeats.meshShader()) {
 				maxMeshVerts = meshProps.maxMeshOutputVertices();
 				maxMeshPrims = meshProps.maxMeshOutputPrimitives();
@@ -223,36 +238,39 @@ public final class VulkanModernCapabilities {
 		} catch (Throwable t) {
 			LOGGER.warn("Failed to probe modern Vulkan GPU extensions; continuing with standard Vulkan 1.2: {}", t.toString());
 			extensions.remove(EXTMeshShader.VK_EXT_MESH_SHADER_EXTENSION_NAME);
+			extensions.remove(EXTFullScreenExclusive.VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
 			features.remove(MESH_SHADER_FEATURE);
 			features.remove(TASK_SHADER_FEATURE);
 			features.remove(DRAW_INDIRECT_COUNT_FEATURE);
 			meshEnabled = false;
 			taskEnabled = false;
 			drawIndirectCount = false;
+			fullScreenExclusive = false;
 			taskSubgroupBallot = false;
 		}
 
 		Snapshot snap = new Snapshot(
 			true, vendorId, deviceName, apiVersion,
 			cfg.backendVulkanModernGpu, checkpointsBypassed,
-			meshEnabled, taskEnabled, drawIndirectCount, subgroupBallot, taskSubgroupBallot,
+			meshEnabled, taskEnabled, drawIndirectCount, fullScreenExclusive, subgroupBallot, taskSubgroupBallot,
 			preferredMeshWg, maxMeshVerts, maxMeshPrims, maxMeshWgX
 		);
 		current = snap;
 		meshEngineActive = false;
 
-		LOGGER.info("Modern Vulkan GPU init [{} / {}]: modernSync={}, checkpointsBypassed={}({}), meshShader={} (task={}, prefWG={}, maxV={}, maxP={}), drawIndirectCount={}, subgroups={}, taskBallot={}",
+		LOGGER.info("Modern Vulkan GPU init [{} / {}]: modernSync={}, checkpointsBypassed={}({}), meshShader={} (task={}, prefWG={}, maxV={}, maxP={}), drawIndirectCount={}, fullScreenExclusive={}, subgroups={}, taskBallot={}",
 			snap.vendorLabel(), deviceName, snap.modernSyncEnabled(), snap.checkpointsBypassed(),
 			bypassedCheckpointExt != null ? bypassedCheckpointExt : "none",
 			meshEnabled, taskEnabled, preferredMeshWg, maxMeshVerts, maxMeshPrims,
-			drawIndirectCount, subgroupBallot, taskSubgroupBallot);
+			drawIndirectCount, fullScreenExclusive, subgroupBallot, taskSubgroupBallot);
 
-		return new ProbeResult(meshEnabled, taskEnabled, drawIndirectCount);
+		return new ProbeResult(meshEnabled, taskEnabled, drawIndirectCount, fullScreenExclusive);
 	}
 
 	/** Called if vkCreateDevice fails and we retry without optional modern extensions. */
 	public static void rollbackOptionalExtensions(Collection<String> extensions, Set<VulkanFeature> features) {
 		extensions.remove(EXTMeshShader.VK_EXT_MESH_SHADER_EXTENSION_NAME);
+		extensions.remove(EXTFullScreenExclusive.VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
 		features.remove(MESH_SHADER_FEATURE);
 		features.remove(TASK_SHADER_FEATURE);
 		features.remove(DRAW_INDIRECT_COUNT_FEATURE);
@@ -260,14 +278,14 @@ public final class VulkanModernCapabilities {
 		current = new Snapshot(
 			old.initialized(), old.vendorId(), old.deviceName(), old.apiVersion(),
 			old.modernSyncEnabled(), old.checkpointsBypassed(),
-			false, false, false, old.computeSubgroupBallot(), false, 0, 0, 0, 0
+			false, false, false, false, old.computeSubgroupBallot(), false, 0, 0, 0, 0
 		);
 		meshEngineActive = false;
 	}
 
-	public record ProbeResult(boolean meshEnabled, boolean taskEnabled, boolean drawIndirectCount) {
+	public record ProbeResult(boolean meshEnabled, boolean taskEnabled, boolean drawIndirectCount, boolean fullScreenExclusive) {
 		public boolean anyAdded() {
-			return meshEnabled || taskEnabled || drawIndirectCount;
+			return meshEnabled || taskEnabled || drawIndirectCount || fullScreenExclusive;
 		}
 	}
 }

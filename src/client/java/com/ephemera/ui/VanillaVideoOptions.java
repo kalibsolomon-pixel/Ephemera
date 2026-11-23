@@ -1,6 +1,7 @@
 package com.ephemera.ui;
 
 import com.ephemera.EphemeraClient;
+import com.ephemera.platform.FullscreenWindow;
 import com.mojang.blaze3d.platform.MacosUtil;
 import com.mojang.blaze3d.platform.Monitor;
 import com.mojang.blaze3d.platform.VideoMode;
@@ -129,11 +130,21 @@ final class VanillaVideoOptions {
 
 	@SuppressWarnings({"unchecked", "rawtypes"})
 	void revert() {
+		boolean wasFullscreen = options.fullscreen().get();
+		boolean wasExclusive = options.exclusiveFullscreen().get();
 		for (Map.Entry<OptionInstance<?>, Object> e : snapshot.entrySet()) {
 			OptionInstance option = e.getKey();
 			if (!option.get().equals(e.getValue())) {
 				new Binding.Vanilla<>(option).set(e.getValue());
 			}
+		}
+		// On 26.2, exclusiveFullscreen has a no-op listener and fullscreen only toggles the native
+		// window when its boolean changes; reapply once if fullscreen stayed true across a mode flip.
+		if (wasFullscreen
+			&& options.fullscreen().get()
+			&& wasExclusive != options.exclusiveFullscreen().get()
+			&& (Object) minecraft.getWindow() instanceof FullscreenWindow window) {
+			window.ephemera$reapplyFullscreen();
 		}
 	}
 

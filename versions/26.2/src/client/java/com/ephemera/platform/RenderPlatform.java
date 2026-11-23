@@ -66,7 +66,7 @@ public final class RenderPlatform {
 	}
 
 	public static boolean isVulkanAsyncPresentActive() {
-		return VulkanAsyncPresenter.isEnabled();
+		return VulkanAsyncPresenter.isActive();
 	}
 
 	/** Backend name of the live device, or null before the device exists. */

@@ -90,11 +90,25 @@ if (deriveConfigFile.isFile()) {
 	}
 	def excluded = (deriveConfig.exclude ?: []) as Set
 	['main', 'client'].each { name ->
+		def overlayJavaDir = new File(versionOverlay, "${name}/java")
 		def deriveTask = tasks.register("derive${name.capitalize()}Sources", Sync) {
 			inputs.file(deriveConfigFile)
 			inputs.file(renamesFile)
 			// The rename filter is defined here, and Gradle does not track closure bodies.
 			inputs.file(buildFile)
+			// Track overlay file presence so adding/removing an override invalidates derived outputs.
+			inputs.property('overlayJavaFiles', providers.provider {
+				if (!overlayJavaDir.isDirectory()) {
+					return []
+				}
+				def found = []
+				overlayJavaDir.eachFileRecurse(groovy.io.FileType.FILES) { f ->
+					if (f.name.endsWith('.java')) {
+						found << overlayJavaDir.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+					}
+				}
+				found.sort()
+			})
 			from(new File(baseSrc, "${name}/java")) {
 				include '**/*.java'
 				eachFile { details ->
@@ -179,7 +193,7 @@ def verifyMixinConfigs = tasks.register('verifyMixinConfigs') {
 	inputs.files(sets.collect { it.resources.sourceDirectories })
 	doLast {
 		def slurper = new groovy.json.JsonSlurper()
-		def sources = [] as Set
+		def sources = [:]
 		sets.each { set ->
 			set.java.srcDirs.findAll { it.isDirectory() }.each { root ->
 				def mixinRoot = new File(root, 'com/ephemera/mixin')
@@ -187,7 +201,11 @@ def verifyMixinConfigs = tasks.register('verifyMixinConfigs') {
 				mixinRoot.eachFileRecurse(groovy.io.FileType.FILES) { f ->
 					// Plugins live directly in com.ephemera.mixin; mixins live in its subpackages.
 					if (f.name.endsWith('.java') && f.parentFile != mixinRoot) {
-						sources << root.toPath().relativize(f.toPath()).toString().replace(File.separator, '.') - ~/\.java$/
+						def fqn = (root.toPath().relativize(f.toPath()).toString().replace(File.separator, '.') - ~/\.java$/).toString()
+						if (sources.containsKey(fqn)) {
+							throw new GradleException("Duplicate mixin source ${fqn} for Minecraft ${project.minecraft_version}:\n  ${sources[fqn]}\n  ${f}")
+						}
+						sources[fqn] = f
 					}
 				}
 			}
@@ -209,8 +227,8 @@ def verifyMixinConfigs = tasks.register('verifyMixinConfigs') {
 				}
 			}
 		}
-		def missing = listed.keySet() - sources
-		def unlisted = sources - listed.keySet()
+		def missing = listed.keySet() - sources.keySet()
+		def unlisted = sources.keySet() - listed.keySet()
 		if (missing || unlisted) {
 			throw new GradleException("Mixin configs out of sync for Minecraft ${project.minecraft_version}:" +
 				(missing ? "\n  listed without a source file: ${missing.sort()}" : '') +

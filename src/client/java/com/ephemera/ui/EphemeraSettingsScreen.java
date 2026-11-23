@@ -4,7 +4,11 @@ import com.ephemera.EphemeraClient;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.ConfigStore;
 import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.platform.BorderlessFlipWindow;
 import com.ephemera.platform.RenderPlatform;
+import com.ephemera.platform.Win32DisplayRuntime;
+import com.ephemera.render.gui.GuiFeatures;
+import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.ephemera.visuals.VisualsDiagnostics;
 import com.ephemera.visuals.VisualsRuntime;
 import com.google.common.collect.ImmutableList;
@@ -38,6 +42,13 @@ import java.util.Set;
  * live; Done (or Esc) saves them, Undo restores what the screen opened with.
  */
 public final class EphemeraSettingsScreen extends Screen implements SettingRow.Host {
+	private static final Set<String> DISPLAY_RUNTIME_FIELDS = Set.of(
+		"borderlessFlipOptimization", "windowsLowLatencyRuntime", "captureOptimizationMode");
+	private static final Set<String> GUI_FEATURE_FIELDS = Set.of(
+		"guiLayerIndexing", "guiFastLtrText", "guiMergeTextDecorations",
+		"guiFontAtlasResizing", "guiFontAtlasSize", "guiAnimatedItemBaking",
+		"guiGlintRateLimit", "guiGlintFps", "guiSkipTextTranslucencySort",
+		"guiHudFrameCache", "unfocusedFpsLimitEnabled", "unfocusedFpsLimit");
 	private static final Set<String> SHADER_FIELDS = Set.of(
 		"visualSmoothFog", "visualGradientDithering", "visualDitherStrength", "visualAtmosphericHorizon");
 	private static final String VERSION = FabricLoader.getInstance().getModContainer(EphemeraCommon.MOD_ID)
@@ -145,6 +156,7 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 	@Override
 	public void onClose() {
 		ConfigStore.sanitize(cfg);
+		GuiFeatures.init();
 		EphemeraCommon.saveConfig();
 		RenderPlatform.refreshBlockAtlasAnisotropy();
 		vanilla.apply();
@@ -180,10 +192,23 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 
 	private void afterBulkChange() {
 		ConfigStore.sanitize(cfg);
+		GuiFeatures.init();
 		VisualsRuntime.invalidate();
 		shadersDirty = true;
 		RenderPlatform.refreshBlockAtlasAnisotropy();
+		applyDisplayRuntime();
 		clampScroll();
+	}
+
+	/** Applies the display and capture options live; borderless is only re-applied when its size changes. */
+	private void applyDisplayRuntime() {
+		Win32DisplayRuntime.applyRuntimeSettings();
+		CaptureOptimizationService.refreshNow();
+		if (Win32DisplayRuntime.isBorderlessActive()
+			&& Win32DisplayRuntime.isExactBorderlessActive() != cfg.borderlessFlipOptimization
+			&& (Object) minecraft.getWindow() instanceof BorderlessFlipWindow window) {
+			window.ephemera$reapplyBorderlessFlip();
+		}
 	}
 
 	private void openVanilla() {
@@ -226,8 +251,14 @@ public final class EphemeraSettingsScreen extends Screen implements SettingRow.H
 		}
 		String field = binding.id();
 		VisualsRuntime.invalidate();
+		if (GUI_FEATURE_FIELDS.contains(field)) {
+			GuiFeatures.init();
+		}
 		if (SHADER_FIELDS.contains(field)) {
 			shadersDirty = true;
+		}
+		if (DISPLAY_RUNTIME_FIELDS.contains(field)) {
+			applyDisplayRuntime();
 		}
 		if (field.equals("visualCrispMipmaps") || field.equals("visualAnisotropicLevel")) {
 			try {

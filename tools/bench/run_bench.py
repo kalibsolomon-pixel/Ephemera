@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -181,12 +182,13 @@ MOD_SETS = {
 }
 
 
-def ps(*args: str) -> str:
-    return subprocess.run(
+def ps(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", *args],
         capture_output=True,
         text=True,
-    ).stdout.strip()
+    )
+    return proc.returncode, proc.stdout.strip()
 
 
 def prepare_run_dir(run_dir: Path, mod_patterns: list[str], backend: str, render_distance: int = 20) -> None:
@@ -240,6 +242,7 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
     if result_file.exists():
         result_file.unlink()
 
+    run_id = uuid.uuid4().hex
     cmd = [
         "cmd", "/c", str(REPO / "gradlew.bat"),
         "--no-daemon", "--console=plain",
@@ -255,6 +258,7 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         f"-Pephemera.benchDurationSec={duration_sec}",
         f"-Pephemera.benchRd={render_distance}",
         f"-Pephemera.benchSuite={suite}",
+        f"-Pephemera.benchRunId={run_id}",
         "-I", str(REPO / "tools" / "bench" / "bench.init.gradle"),
     ]
     if extra_jvm:
@@ -271,10 +275,10 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
             if proc.poll() is not None:
                 break
             if not moved:
-                res = ps("-File", str(WIN_PS1), "-Action", "move")
-                if "MOVED" in res:
+                rc, res = ps("-File", str(WIN_PS1), "-Action", "move", "-ParentPid", str(proc.pid), "-RunId", run_id)
+                if rc == 0 and "MOVED" in res:
                     moved = True
-                    print("  Window placed on secondary portrait monitor.", flush=True)
+                    print(f"  Window placed on secondary portrait monitor ({res}).", flush=True)
             if result_file.exists():
                 time.sleep(2)
                 break
@@ -291,7 +295,9 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         try:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            ps("-File", str(WIN_PS1), "-Action", "close")
+            rc, res = ps("-File", str(WIN_PS1), "-Action", "close", "-ParentPid", str(proc.pid), "-RunId", run_id)
+            if rc != 0:
+                print(f"  Scoped window close returned {rc} ({res}); falling back to process-tree termination.", flush=True)
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
@@ -351,16 +357,23 @@ def main() -> None:
     versions = [v.strip() for v in args.minecraft.split(",") if v.strip()] or [default_minecraft()]
 
     summary = {}
+    failed_runs: list[str] = []
     for backend in backends:
         for minecraft in versions:
             for target in targets:
+                suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
+                key = f"{target}{suffix}_{backend.lower()}"
                 res = run_one(target, backend, out_dir, args.duration, not args.no_jfr, args.extra_jvm, args.render_distance, args.suite, args.spark, minecraft)
                 if res:
-                    suffix = "" if minecraft == default_minecraft() else f"-mc{minecraft}"
-                    summary[f"{target}{suffix}_{backend.lower()}"] = res
+                    summary[key] = res
+                else:
+                    failed_runs.append(key)
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"\nWrote {out_dir / 'summary.json'}", flush=True)
+    if failed_runs:
+        print(f"FAILED RUNS ({len(failed_runs)}): {', '.join(failed_runs)}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

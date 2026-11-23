@@ -101,6 +101,12 @@ public final class EphemeraConfig {
 	public boolean unfocusedFpsLimitEnabled = false;
 	public int unfocusedFpsLimit = 30;
 
+	// --- Display, Borderless Fullscreen & Streaming / Recording ---
+	public boolean borderlessFlipOptimization = true;
+	public boolean windowsLowLatencyRuntime = true;
+	public CaptureOptimizationMode captureOptimizationMode = CaptureOptimizationMode.AUTO;
+	public CaptureFpsCapMode captureFpsCapMode = CaptureFpsCapMode.REFRESH_RATE;
+
 	// --- Visual Improvements (Zero/Sub-0.05ms Overhead, Toggleable) ---
 	public boolean visualSmoothFog = true;
 	public boolean visualGradientDithering = true;
@@ -129,5 +135,20 @@ public final class EphemeraConfig {
 		CHECK_SURROUNDING,
 		DEPTH,
 		FAST_OPAQUE
+	}
+
+	public enum CaptureOptimizationMode {
+		OFF,
+		AUTO,
+		ON
+	}
+
+	public enum CaptureFpsCapMode {
+		OFF,
+		REFRESH_RATE,
+		FPS_240,
+		FPS_180,
+		FPS_120,
+		FPS_60
 	}
 }

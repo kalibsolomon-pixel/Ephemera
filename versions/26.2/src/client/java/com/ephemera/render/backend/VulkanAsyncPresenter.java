@@ -1,5 +1,6 @@
 package com.ephemera.render.backend;
 
+import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.mojang.blaze3d.vulkan.VulkanQueue;
 import java.util.concurrent.locks.LockSupport;
 import org.lwjgl.system.MemoryUtil;
@@ -48,6 +49,8 @@ public final class VulkanAsyncPresenter {
 
 	/** Spin this long before parking so sub-80 us waits never pay OS wakeup jitter. */
 	private static final long SPIN_NS = 80_000L;
+	/** Shorter spin window while recording/streaming so CPU time yields cleanly to encoders. */
+	private static final long CAPTURE_SPIN_NS = 15_000L;
 	/** Safety-net park bound; every job completion unparks the waiter explicitly. */
 	private static final long PARK_NS = 1_000_000L;
 
@@ -60,7 +63,8 @@ public final class VulkanAsyncPresenter {
 
 	private static volatile long lastSubmittedIndex = Long.MIN_VALUE;
 	private static volatile Throwable asyncError;
-	private static boolean uncappedPresent;
+	private static volatile boolean uncappedPresent;
+	private static volatile boolean surfaceReady;
 	private static volatile boolean presentAcquirePending;
 	private static volatile boolean presentAcquireDone;
 
@@ -94,8 +98,14 @@ public final class VulkanAsyncPresenter {
 
 	private VulkanAsyncPresenter() {}
 
+	/** Capability check: modern sync is active and async present has not been disabled via property. */
 	public static boolean isEnabled() {
 		return !DISABLED && VulkanModernCapabilities.modernSyncActive();
+	}
+
+	/** Active runtime state: true only when an uncapped (IMMEDIATE/MAILBOX) swapchain is ready. */
+	public static boolean isActive() {
+		return isEnabled() && uncappedPresent && surfaceReady;
 	}
 
 	/**
@@ -105,6 +115,12 @@ public final class VulkanAsyncPresenter {
 	 */
 	public static boolean isAsyncSubmitEnabled() {
 		return !SYNC_SUBMIT && uncappedPresent && isEnabled();
+	}
+
+	/** Render thread: updates the live swapchain present mode and readiness state. */
+	public static void setSurfaceActive(boolean uncapped, boolean ready) {
+		uncappedPresent = uncapped;
+		surfaceReady = ready;
 	}
 
 	/** Render thread: the surface was configured with an uncapped (IMMEDIATE/MAILBOX) present mode. */
@@ -276,6 +292,7 @@ public final class VulkanAsyncPresenter {
 		renderWaiter = Thread.currentThread();
 		try {
 			long start = System.nanoTime();
+			long spinBudget = CaptureOptimizationService.isCaptureActive() ? CAPTURE_SPIN_NS : SPIN_NS;
 			int spins = 0;
 			boolean park = false;
 			while (!conditionMet(cond, arg)) {
@@ -288,7 +305,7 @@ public final class VulkanAsyncPresenter {
 					LockSupport.parkNanos(VulkanAsyncPresenter.class, PARK_NS);
 				} else {
 					Thread.onSpinWait();
-					if ((++spins & 31) == 0 && System.nanoTime() - start >= SPIN_NS) {
+					if ((++spins & 31) == 0 && System.nanoTime() - start >= spinBudget) {
 						park = true;
 					}
 				}
@@ -300,16 +317,27 @@ public final class VulkanAsyncPresenter {
 
 	/** Brief worker spin before parking so back-to-back uncapped submits skip OS unpark jitter. */
 	private static final long WORKER_SPIN_NS = 40_000L;
+	private static final long CAPTURE_WORKER_SPIN_NS = 10_000L;
 
 	private static void runLoop() {
+		boolean capturePrio = false;
 		while (true) {
+			boolean wantCapturePrio = CaptureOptimizationService.isCaptureActive();
+			if (wantCapturePrio != capturePrio) {
+				capturePrio = wantCapturePrio;
+				try {
+					Thread.currentThread().setPriority(capturePrio ? Thread.NORM_PRIORITY + 1 : Thread.MAX_PRIORITY);
+				} catch (SecurityException ignored) {
+				}
+			}
 			long h = head;
 			if (h == tail) {
 				long spinStart = System.nanoTime();
+				long workerSpin = capturePrio ? CAPTURE_WORKER_SPIN_NS : WORKER_SPIN_NS;
 				int spins = 0;
 				while (h == tail) {
 					Thread.onSpinWait();
-					if ((++spins & 31) == 0 && System.nanoTime() - spinStart >= WORKER_SPIN_NS) {
+					if ((++spins & 31) == 0 && System.nanoTime() - spinStart >= workerSpin) {
 						LockSupport.park(VulkanAsyncPresenter.class);
 						break;
 					}

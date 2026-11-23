@@ -1,6 +1,7 @@
 {
   "from": "26.2",
   "exclude": [
+    "client/java/com/ephemera/mixin/client/backend/GlSurfaceMixin.java",
     "client/java/com/ephemera/mixin/client/backend/GlTextureBindingAccess.java",
     "client/java/com/ephemera/mixin/client/backend/MinecraftGlDebugOptionsMixin.java",
     "client/java/com/ephemera/mixin/client/backend/SeparateVertexArrayCacheMixin.java",
@@ -11,6 +12,8 @@
     "client/java/com/ephemera/mixin/client/fastwrite/ItemFeatureRendererFastMixin.java",
     "client/java/com/ephemera/mixin/client/fastwrite/SpriteCoordinateExpanderFastWriteMixin.java",
     "client/java/com/ephemera/render/fastwrite/FastVertexLayout.java",
+    "client/java/com/ephemera/mixin/client/gui/NameTagFeatureRendererCacheMixin.java",
+    "client/java/com/ephemera/mixin/client/gui/TextFeatureRendererCacheMixin.java",
     "client/java/com/ephemera/render/gui/GuiTextBatcher.java",
     "client/java/com/ephemera/mixin/client/terrain/GlDeviceTerrainPatchMixin.java",
     "client/java/com/ephemera/mixin/client/ui/WindowBorderlessMixin.java",

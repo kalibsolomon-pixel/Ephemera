@@ -3,9 +3,11 @@ package com.ephemera.render.pacing;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.config.EphemeraConfig;
 import com.ephemera.core.diagnostics.MixinHealth;
+import com.ephemera.core.pacing.CapturePacingPolicy;
 import com.ephemera.core.pacing.EphemeraFramePacer;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.platform.RenderPlatform;
+import com.ephemera.platform.Win32DisplayRuntime;
 import net.minecraft.client.Minecraft;
 
 import java.util.function.BooleanSupplier;
@@ -22,7 +24,12 @@ public final class EphemeraPacerRuntime {
 	private static final int VANILLA_UNLIMITED_FPS = 260;
 	private static final int FALLBACK_REFRESH_RATE = 60;
 
-	private static final EphemeraFramePacer PACER = new EphemeraFramePacer();
+	private static final EphemeraFramePacer PACER = new EphemeraFramePacer(new EphemeraFramePacer.WaitOps() {
+		@Override public long nanoTime() { return System.nanoTime(); }
+		@Override public void parkNanos(long nanos) { Win32DisplayRuntime.parkNanos(nanos); }
+		@Override public void onSpinWait() { Thread.onSpinWait(); }
+		@Override public boolean isInterrupted() { return Thread.currentThread().isInterrupted(); }
+	});
 	private static final FrameBudgetPacer BUDGET = new FrameBudgetPacer();
 
 	private static volatile boolean externalBeforeWaitActive;
@@ -114,28 +121,37 @@ public final class EphemeraPacerRuntime {
 			return;
 		}
 
-		int target = managedAurora ? auroraLimits.cap().applyAsInt(nativeLimit) : activeNative;
 		boolean vsync = usesVsync(mc, managedAurora);
-		if (vsync) {
-			// Never sleep before render under VSync: the present already blocks on VBlank, so a
-			// frame-head wait phase-locks into missed VBlanks and halves/thirds the framerate.
-			// Only drop frame-head ownership; a sub-refresh post-swap cadence must survive across frames.
-			PACER.paceFrameHead(0, false, cfg.framePacerSpinTailMicros);
-			int refresh = safeRefreshRate(mc);
-			int effectiveBudgetFps = target > 0 ? Math.min(target, refresh) : refresh;
-			if (managedAurora && activeNative == 0 && target > 0 && target < refresh) {
-				postSwapTargetWithoutNativeLimiter = target;
-			}
-			BUDGET.setActiveOwner(cfg.framePacerEnabled
-				? FrameBudgetPacer.PacerOwner.EPHEMERA
-				: FrameBudgetPacer.PacerOwner.VANILLA, effectiveBudgetFps);
+		int refresh = safeRefreshRate(mc);
+		if (!cfg.framePacerEnabled) {
+			// Adaptive Frame Pacer is disabled: Ephemera yields all pacing (including capture caps)
+			// back to vanilla/VSync consistently across both VSync and non-VSync paths.
+			PACER.reset();
+			int effectiveBudgetFps = vsync
+				? (activeNative > 0 ? Math.min(activeNative, refresh) : refresh)
+				: activeNative;
+			BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.VANILLA, effectiveBudgetFps);
 			BUDGET.beginFrameWork(now);
 			return;
 		}
 
-		if (!cfg.framePacerEnabled) {
-			PACER.reset();
-			BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.VANILLA, activeNative);
+		int target = managedAurora ? auroraLimits.cap().applyAsInt(nativeLimit) : activeNative;
+		boolean captureActive = CaptureOptimizationService.isCaptureActive();
+		if (captureActive) {
+			target = CapturePacingPolicy.resolveCaptureFpsCap(cfg.captureFpsCapMode, refresh, target);
+		}
+		int spinTailMicros = CapturePacingPolicy.effectiveSpinTailMicros(
+			cfg.framePacerSpinTailMicros, captureActive, Win32DisplayRuntime.isHighResTimerActive());
+		if (vsync) {
+			// Never sleep before render under VSync: the present already blocks on VBlank, so a
+			// frame-head wait phase-locks into missed VBlanks and halves/thirds the framerate.
+			// Only drop frame-head ownership; a sub-refresh post-swap cadence must survive across frames.
+			PACER.paceFrameHead(0, false, spinTailMicros, captureActive);
+			int effectiveBudgetFps = target > 0 ? Math.min(target, refresh) : refresh;
+			if (activeNative == 0 && target > 0 && target < refresh) {
+				postSwapTargetWithoutNativeLimiter = target;
+			}
+			BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, effectiveBudgetFps);
 			BUDGET.beginFrameWork(now);
 			return;
 		}
@@ -143,12 +159,12 @@ public final class EphemeraPacerRuntime {
 		BUDGET.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, target);
 		if (target > 0 && cfg.framePacerLowLatency) {
 			// Pace right before input/tick/render for lowest input-to-photon latency.
-			PACER.paceFrameHead(target, true, cfg.framePacerSpinTailMicros);
+			PACER.paceFrameHead(target, true, spinTailMicros, captureActive);
 			now = System.nanoTime();
 		} else {
 			// Ensure frame-head state is cleared if low-latency mode or FPS cap turned off.
-			PACER.paceFrameHead(0, false, cfg.framePacerSpinTailMicros);
-			if (managedAurora && activeNative == 0) {
+			PACER.paceFrameHead(0, false, spinTailMicros, captureActive);
+			if (activeNative == 0 && target > 0) {
 				postSwapTargetWithoutNativeLimiter = target;
 			}
 		}
@@ -163,8 +179,13 @@ public final class EphemeraPacerRuntime {
 		externalBeforeWaitActive = false;
 		int target = postSwapTargetWithoutNativeLimiter;
 		postSwapTargetWithoutNativeLimiter = 0;
-		if (target > 0) {
-			PACER.pacePostSwap(target, EphemeraCommon.config().framePacerSpinTailMicros);
+		if (target > 0 && EphemeraCommon.config().framePacerEnabled) {
+			boolean captureActive = CaptureOptimizationService.isCaptureActive();
+			int spinTailMicros = CapturePacingPolicy.effectiveSpinTailMicros(
+				EphemeraCommon.config().framePacerSpinTailMicros,
+				captureActive,
+				Win32DisplayRuntime.isHighResTimerActive());
+			PACER.pacePostSwap(target, spinTailMicros, captureActive);
 		}
 	}
 
@@ -175,26 +196,38 @@ public final class EphemeraPacerRuntime {
 	 */
 	public static boolean onPostSwapLimit(int fps) {
 		postSwapTargetWithoutNativeLimiter = 0;
-		EphemeraConfig cfg = EphemeraCommon.config();
 		long now = System.nanoTime();
+		// End CPU work measurement BEFORE either Ephemera or vanilla sleeps in limitDisplayFPS;
+		// onRenderFrameEnd() becomes a safe no-op for frames that reached the native limiter.
+		if (!externalBeforeWaitActive) {
+			BUDGET.endFrameWork(now);
+		}
+		EphemeraConfig cfg = EphemeraCommon.config();
 		boolean managedAurora = ownsAuroraPacing();
 		if ((!managedAurora && BUDGET.isExternalPacerActive(now)) || !cfg.framePacerEnabled) {
 			return false;
 		}
+		Minecraft mc = Minecraft.getInstance();
+		int refresh = safeRefreshRate(mc);
+		boolean captureActive = CaptureOptimizationService.isCaptureActive();
 		int active = managedAurora ? auroraLimits.cap().applyAsInt(fps) : activeNativeLimit(fps);
+		if (captureActive) {
+			active = CapturePacingPolicy.resolveCaptureFpsCap(cfg.captureFpsCapMode, refresh, active);
+		}
 		if (active <= 0) {
 			PACER.reset();
 			return false;
 		}
-		Minecraft mc = Minecraft.getInstance();
 		boolean vsync = usesVsync(mc, managedAurora);
-		if (vsync && active >= safeRefreshRate(mc)) {
+		if (vsync && active >= refresh) {
 			// VBlank already caps this frame; neither Ephemera nor vanilla should sleep on top of it.
 			PACER.reset();
 			return true;
 		}
+		int spinTailMicros = CapturePacingPolicy.effectiveSpinTailMicros(
+			cfg.framePacerSpinTailMicros, captureActive, Win32DisplayRuntime.isHighResTimerActive());
 		// Non-VSync, or VSync with a sub-refresh cap (e.g. 60 fps menu on a 240 Hz display).
-		return PACER.pacePostSwap(active, cfg.framePacerSpinTailMicros);
+		return PACER.pacePostSwap(active, spinTailMicros, captureActive);
 	}
 
 	private static int activeNativeLimit(int nativeFps) {
@@ -214,11 +247,12 @@ public final class EphemeraPacerRuntime {
 	/** Dynamic per-frame terrain upload budget in nanoseconds for {@code ChunkRenderBatcher}. */
 	public static long currentUploadBudgetNs() {
 		EphemeraConfig cfg = EphemeraCommon.config();
-		return BUDGET.computeUploadBudgetNs(
+		long normal = BUDGET.computeUploadBudgetNs(
 			cfg.maxSectionUploadsPerFrameMs,
 			cfg.framePacerAdaptiveUploadBudget,
 			System.nanoTime()
 		);
+		return CapturePacingPolicy.effectiveUploadBudgetNs(normal, CaptureOptimizationService.isCaptureActive());
 	}
 
 	/** Human-readable status summary for Diagnostics HUD / Settings. */
