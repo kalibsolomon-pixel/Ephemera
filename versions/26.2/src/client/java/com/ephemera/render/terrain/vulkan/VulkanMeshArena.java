@@ -35,7 +35,7 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 final class VulkanMeshArena {
 	static final int SECTION_META_BYTES = 64;
 	static final int CULL_PARAMS_BYTES = 256;
-	static final int MESH_FRAME_BYTES = 80;
+	static final int MESH_FRAME_BYTES = 112;
 	static final int INDIRECT_CMD_BYTES = 24;
 	static final int MAX_VISIBLE_MESHLETS_PER_LAYER = 131_072;
 

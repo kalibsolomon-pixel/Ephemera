@@ -76,6 +76,7 @@
     "terrain.VisGraphFastMixin",
     "ui.WindowBorderlessFlipMixin",
     "visuals.AbstractTextureAccessor",
+    "visuals.GlobalSettingsUniformMixin",
     "visuals.RenderSectionFadeMixin",
     "visuals.ShaderSourceMixin",
     "visuals.TextureAtlasAnisotropyMixin"

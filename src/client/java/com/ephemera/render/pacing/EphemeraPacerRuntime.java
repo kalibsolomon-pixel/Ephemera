@@ -255,6 +255,50 @@ public final class EphemeraPacerRuntime {
 		return CapturePacingPolicy.effectiveUploadBudgetNs(normal, CaptureOptimizationService.isCaptureActive());
 	}
 
+	/**
+	 * Latches ONE shared per-frame chunk-streaming budget used by BOTH section snapshots
+	 * ({@code LevelExtractorSectionUpdatesMixin}) and Vulkan mesh uploads ({@code ChunkRenderBatcher}).
+	 * Returns {@code true} when adaptive streaming budgeting is active for this frame.
+	 */
+	public static boolean beginFrameStreamingBudget() {
+		EphemeraConfig cfg = EphemeraCommon.config();
+		if (!cfg.framePacerAdaptiveUploadBudget) {
+			return false;
+		}
+		long captureMaxNs = CapturePacingPolicy.effectiveUploadBudgetNs(
+			Math.max(1, cfg.maxSectionUploadsPerFrameMs) * 1_000_000L,
+			CaptureOptimizationService.isCaptureActive()
+		);
+		BUDGET.resolveStreamingDeadlineNs(
+			cfg.maxSectionUploadsPerFrameMs,
+			true,
+			captureMaxNs,
+			System.nanoTime()
+		);
+		return true;
+	}
+
+	/**
+	 * Shared per-frame chunk-streaming deadline in {@code System.nanoTime()} ticks (or
+	 * {@code Long.MAX_VALUE} when uncapped / adaptive budgeting is off).
+	 */
+	public static long currentStreamingDeadlineNs() {
+		EphemeraConfig cfg = EphemeraCommon.config();
+		if (!cfg.framePacerAdaptiveUploadBudget) {
+			return Long.MAX_VALUE;
+		}
+		long captureMaxNs = CapturePacingPolicy.effectiveUploadBudgetNs(
+			Math.max(1, cfg.maxSectionUploadsPerFrameMs) * 1_000_000L,
+			CaptureOptimizationService.isCaptureActive()
+		);
+		return BUDGET.resolveStreamingDeadlineNs(
+			cfg.maxSectionUploadsPerFrameMs,
+			true,
+			captureMaxNs,
+			System.nanoTime()
+		);
+	}
+
 	/** Human-readable status summary for Diagnostics HUD / Settings. */
 	public static String statusLine() {
 		FrameBudgetPacer.PacerOwner owner = BUDGET.owner();

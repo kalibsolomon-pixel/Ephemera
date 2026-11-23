@@ -87,10 +87,10 @@ public final class ParticleCellOcclusion {
             if (!(c < layer && layer + 1 < t0 || t1 < layer && layer + 1 < c)) break;
             double p = layer + .5;
             double u = (p - c) / (t0 - c), v = (p - c) / (t1 - c);
-            int a0 = (int) Math.floor(Math.min(ca + (a - .75 - ca) * u, ca + (a - .75 - ca) * v) - EPSILON);
-            int a1 = (int) Math.floor(Math.max(ca + (a + 1.75 - ca) * u, ca + (a + 1.75 - ca) * v) + EPSILON);
-            int b0 = (int) Math.floor(Math.min(cb + (b - .75 - cb) * u, cb + (b - .75 - cb) * v) - EPSILON);
-            int b1 = (int) Math.floor(Math.max(cb + (b + 1.75 - cb) * u, cb + (b + 1.75 - cb) * v) + EPSILON);
+            int a0 = fastFloor(Math.min(ca + (a - .75 - ca) * u, ca + (a - .75 - ca) * v) - EPSILON);
+            int a1 = fastFloor(Math.max(ca + (a + 1.75 - ca) * u, ca + (a + 1.75 - ca) * v) + EPSILON);
+            int b0 = fastFloor(Math.min(cb + (b - .75 - cb) * u, cb + (b - .75 - cb) * v) - EPSILON);
+            int b1 = fastFloor(Math.max(cb + (b + 1.75 - cb) * u, cb + (b + 1.75 - cb) * v) + EPSILON);
             if (a1 - a0 > 3 || b1 - b0 > 3) continue; // <= 16 cells/step, <= 256 total.
             boolean full = true;
             outer: for (int ia = a0; ia <= a1; ia++) for (int ib = b0; ib <= b1; ib++) {

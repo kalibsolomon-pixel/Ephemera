@@ -38,12 +38,39 @@ public final class ShaderPatchService {
 	};
 	private static volatile boolean failureLogged;
 
-	private record IncludeKey(String rawSource, ShaderSourcePatcher.Options options) {}
+	private record IncludeKey(String rawSource, ShaderSourcePatcher.Options options, boolean heldWorldLight) {}
 
 	private ShaderPatchService() {}
 
-	public static ShaderSource wrapForStage(String shaderName, ShaderType type, ShaderSource delegate) {
-		if (delegate == null || type != ShaderType.FRAGMENT || shaderName == null || !isCoreShader(shaderName)) {
+	public static String patchStageSource(String shaderName, ShaderType type, String source) {
+		if (source == null || type != ShaderType.VERTEX || shaderName == null || !isTerrainShader(shaderName)) {
+			return source;
+		}
+		try {
+			VisualsRuntime.init();
+			if (!VisualsRuntime.heldWorldLightTerrainShader()) {
+				return source;
+			}
+			return ShaderSourcePatcher.patchTerrainHeldLightVertex(source);
+		} catch (RuntimeException e) {
+			if (!failureLogged) {
+				failureLogged = true;
+				EphemeraClient.LOGGER.warn("Terrain held-light vertex patching failed for {}; using vanilla source: {}", shaderName, e.toString());
+				MixinHealth.recordFailed("ShaderSourceMixin", e.toString());
+			}
+			return source;
+		}
+	}
+
+	public static ShaderSource wrapForStage(String shaderName, ShaderType type, String stageSource, ShaderSource delegate) {
+		if (delegate == null || shaderName == null) {
+			return delegate;
+		}
+		if (type == ShaderType.VERTEX && isTerrainShader(shaderName)
+			&& stageSource != null && stageSource.contains(ShaderSourcePatcher.HELD_LIGHT_POS_UNIFORM)) {
+			return new PatchedIncludeShaderSource(delegate, null, true, shaderName);
+		}
+		if (type != ShaderType.FRAGMENT || !isCoreShader(shaderName)) {
 			return delegate;
 		}
 		VisualsRuntime.init();
@@ -57,12 +84,12 @@ public final class ShaderPatchService {
 		if (!options.any()) {
 			return delegate;
 		}
-		return new FogPatchingShaderSource(delegate, options, shaderName);
+		return new PatchedIncludeShaderSource(delegate, options, false, shaderName);
 	}
 
 	/** Frees any native {@code CachedIncludeSource} entries created during a single compilation. */
 	public static void releaseStageResources(ShaderSource shaderSource) {
-		if (shaderSource instanceof FogPatchingShaderSource wrapper) {
+		if (shaderSource instanceof PatchedIncludeShaderSource wrapper) {
 			wrapper.releasePatchedIncludes();
 		}
 	}
@@ -80,36 +107,53 @@ public final class ShaderPatchService {
 		return path.startsWith("core/");
 	}
 
-	private static String resolvePatchedText(String rawText, ShaderSourcePatcher.Options options, String shaderName) {
-		IncludeKey key = new IncludeKey(rawText, options);
+	private static boolean isTerrainShader(String shaderName) {
+		int colon = shaderName.indexOf(':');
+		String namespace = colon >= 0 ? shaderName.substring(0, colon) : "minecraft";
+		String path = colon >= 0 ? shaderName.substring(colon + 1) : shaderName;
+		return "minecraft".equals(namespace) && ("core/terrain".equals(path) || "core/terrain.vsh".equals(path));
+	}
+
+	private static String resolvePatchedText(String rawText, ShaderSourcePatcher.Options options, boolean heldLightGlobals, String shaderName) {
+		IncludeKey key = new IncludeKey(rawText, options, heldLightGlobals);
 		synchronized (PATCHED_TEXT_CACHE) {
 			String cached = PATCHED_TEXT_CACHE.get(key);
 			if (cached != null) {
 				return cached == UNCHANGED_SENTINEL ? null : cached;
 			}
 		}
-		ShaderSourcePatcher.Result result = ShaderSourcePatcher.patch(rawText, options);
-		String value = result.changed() ? result.source() : UNCHANGED_SENTINEL;
+		String patched;
+		if (heldLightGlobals) {
+			String out = ShaderSourcePatcher.patchGlobalsForHeldLight(rawText);
+			patched = out != rawText ? out : null;
+		} else {
+			ShaderSourcePatcher.Result result = ShaderSourcePatcher.patch(rawText, options);
+			if (result.changed()) {
+				EphemeraClient.LOGGER.debug("Patched fog include for {} (smoothFog={}, applyFog={})",
+					shaderName, result.smoothFogApplied(), result.applyFogRewritten());
+				patched = result.source();
+			} else {
+				patched = null;
+			}
+		}
+		String value = patched != null ? patched : UNCHANGED_SENTINEL;
 		synchronized (PATCHED_TEXT_CACHE) {
 			PATCHED_TEXT_CACHE.put(key, value);
 		}
-		if (result.changed()) {
-			EphemeraClient.LOGGER.debug("Patched fog include for {} (smoothFog={}, applyFog={})",
-				shaderName, result.smoothFogApplied(), result.applyFogRewritten());
-			return result.source();
-		}
-		return null;
+		return patched;
 	}
 
-	private static final class FogPatchingShaderSource implements ShaderSource {
+	private static final class PatchedIncludeShaderSource implements ShaderSource {
 		private final ShaderSource delegate;
 		private final ShaderSourcePatcher.Options options;
+		private final boolean heldLightGlobals;
 		private final String shaderName;
 		private final List<CachedIncludeSource> ownedIncludes = new ArrayList<>(1);
 
-		FogPatchingShaderSource(ShaderSource delegate, ShaderSourcePatcher.Options options, String shaderName) {
+		PatchedIncludeShaderSource(ShaderSource delegate, ShaderSourcePatcher.Options options, boolean heldLightGlobals, String shaderName) {
 			this.delegate = delegate;
 			this.options = options;
+			this.heldLightGlobals = heldLightGlobals;
 			this.shaderName = shaderName;
 		}
 
@@ -121,7 +165,11 @@ public final class ShaderPatchService {
 		@Override
 		public CachedIncludeSource getInclude(Identifier id) {
 			CachedIncludeSource raw = delegate.getInclude(id);
-			if (id == null || !"minecraft".equals(id.getNamespace()) || !"fog.glsl".equals(id.getPath())) {
+			if (id == null || !"minecraft".equals(id.getNamespace())) {
+				return raw;
+			}
+			boolean match = heldLightGlobals ? "globals.glsl".equals(id.getPath()) : "fog.glsl".equals(id.getPath());
+			if (!match) {
 				return raw;
 			}
 			if (raw == null || raw.includeResultPtr() == 0L) {
@@ -132,7 +180,7 @@ public final class ShaderPatchService {
 				if (rawText == null || rawText.isEmpty()) {
 					return raw;
 				}
-				String patchedText = resolvePatchedText(rawText, options, shaderName);
+				String patchedText = resolvePatchedText(rawText, options, heldLightGlobals, shaderName);
 				if (patchedText == null) {
 					return raw;
 				}

@@ -118,6 +118,9 @@ public final class EphemeraConfig {
 	public float visualChunkFadeDurationSeconds = 0.65f;
 	public boolean visualDynamicLights = true;
 	public int visualDynamicLightsUpdateIntervalMs = 16;
+	public boolean visualHeldWorldLight = false;
+	public float visualHeldWorldLightRadius = 8.5f;
+	public float visualHeldWorldLightStrength = 0.85f;
 	public boolean visualBetterLeavesShading = true;
 	public boolean visualBetterGrass = false;
 	public boolean visualCrispMipmaps = true;

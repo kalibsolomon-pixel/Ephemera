@@ -19,11 +19,19 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
  */
 @Mixin(GlslCompiler.class)
 public abstract class ShaderSourceMixin {
+	@ModifyVariable(method = "compileToSpv", at = @At("HEAD"), argsOnly = true, ordinal = 1)
+	private String ephemera$patchStageSource(String source,
+			@Local(argsOnly = true, ordinal = 0) String name,
+			@Local(argsOnly = true) ShaderType type) {
+		return ShaderPatchService.patchStageSource(name, type, source);
+	}
+
 	@ModifyVariable(method = "compileToSpv", at = @At("HEAD"), argsOnly = true)
 	private ShaderSource ephemera$wrapShaderSource(ShaderSource shaderSource,
 			@Local(argsOnly = true, ordinal = 0) String name,
+			@Local(argsOnly = true, ordinal = 1) String source,
 			@Local(argsOnly = true) ShaderType type) {
-		return ShaderPatchService.wrapForStage(name, type, shaderSource);
+		return ShaderPatchService.wrapForStage(name, type, source, shaderSource);
 	}
 
 	@WrapOperation(

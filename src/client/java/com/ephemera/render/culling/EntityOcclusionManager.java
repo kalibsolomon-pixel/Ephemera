@@ -1,6 +1,7 @@
 package com.ephemera.render.culling;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.visuals.DynamicLightTracker;
 import com.ephemera.visuals.VisualsRuntime;
 import com.ephemera.core.culling.DirectMappedSweepCache;
 import com.ephemera.core.culling.OpaqueLayerSweep;
@@ -97,8 +98,12 @@ public final class EntityOcclusionManager {
         frame++; now = System.nanoTime();
         WorldPreparedTextCache.beginFrame();
         VisualsRuntime.tickFrame(now);
+        DynamicLightTracker.tickFrame(current, now);
         occludedEntities = occludedBlockEntities = 0;
         SECTIONS.releaseSections();
+    }
+    public static long frameTimeNs() {
+        return frameActive ? now : System.nanoTime();
     }
     public static void endFrame(int renderedSections) {
         visibleSections = renderedSections;

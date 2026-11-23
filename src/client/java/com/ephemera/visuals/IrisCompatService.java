@@ -100,6 +100,11 @@ public final class IrisCompatService implements EphemeraShaderHooks {
 		return config().visualDynamicLights && !isExternalShaderPackActive();
 	}
 
+	@Override
+	public boolean ownsHeldWorldLight() {
+		return config().visualHeldWorldLight && !isExternalShaderPackActive();
+	}
+
 	private static EphemeraConfig config() {
 		return EphemeraCommon.config();
 	}

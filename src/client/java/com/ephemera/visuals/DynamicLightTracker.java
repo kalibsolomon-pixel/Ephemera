@@ -31,19 +31,38 @@ public final class DynamicLightTracker {
 
 	private static ClientLevel lastLevel;
 	private static long lastRebuildNs;
+	private static boolean frameTicked;
+	private static boolean frameActiveWithEmitters;
 
 	private DynamicLightTracker() {}
 
+	/** Refreshes dynamic light emitters at most once per configured interval; called once per frame. */
+	public static void tickFrame(ClientLevel level, long nowNs) {
+		frameTicked = true;
+		if (level == null || !VisualsRuntime.dynamicLights()) {
+			frameActiveWithEmitters = false;
+			return;
+		}
+		refreshAt(level, nowNs);
+		frameActiveWithEmitters = !GRID.isEmpty();
+	}
+
 	/** Returns {@code packedLight} raised to the dynamic light level at the entity, if brighter. */
 	public static int apply(Entity entity, int packedLight) {
-		Minecraft mc = Minecraft.getInstance();
-		ClientLevel level = mc.level;
-		if (level == null || !VisualsRuntime.dynamicLights()) {
-			return packedLight;
-		}
-		refresh(level);
-		if (GRID.isEmpty()) {
-			return packedLight;
+		if (frameTicked) {
+			if (!frameActiveWithEmitters) {
+				return packedLight;
+			}
+		} else {
+			Minecraft mc = Minecraft.getInstance();
+			ClientLevel level = mc.level;
+			if (level == null || !VisualsRuntime.dynamicLights()) {
+				return packedLight;
+			}
+			refreshAt(level, System.nanoTime());
+			if (GRID.isEmpty()) {
+				return packedLight;
+			}
 		}
 		float lit = GRID.lightAt(entity.getX(), entity.getY() + entity.getBbHeight() * 0.5, entity.getZ());
 		if (lit <= 0.0f) {
@@ -64,11 +83,12 @@ public final class DynamicLightTracker {
 	public static void clear() {
 		lastLevel = null;
 		lastRebuildNs = 0L;
+		frameTicked = false;
+		frameActiveWithEmitters = false;
 		GRID.clear();
 	}
 
-	private static void refresh(ClientLevel level) {
-		long now = System.nanoTime();
+	private static void refreshAt(ClientLevel level, long now) {
 		long interval = Math.max(MIN_REBUILD_NS, VisualsRuntime.cfg().visualDynamicLightsUpdateIntervalMs * 1_000_000L);
 		if (level == lastLevel && now - lastRebuildNs < interval) {
 			return;
@@ -109,7 +129,7 @@ public final class DynamicLightTracker {
 		return best;
 	}
 
-	private static int itemLight(ItemStack stack) {
+	static int itemLight(ItemStack stack) {
 		if (stack.isEmpty()) {
 			return 0;
 		}

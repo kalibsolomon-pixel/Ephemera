@@ -9,6 +9,7 @@ import com.ephemera.platform.Win32DisplayRuntime;
 import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.visuals.DynamicLightTracker;
+import com.ephemera.visuals.HeldWorldLightTracker;
 import com.ephemera.visuals.VisualsDiagnostics;
 import com.ephemera.visuals.VisualsRuntime;
 import net.minecraft.client.Minecraft;
@@ -150,6 +151,9 @@ enum SettingsTab {
 		r.add(new SettingRow.Header("ephemera.section.lighting"));
 		toggles(r, c, "visualDynamicLights");
 		r.add(slider(c, "visualDynamicLightsUpdateIntervalMs", 0, 100, 4, v -> v.intValue() + " ms"));
+		toggles(r, c, "visualHeldWorldLight");
+		r.add(slider(c, "visualHeldWorldLightRadius", 4.0, 12.0, 0.5, v -> String.format(Locale.ROOT, "%.1f blocks", v)));
+		r.add(slider(c, "visualHeldWorldLightStrength", 0.25, 1.0, 0.05, v -> String.format(Locale.ROOT, "%.0f%%", v.doubleValue() * 100.0)));
 		toggles(r, c, "visualEnhancedAmbientOcclusion");
 		r.add(slider(c, "visualAoStrength", 0.5, 1.5, 0.02, v -> String.format(Locale.ROOT, "%.2f", v)));
 		r.add(new SettingRow.Header("ephemera.section.terrainVisuals"));
@@ -196,6 +200,16 @@ enum SettingsTab {
 			() -> VisualsRuntime.externalShadersActive() ? UiTheme.WARN : UiTheme.TEXT_DIM));
 		r.add(new SettingRow.Stat("ephemera.stat.dynamicLights", () -> VisualsRuntime.dynamicLights() ? DynamicLightTracker.emitterCount() + " emitters" : "Off",
 			() -> UiTheme.TEXT));
+		r.add(new SettingRow.Stat("ephemera.stat.heldWorldLight", () -> {
+			String stoodDown = VisualsRuntime.heldWorldLightStandDownReason();
+			if (stoodDown != null) {
+				return "Stood down (" + stoodDown + ")";
+			}
+			if (!VisualsRuntime.heldWorldLight()) {
+				return "Off";
+			}
+			return HeldWorldLightTracker.isEmitting() ? "Active (emitting)" : "Ready (no held light)";
+		}, () -> VisualsRuntime.heldWorldLightStandDownReason() != null ? UiTheme.WARN : (VisualsRuntime.heldWorldLight() ? UiTheme.GOOD : UiTheme.TEXT_DIM)));
 		r.add(new SettingRow.Header("ephemera.section.overlay"));
 		toggles(r, c, "diagnosticsHudOverlay");
 	}

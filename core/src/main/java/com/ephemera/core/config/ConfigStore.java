@@ -80,6 +80,8 @@ public final class ConfigStore {
 		c.visualAoStrength = Math.max(0.5f, Math.min(1.5f, c.visualAoStrength));
 		c.visualChunkFadeDurationSeconds = Math.max(0.0f, Math.min(2.0f, c.visualChunkFadeDurationSeconds));
 		c.visualDynamicLightsUpdateIntervalMs = Math.max(0, Math.min(100, c.visualDynamicLightsUpdateIntervalMs));
+		c.visualHeldWorldLightRadius = com.ephemera.core.visuals.HeldWorldLightMath.clampRadius(c.visualHeldWorldLightRadius);
+		c.visualHeldWorldLightStrength = com.ephemera.core.visuals.HeldWorldLightMath.clampStrength(c.visualHeldWorldLightStrength);
 		c.visualAnisotropicLevel = switch (c.visualAnisotropicLevel) {
 			case 0, 2, 4, 8, 16 -> c.visualAnisotropicLevel;
 			default -> 4;

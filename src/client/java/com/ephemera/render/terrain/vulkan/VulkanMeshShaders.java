@@ -79,6 +79,8 @@ final class VulkanMeshShaders {
 		    mat4 ModelViewMat;
 		    ivec2 TextureSize;
 		    ivec2 _pad;
+		    vec4 HeldLightPos;
+		    vec4 HeldLightParam;
 		};
 
 		layout(set = 0, binding = 10, std140) uniform CullParams {
@@ -266,6 +268,8 @@ final class VulkanMeshShaders {
 		    mat4 ModelViewMat;
 		    ivec2 TextureSize;
 		    ivec2 _pad;
+		    vec4 HeldLightPos;
+		    vec4 HeldLightParam;
 		};
 
 		layout(set = 0, binding = 10, std140) uniform CullParams {
@@ -417,7 +421,18 @@ final class VulkanMeshShaders {
 	 * Ultra-lean Task-fed Mesh Shader (1 AMD Wave32 / 1 NVIDIA Warp32, 32 quads = 128 verts / 64 tris).
 	 * Zero texture fetches, zero {@code mat4 * mat4}, zero {@code SectionMeta} reads, zero index buffer:
 	 * purely coalesced 16-byte {@code uvec4} loads + FMA + primitive export!
+	 *
+	 * <p>When {@code heldWorldLight} is {@code false}, streams one vertex at a time with minimal VGPR
+	 * pressure for maximum Wave32/Warp32 occupancy. When {@code true}, evaluates quad-normal facing
+	 * attenuation for Ephemera's optional held-item terrain light.
 	 */
+	static String taskMeshGlsl(boolean heldWorldLight) {
+		if (!heldWorldLight) {
+			return TERRAIN_MESH_TASK_GLSL;
+		}
+		return TERRAIN_MESH_TASK_HELD_LIGHT_GLSL;
+	}
+
 	static final String TERRAIN_MESH_TASK_GLSL = """
 		#version 450
 		#extension GL_EXT_mesh_shader : require
@@ -483,6 +498,126 @@ final class VulkanMeshShaders {
 		        vec2 uv0 = vec2(float(raw.w & 0xFFFFu), float(raw.w >> 16u)) * (1.0 / 32768.0);
 		        vec2 uv2 = clamp(
 		            vec2(float((raw.y >> 16u) & 0xFFu), float((raw.y >> 24u) & 0xFFu)) * (1.0 / 256.0) + (0.5 / 16.0),
+		            vec2(0.5 / 16.0), vec2(15.5 / 16.0)
+		        );
+		        vTexAndLight[outV] = vec4(uv0, uv2);
+		        vVisibility[outV] = mix(1.0, vis, clamp((dist - 16.0) * 0.0625, 0.0, 1.0));
+		    }
+
+		    gl_PrimitiveTriangleIndicesEXT[tid * 2u] = uvec3(baseV, baseV + 1u, baseV + 2u);
+		    gl_PrimitiveTriangleIndicesEXT[tid * 2u + 1u] = uvec3(baseV + 2u, baseV + 3u, baseV);
+		}
+		""";
+
+	static final String TERRAIN_MESH_TASK_HELD_LIGHT_GLSL = """
+		#version 450
+		#extension GL_EXT_mesh_shader : require
+
+		layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+		layout(triangles, max_vertices = 128, max_primitives = 64) out;
+
+		struct TaskPayload {
+		    mat4 mvp;
+		    vec3 secBase;
+		    float visibility;
+		    uint meshlets[128];
+		};
+
+		taskPayloadSharedEXT TaskPayload payload;
+
+		layout(set = 0, binding = 3, std140) uniform MeshFrame {
+		    mat4 ModelViewMat;
+		    ivec2 TextureSize;
+		    ivec2 _pad;
+		    vec4 HeldLightPos;
+		    vec4 HeldLightParam;
+		};
+
+		layout(set = 0, binding = 6, std430) readonly buffer QuadBuf {
+		    uvec4 quads[];
+		};
+		layout(set = 0, binding = 7, std430) readonly buffer MeshletBuf {
+		    uvec4 meshlets[];
+		};
+
+		layout(location = 0) out float vSphericalDist[];
+		layout(location = 1) out float vCylindricalDist[];
+		layout(location = 2) out vec4 vColor[];
+		layout(location = 3) out vec4 vTexAndLight[];
+		layout(location = 4) out float vVisibility[];
+
+		void main() {
+		    uint meshletIdx = payload.meshlets[gl_WorkGroupID.x];
+		    uvec4 desc = meshlets[meshletIdx];
+		    uint firstQuad = desc.x;
+		    uint quadCount = min(desc.y & 0x3Fu, 32u);
+
+		    SetMeshOutputsEXT(quadCount * 4u, quadCount * 2u);
+
+		    uint tid = gl_LocalInvocationID.x;
+		    if (tid >= quadCount) {
+		        return;
+		    }
+
+		    mat4 mvp = payload.mvp;
+		    vec3 secBase = payload.secBase;
+		    float vis = payload.visibility;
+		    uint baseV = tid * 4u;
+		    uint qBase = (firstQuad + tid) * 4u;
+
+		    uvec4 rawV[4];
+		    vec3 qPos[4];
+		    for (uint v = 0u; v < 4u; v++) {
+		        uvec4 raw = quads[qBase + v];
+		        rawV[v] = raw;
+		        qPos[v] = vec3(
+		            float(bitfieldExtract(int(raw.x), 0, 16)),
+		            float(bitfieldExtract(int(raw.x), 16, 16)),
+		            float(bitfieldExtract(int(raw.y), 0, 16))
+		        ) * (1.0 / 1024.0) + secBase;
+		    }
+
+		    float heldScale = 0.0;
+		    if (HeldLightParam.x > 0.001) {
+		        vec3 qCenter = 0.25 * (qPos[0] + qPos[1] + qPos[2] + qPos[3]);
+		        vec3 toLight = HeldLightPos.xyz - qCenter;
+		        float centerDist = length(toLight);
+		        if (centerDist < (1.0 / max(HeldLightPos.w, 1e-4)) + 1.8) {
+		            vec3 faceN = cross(qPos[1] - qPos[0], qPos[2] - qPos[0]);
+		            float nLenSq = dot(faceN, faceN);
+		            float facing = 1.0;
+		            if (nLenSq > 1e-8) {
+		                faceN *= inversesqrt(nLenSq);
+		                if (dot(faceN, -qCenter) < 0.0) {
+		                    faceN = -faceN;
+		                }
+		                float ndotl = dot(faceN, toLight * inversesqrt(max(dot(toLight, toLight), 1e-6)));
+		                facing = mix(1.0, smoothstep(-0.20, 0.25, ndotl), smoothstep(0.6, 1.6, centerDist));
+		            }
+		            heldScale = HeldLightParam.x * facing;
+		        }
+		    }
+
+		    for (uint v = 0u; v < 4u; v++) {
+		        uvec4 raw = rawV[v];
+		        vec3 pos = qPos[v];
+
+		        uint outV = baseV + v;
+		        gl_MeshVerticesEXT[outV].gl_Position = mvp * vec4(pos, 1.0);
+		        float dist = length(pos);
+		        vSphericalDist[outV] = dist;
+		        vCylindricalDist[outV] = max(length(pos.xz), abs(pos.y));
+		        vColor[outV] = unpackUnorm4x8(raw.z);
+		        vec2 uv0 = vec2(float(raw.w & 0xFFFFu), float(raw.w >> 16u)) * (1.0 / 32768.0);
+		        float blockLight = float((raw.y >> 16u) & 0xFFu);
+		        if (heldScale > 0.001) {
+		            float ht = 1.0 - length(pos - HeldLightPos.xyz) * HeldLightPos.w;
+		            if (ht > 0.0) {
+		                blockLight = max(blockLight, min(240.0, heldScale * ht * ht));
+		            }
+		        }
+		        vec2 uv2 = clamp(
+		            vec2(blockLight, float((raw.y >> 24u) & 0xFFu)) * (1.0 / 256.0) + (0.5 / 16.0),
 		            vec2(0.5 / 16.0), vec2(15.5 / 16.0)
 		        );
 		        vTexAndLight[outV] = vec4(uv0, uv2);
@@ -685,6 +820,8 @@ final class VulkanMeshShaders {
 		    mat4 ModelViewMat;
 		    ivec2 TextureSize;
 		    ivec2 _pad;
+		    vec4 HeldLightPos;
+		    vec4 HeldLightParam;
 		};
 
 		layout(set = 0, binding = 6, std430) readonly buffer QuadBuf { uvec4 quads[]; };
@@ -723,13 +860,42 @@ final class VulkanMeshShaders {
 		    uint baseV = tid * 4u;
 		    uint qBase = (firstQuad + tid) * 4u;
 
+		    uvec4 rawV[4];
+		    vec3 qPos[4];
 		    for (uint v = 0u; v < 4u; v++) {
 		        uvec4 raw = quads[qBase + v];
-		        vec3 pos = vec3(
+		        rawV[v] = raw;
+		        qPos[v] = vec3(
 		            float(bitfieldExtract(int(raw.x), 0, 16)),
 		            float(bitfieldExtract(int(raw.x), 16, 16)),
 		            float(bitfieldExtract(int(raw.y), 0, 16))
 		        ) * (1.0 / 1024.0) + secBase;
+		    }
+
+		    float heldScale = 0.0;
+		    if (HeldLightParam.x > 0.001) {
+		        vec3 qCenter = 0.25 * (qPos[0] + qPos[1] + qPos[2] + qPos[3]);
+		        vec3 toLight = HeldLightPos.xyz - qCenter;
+		        float centerDist = length(toLight);
+		        if (centerDist < (1.0 / max(HeldLightPos.w, 1e-4)) + 1.8) {
+		            vec3 faceN = cross(qPos[1] - qPos[0], qPos[2] - qPos[0]);
+		            float nLenSq = dot(faceN, faceN);
+		            float facing = 1.0;
+		            if (nLenSq > 1e-8) {
+		                faceN *= inversesqrt(nLenSq);
+		                if (dot(faceN, -qCenter) < 0.0) {
+		                    faceN = -faceN;
+		                }
+		                float ndotl = dot(faceN, toLight * inversesqrt(max(dot(toLight, toLight), 1e-6)));
+		                facing = mix(1.0, smoothstep(-0.20, 0.25, ndotl), smoothstep(0.6, 1.6, centerDist));
+		            }
+		            heldScale = HeldLightParam.x * facing;
+		        }
+		    }
+
+		    for (uint v = 0u; v < 4u; v++) {
+		        uvec4 raw = rawV[v];
+		        vec3 pos = qPos[v];
 
 		        uint outV = baseV + v;
 		        gl_MeshVerticesEXT[outV].gl_Position = mvp * vec4(pos, 1.0);
@@ -738,8 +904,15 @@ final class VulkanMeshShaders {
 		        vCylindricalDist[outV] = max(length(pos.xz), abs(pos.y));
 		        vColor[outV] = unpackUnorm4x8(raw.z);
 		        vec2 uv0 = vec2(float(raw.w & 0xFFFFu), float(raw.w >> 16u)) * (1.0 / 32768.0);
+		        float blockLight = float((raw.y >> 16u) & 0xFFu);
+		        if (heldScale > 0.001) {
+		            float ht = 1.0 - length(pos - HeldLightPos.xyz) * HeldLightPos.w;
+		            if (ht > 0.0) {
+		                blockLight = max(blockLight, min(240.0, heldScale * ht * ht));
+		            }
+		        }
 		        vec2 uv2 = clamp(
-		            vec2(float((raw.y >> 16u) & 0xFFu), float((raw.y >> 24u) & 0xFFu)) * (1.0 / 256.0) + (0.5 / 16.0),
+		            vec2(blockLight, float((raw.y >> 24u) & 0xFFu)) * (1.0 / 256.0) + (0.5 / 16.0),
 		            vec2(0.5 / 16.0), vec2(15.5 / 16.0)
 		        );
 		        vTexAndLight[outV] = vec4(uv0, uv2);
@@ -776,6 +949,8 @@ final class VulkanMeshShaders {
 			    mat4 ModelViewMat;
 			    ivec2 TextureSize;
 			    ivec2 _pad;
+			    vec4 HeldLightPos;
+			    vec4 HeldLightParam;
 			};
 
 			layout(set = 0, binding = 4) uniform sampler2D Sampler0;

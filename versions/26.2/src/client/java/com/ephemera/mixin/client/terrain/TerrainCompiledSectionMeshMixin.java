@@ -84,6 +84,8 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	private int ephemera$sectionZ;
 	@Unique
 	private boolean ephemera$hasAnimatedSprites;
+	@Unique
+	private long ephemera$lastSpriteStampMs = Long.MIN_VALUE / 4;
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$captureDraws(TranslucencyPointOfView translucencyPointOfView, SectionCompiler.Results results, CallbackInfo ci) {
@@ -278,5 +280,15 @@ public abstract class TerrainCompiledSectionMeshMixin implements SectionMeshRend
 	@Override
 	public boolean ephemera$untrackedSprites() {
 		return ephemera$untrackedSprites;
+	}
+
+	@Override
+	public long ephemera$lastSpriteStampMs() {
+		return ephemera$lastSpriteStampMs;
+	}
+
+	@Override
+	public void ephemera$setLastSpriteStampMs(long nowMs) {
+		ephemera$lastSpriteStampMs = nowMs;
 	}
 }

@@ -28,7 +28,10 @@ public final class ParticleCullingManager {
     private static final Quaternionf RENDER_ROTATION = new Quaternionf();
     private static final ThreadLocal<Quaternionf> ROTATION = ThreadLocal.withInitial(Quaternionf::new);
     private static volatile Thread renderThread;
+    private static final long LIGHT_CACHE_TTL_NS = 50_000_000L; // 1 game tick (20 Hz); terrain/light edits invalidate immediately
     private static long lightEpoch = 1;
+    private static long lastLightEpochNs;
+    private static ClientLevel lastLightLevel;
     private static boolean extracting;
     private static boolean frameCulling;
     private static boolean frameOcclusion;
@@ -37,6 +40,8 @@ public final class ParticleCullingManager {
     private static int frameMaxPerSheet;
     private static ClientLevel frameLevel;
     private static Camera frameCamera;
+    private static Frustum frameFrustum;
+    private static FrustumFastCube frameFastFrustum;
     private static double frameCamX, frameCamY, frameCamZ;
     private static float frameFwdX, frameFwdY, frameFwdZ;
     private static boolean frameDepthCheck;
@@ -62,7 +67,6 @@ public final class ParticleCullingManager {
     public static void beginFrame() { beginFrame(null); }
     public static void beginFrame(Camera camera) {
         extracting = true;
-        lightEpoch++;
         Arrays.fill(SHEET_COUNTS, 0);
         lastSheetLayer = null;
         lastSheetIdx = -1;
@@ -71,8 +75,17 @@ public final class ParticleCullingManager {
         frameOcclusion = cfg.particleOcclusionCulling;
         frameLightmapCache = cfg.particleLightmapCache;
         frameMaxPerSheet = cfg.maxParticlesPerSheet;
-        frameLevel = Minecraft.getInstance().level;
+        ClientLevel lvl = Minecraft.getInstance().level;
+        frameLevel = lvl;
+        long nowNs = EntityOcclusionManager.frameTimeNs();
+        if (lvl != lastLightLevel || nowNs - lastLightEpochNs >= LIGHT_CACHE_TTL_NS) {
+            lightEpoch++;
+            lastLightLevel = lvl;
+            lastLightEpochNs = nowNs;
+        }
         frameCamera = camera;
+        frameFrustum = null;
+        frameFastFrustum = null;
         if (camera != null) {
             var pos = camera.position();
             frameCamX = pos.x; frameCamY = pos.y; frameCamZ = pos.z;
@@ -81,6 +94,9 @@ public final class ParticleCullingManager {
             frameDepthCheck = camera.getCapturedFrustum() == null && !camera.isPanoramicMode();
             frameDepthFar = frameDepthCheck ? ((CameraDepthAccessor) camera).ephemera$depthFar() : 0f;
             frameOcclusionReady = frameOcclusion && EntityOcclusionManager.isReadyForParticles(camera);
+            Frustum cull = camera.getCullFrustum();
+            frameFrustum = cull;
+            frameFastFrustum = cull instanceof FrustumFastCube fc ? fc : null;
         } else {
             frameDepthCheck = false;
             frameOcclusionReady = false;
@@ -90,12 +106,16 @@ public final class ParticleCullingManager {
         extracting = false;
         frameCamera = null;
         frameLevel = null;
+        frameFrustum = null;
+        frameFastFrustum = null;
         frameOcclusionReady = false;
         Arrays.fill(SHEETS, null);
     }
     public static void reset() {
         endFrame();
         lightEpoch++;
+        lastLightLevel = null;
+        lastLightEpochNs = 0L;
         Arrays.fill(SHEET_COUNTS, 0);
         lastQuadClass = null;
         lastQuadStandard = false;
@@ -157,7 +177,10 @@ public final class ParticleCullingManager {
             if (depth < -radius || depth > ((CameraDepthAccessor) camera).ephemera$depthFar() + radius * 3 + 16) return false;
         }
         // 1-pass branchless 6-plane cube intersection via FrustumFastCube (zero point+AABB double work).
-        if (frustum instanceof FrustumFastCube fastCube) {
+        FrustumFastCube fastCube = (fastFrame && frustum == frameFrustum)
+            ? frameFastFrustum
+            : (frustum instanceof FrustumFastCube fc ? fc : null);
+        if (fastCube != null) {
             if (!fastCube.ephemera$intersectsCube(x, y, z, radius)) return false;
         } else if (!frustum.pointInFrustum(x, y, z)) {
             int result = ((FrustumAccessor) frustum).ephemera$cube(x - radius, y - radius, z - radius, x + radius, y + radius, z + radius);

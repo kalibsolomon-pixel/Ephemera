@@ -12,6 +12,9 @@ gradle.projectsEvaluated {
 	def benchRd = (p.findProperty('ephemera.benchRd') ?: '20').toString()
 	def benchSuite = (p.findProperty('ephemera.benchSuite') ?: 'default').toString()
 	def benchRunId = (p.findProperty('ephemera.benchRunId') ?: '').toString().trim()
+	def benchFpsCap = (p.findProperty('ephemera.benchFpsCap') ?: '0').toString()
+	def benchVsync = (p.findProperty('ephemera.benchVsync') ?: 'false').toString()
+	def benchBorderless = (p.findProperty('ephemera.benchBorderless') ?: 'false').toString()
 
 	def probe = p.sourceSets.create('benchprobe') {
 		java.srcDir p.file('tools/bench/probe/java')
@@ -41,7 +44,10 @@ gradle.projectsEvaluated {
 		"-Dephemera.bench.spark=${benchSpark}",
 		"-Dephemera.bench.durationSec=${benchDurationSec}",
 		"-Dephemera.bench.rd=${benchRd}",
-		"-Dephemera.bench.suite=${benchSuite}"
+		"-Dephemera.bench.suite=${benchSuite}",
+		"-Dephemera.bench.fpsCap=${benchFpsCap}",
+		"-Dephemera.bench.vsync=${benchVsync}",
+		"-Dephemera.bench.borderless=${benchBorderless}"
 	)
 	if (benchRunId) {
 		run.jvmArgs "-Dephemera.bench.runId=${benchRunId}"

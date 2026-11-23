@@ -43,7 +43,12 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static final int DURATION_SEC = Integer.parseInt(System.getProperty("ephemera.bench.durationSec", "6"));
 	private static final int VISTA_RD = Integer.parseInt(System.getProperty("ephemera.bench.rd", "20"));
 	private static final String SUITE = System.getProperty("ephemera.bench.suite", "default").toLowerCase();
+	private static final int FPS_CAP = Integer.parseInt(System.getProperty("ephemera.bench.fpsCap", "0"));
+	private static final boolean VSYNC_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.vsync", "false"));
+	private static final boolean BORDERLESS_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.borderless", "false"));
 	private static final String SCENE1_NAME = "terrain_vista_rd" + VISTA_RD;
+	private static final long PROBE_INIT_NS = System.nanoTime();
+	private static final long PROBE_INIT_EPOCH_MS = System.currentTimeMillis();
 
 	private enum Phase {
 		WAIT_FOR_WORLD,
@@ -80,10 +85,13 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static long phaseStartNs = 0L;
 	private static int phaseTicks = 0;
 
-	// Pre-allocated frame timing buffer (handles up to 200,000 frames without resizing)
+	// Pre-allocated frame timing buffers (handles up to 200,000 frames without resizing)
 	private static final long[] FRAME_DELTAS = new long[200_000];
+	private static final long[] RENDER_DURATIONS = new long[200_000];
 	private static int frameCount = 0;
+	private static int renderCount = 0;
 	private static long lastFrameNs = 0L;
+	private static long currentRenderStartNs = 0L;
 	private static boolean measuringFrames = false;
 
 	// Camera motion modes during frame measurement
@@ -98,6 +106,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static long sceneStartGcCount = 0L;
 	private static long sceneStartGcTimeMs = 0L;
 	private static long sceneMeasureStartNs = 0L;
+	private static long sceneMeasureStartEpochMs = 0L;
 	private static long renderThreadId = -1L;
 	private static final ThreadMXBean THREAD_MX =
 		ManagementFactory.getThreadMXBean() instanceof ThreadMXBean t ? t : null;
@@ -117,11 +126,26 @@ public final class BenchProbeClient implements ClientModInitializer {
 		LOGGER.info("BenchProbe active: label={} backend={} duration={}s jfr={}", LABEL, BACKEND, DURATION_SEC, JFR_ENABLED);
 	}
 
+	public static void onRenderFrameStart() {
+		if (!measuringFrames) {
+			currentRenderStartNs = 0L;
+			return;
+		}
+		currentRenderStartNs = System.nanoTime();
+	}
+
 	public static void onRenderFrameEnd() {
 		if (!measuringFrames) {
 			return;
 		}
 		long now = System.nanoTime();
+		if (currentRenderStartNs != 0L && renderCount < RENDER_DURATIONS.length) {
+			long renderDt = now - currentRenderStartNs;
+			if (renderDt > 0L) {
+				RENDER_DURATIONS[renderCount++] = renderDt;
+			}
+		}
+		currentRenderStartNs = 0L;
 		if (lastFrameNs != 0L && frameCount < FRAME_DELTAS.length) {
 			long dt = now - lastFrameNs;
 			if (dt > 0L) {
@@ -189,8 +213,8 @@ public final class BenchProbeClient implements ClientModInitializer {
 			}
 			case INIT_WORLD -> {
 				if (phaseTicks == 1) {
-					mc.options.enableVsync().set(false);
-					mc.options.framerateLimit().set(260);
+					mc.options.enableVsync().set(VSYNC_ENABLED);
+					mc.options.framerateLimit().set(FPS_CAP > 0 ? Math.min(260, Math.max(10, FPS_CAP)) : 260);
 					mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
 					mc.options.guiScale().set(3);
 					mc.options.renderDistance().set(VISTA_RD);
@@ -578,8 +602,11 @@ public final class BenchProbeClient implements ClientModInitializer {
 
 	private static void beginMeasure(String sceneName, long now) {
 		frameCount = 0;
+		renderCount = 0;
 		lastFrameNs = 0L;
+		currentRenderStartNs = 0L;
 		sceneMeasureStartNs = now;
+		sceneMeasureStartEpochMs = System.currentTimeMillis();
 		sceneStartAllocBytes = currentRenderAllocBytes();
 		sceneStartGcCount = totalGcCount();
 		sceneStartGcTimeMs = totalGcTimeMs();
@@ -621,18 +648,32 @@ public final class BenchProbeClient implements ClientModInitializer {
 		double usedHeapMb = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024.0 * 1024.0);
 
 		int n = frameCount;
+		int rn = renderCount;
+		long endEpochMs = System.currentTimeMillis();
 		Map<String, Object> row = new LinkedHashMap<>();
 		row.put("samples", n);
+		row.put("startEpochMs", sceneMeasureStartEpochMs);
+		row.put("endEpochMs", endEpochMs);
+		row.put("startRelSec", round3((sceneMeasureStartNs - PROBE_INIT_NS) / 1e9));
+		row.put("endRelSec", round3((now - PROBE_INIT_NS) / 1e9));
 		if (n > 0) {
 			long[] sorted = Arrays.copyOf(FRAME_DELTAS, n);
 			Arrays.sort(sorted);
 			long totalNs = 0L;
-			for (int i = 0; i < n; i++) totalNs += sorted[i];
+			long lateThresholdNs = FPS_CAP > 0 ? Math.round((1_000_000_000.0 / FPS_CAP) * 1.15) : 0L;
+			int lateFrames = 0;
+			for (int i = 0; i < n; i++) {
+				totalNs += sorted[i];
+				if (lateThresholdNs > 0L && sorted[i] > lateThresholdNs) {
+					lateFrames++;
+				}
+			}
 			double meanMs = (totalNs / (double) n) / 1e6;
 			double avgFps = (n * 1e9) / totalNs;
 			double medianMs = sorted[Math.min(n - 1, (int) Math.ceil(0.50 * n) - 1)] / 1e6;
 			double p95Ms = sorted[Math.min(n - 1, (int) Math.ceil(0.95 * n) - 1)] / 1e6;
 			double p99Ms = sorted[Math.min(n - 1, (int) Math.ceil(0.99 * n) - 1)] / 1e6;
+			double maxMs = sorted[n - 1] / 1e6;
 			double onePctLow = tailFps(sorted, n, 0.01);
 			double pointOnePctLow = tailFps(sorted, n, 0.001);
 
@@ -641,16 +682,29 @@ public final class BenchProbeClient implements ClientModInitializer {
 			row.put("medianMs", round3(medianMs));
 			row.put("p95Ms", round3(p95Ms));
 			row.put("p99Ms", round3(p99Ms));
+			row.put("maxMs", round3(maxMs));
 			row.put("onePercentLowFps", round2(onePctLow));
 			row.put("pointOnePercentLowFps", round2(pointOnePctLow));
+			if (FPS_CAP > 0) {
+				row.put("targetFps", FPS_CAP);
+				row.put("lateFrameCount", lateFrames);
+				row.put("lateFramePct", round2((lateFrames * 100.0) / n));
+			}
 		} else {
 			row.put("avgFps", 0.0);
 			row.put("meanMs", 0.0);
 			row.put("medianMs", 0.0);
 			row.put("p95Ms", 0.0);
 			row.put("p99Ms", 0.0);
+			row.put("maxMs", 0.0);
 			row.put("onePercentLowFps", 0.0);
 			row.put("pointOnePercentLowFps", 0.0);
+		}
+		if (rn > 0) {
+			long[] rSorted = Arrays.copyOf(RENDER_DURATIONS, rn);
+			Arrays.sort(rSorted);
+			row.put("renderMedianMs", round3(rSorted[Math.min(rn - 1, (int) Math.ceil(0.50 * rn) - 1)] / 1e6));
+			row.put("renderP99Ms", round3(rSorted[Math.min(rn - 1, (int) Math.ceil(0.99 * rn) - 1)] / 1e6));
 		}
 		row.put("allocMbPerSec", round2(allocMbPerSec));
 		row.put("gcCount", gcCount);
@@ -681,6 +735,10 @@ public final class BenchProbeClient implements ClientModInitializer {
 			Map<String, Object> root = new LinkedHashMap<>();
 			root.put("label", LABEL);
 			root.put("requestedBackend", BACKEND.toUpperCase());
+			root.put("fpsCap", FPS_CAP);
+			root.put("vsync", VSYNC_ENABLED);
+			root.put("borderless", BORDERLESS_ENABLED);
+			root.put("probeStartEpochMs", PROBE_INIT_EPOCH_MS);
 			try {
 				root.put("deviceInfo", String.valueOf(RenderSystem.getDevice().getDeviceInfo()));
 			} catch (Throwable ignored) {}

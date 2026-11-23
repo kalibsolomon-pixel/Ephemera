@@ -1,9 +1,11 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.render.terrain.SectionUpdateTrackerFrameCache;
 import com.ephemera.render.terrain.TerrainTopology;
+import com.ephemera.render.terrain.vulkan.VulkanMeshTerrainEngine;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -11,12 +13,16 @@ import com.llamalad7.mixinextras.sugar.Local;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterators;
 import it.unimi.dsi.fastutil.objects.ObjectListIterator;
+import net.minecraft.client.Camera;
 import net.minecraft.client.SectionUpdateTracker;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.renderer.chunk.RenderSectionRegion;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.extract.LevelExtractor;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import org.jspecify.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -32,11 +38,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *   <li><b>O(1) steady-frame skip</b>: when no {@code SectionDirtyState} has become dirty and
  *       {@code visibleSections} is unchanged since the last clean scan, skips both
  *       {@code new RenderRegionCache()} and the 2,000+ element {@code visibleSections} walk.</li>
- *   <li><b>Non-starving burst cap</b>: bounds extreme non-player {@code createRegion} spikes
- *       (teleports, rapid camera whips, render-distance changes) without starving background
- *       chunk-builder workers (at least {@value #EPHEMERA$MIN_NON_PLAYER_PER_FRAME} sections or
- *       {@value #EPHEMERA$UNCAPPED_BURST_BUDGET_NS} ns; tighter when an explicit FPS cap is set).
- *       Player-driven block edits ({@code isDirtyFromPlayer()}) always bypass the cap.</li>
+ *   <li><b>Unified single-deadline streaming cap</b>: shares one per-frame deadline with Vulkan
+ *       mesh uploads via {@link EphemeraPacerRuntime#currentStreamingDeadlineNs()}, prioritizing
+ *       player-driven block edits (unconditional bypass) and nearby sections ({@code <= 2} sections
+ *       from camera) while preventing non-player snapshot bursts from blowing the frame budget.</li>
  * </ol>
  * Uses plain primitive instance fields (render-thread-only, non-reentrant) rather than MixinExtras
  * {@code @Share} local-ref wrappers so C2 inlines {@code budgetNonPlayerSectionSnapshots} cleanly
@@ -44,8 +49,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(LevelExtractor.class)
 abstract class LevelExtractorSectionUpdatesMixin {
-	@Unique private static final int EPHEMERA$MIN_NON_PLAYER_PER_FRAME = 24;
-	@Unique private static final long EPHEMERA$UNCAPPED_BURST_BUDGET_NS = 3_000_000L; // 3.0 ms ceiling
+	@Unique private static final int EPHEMERA$NEAR_SECTION_RADIUS = 2;
+	@Unique private static final int EPHEMERA$NEAR_FLOOR_CAPPED = 2;
+	@Unique private static final int EPHEMERA$NEAR_FLOOR_UNCAPPED = 4;
 	@Unique private static final RenderRegionCache EPHEMERA$EMPTY_CACHE = new RenderRegionCache();
 
 	@Shadow @Final private LevelRenderer levelRenderer;
@@ -61,15 +67,21 @@ abstract class LevelExtractorSectionUpdatesMixin {
 	@Unique private long ephemera$visEpochBefore;
 	@Unique private int ephemera$visSizeBefore;
 	@Unique private boolean ephemera$sawDirty;
-	@Unique private long ephemera$secStartNs;
-	@Unique private int ephemera$secCount;
-	@Unique private long ephemera$secBudgetNs;
+	@Unique private boolean ephemera$streamingBudgetActive;
+	@Unique private boolean ephemera$reserveVulkanUploadSlice;
+	@Unique private int ephemera$nearPriorityFloor;
+	@Unique private int ephemera$camSectionX;
+	@Unique private int ephemera$camSectionY;
+	@Unique private int ephemera$camSectionZ;
 
 	@WrapOperation(
 		method = "extract",
 		at = @At(value = "NEW", target = "()Lnet/minecraft/client/renderer/chunk/RenderRegionCache;")
 	)
-	private RenderRegionCache ephemera$checkCleanAndSkipCacheAlloc(Operation<RenderRegionCache> original) {
+	private RenderRegionCache ephemera$checkCleanAndSkipCacheAlloc(
+		Operation<RenderRegionCache> original,
+		@Local(argsOnly = true) Camera camera
+	) {
 		long dEpoch = TerrainTopology.dirtySections();
 		long vEpoch = TerrainTopology.visibleSections();
 		int vSize = this.levelRenderer.visibleSections().size();
@@ -77,8 +89,6 @@ abstract class LevelExtractorSectionUpdatesMixin {
 		this.ephemera$visEpochBefore = vEpoch;
 		this.ephemera$visSizeBefore = vSize;
 		this.ephemera$sawDirty = false;
-		this.ephemera$secStartNs = 0L;
-		this.ephemera$secCount = 0;
 
 		if (EphemeraCommon.config().terrainFastFrustumAndGrid
 			&& this.sectionUpdateTracker != null
@@ -87,7 +97,7 @@ abstract class LevelExtractorSectionUpdatesMixin {
 			&& vEpoch == this.ephemera$lastCleanVisEpoch
 			&& vSize == this.ephemera$lastCleanVisSize) {
 			this.ephemera$skipScan = true;
-			this.ephemera$secBudgetNs = Long.MAX_VALUE;
+			this.ephemera$streamingBudgetActive = false;
 			return EPHEMERA$EMPTY_CACHE;
 		}
 		this.ephemera$skipScan = false;
@@ -95,15 +105,20 @@ abstract class LevelExtractorSectionUpdatesMixin {
 			frameCache.ephemera$beginExtractFrame();
 		}
 
-		if (EphemeraCommon.config().framePacerAdaptiveUploadBudget) {
+		BlockPos camPos = camera != null ? camera.blockPosition() : BlockPos.ZERO;
+		this.ephemera$camSectionX = SectionPos.blockToSectionCoord(camPos.getX());
+		this.ephemera$camSectionY = SectionPos.blockToSectionCoord(camPos.getY());
+		this.ephemera$camSectionZ = SectionPos.blockToSectionCoord(camPos.getZ());
+
+		if (EphemeraPacerRuntime.beginFrameStreamingBudget()) {
+			this.ephemera$streamingBudgetActive = true;
+			this.ephemera$reserveVulkanUploadSlice = VulkanMeshTerrainEngine.get().isAvailable();
 			int cappedFps = EphemeraPacerRuntime.budget().effectiveTargetFps();
-			if (cappedFps > 0) {
-				this.ephemera$secBudgetNs = Math.min(EphemeraPacerRuntime.currentUploadBudgetNs(), EPHEMERA$UNCAPPED_BURST_BUDGET_NS);
-			} else {
-				this.ephemera$secBudgetNs = EPHEMERA$UNCAPPED_BURST_BUDGET_NS;
-			}
+			this.ephemera$nearPriorityFloor = cappedFps > 0 ? EPHEMERA$NEAR_FLOOR_CAPPED : EPHEMERA$NEAR_FLOOR_UNCAPPED;
 		} else {
-			this.ephemera$secBudgetNs = Long.MAX_VALUE;
+			this.ephemera$streamingBudgetActive = false;
+			this.ephemera$reserveVulkanUploadSlice = false;
+			this.ephemera$nearPriorityFloor = EPHEMERA$NEAR_FLOOR_UNCAPPED;
 		}
 		return original.call();
 	}
@@ -129,23 +144,26 @@ abstract class LevelExtractorSectionUpdatesMixin {
 	)
 	private boolean ephemera$budgetNonPlayerSectionSnapshots(
 		boolean dirty,
+		@Local SectionRenderDispatcher.RenderSection section,
 		@Local SectionUpdateTracker.SectionDirtyState state
 	) {
 		if (!dirty) {
 			return false;
 		}
 		this.ephemera$sawDirty = true;
-		long budget = this.ephemera$secBudgetNs;
-		if (budget == Long.MAX_VALUE || state.isDirtyFromPlayer()) {
+		if (!this.ephemera$streamingBudgetActive || state.isDirtyFromPlayer()) {
 			return true;
 		}
-		if (this.ephemera$secCount >= EPHEMERA$MIN_NON_PLAYER_PER_FRAME) {
-			long start = this.ephemera$secStartNs;
-			if (start != 0L && (System.nanoTime() - start) >= budget) {
-				return false;
-			}
+		FrameBudgetPacer pacer = EphemeraPacerRuntime.budget();
+		if (pacer.hasSnapshotStreamingHeadroom(this.ephemera$reserveVulkanUploadSlice)) {
+			return true;
 		}
-		return true;
+		long node = section.getSectionNode();
+		boolean nearby = Math.abs(SectionPos.x(node) - this.ephemera$camSectionX) <= EPHEMERA$NEAR_SECTION_RADIUS
+			&& Math.abs(SectionPos.y(node) - this.ephemera$camSectionY) <= EPHEMERA$NEAR_SECTION_RADIUS
+			&& Math.abs(SectionPos.z(node) - this.ephemera$camSectionZ) <= EPHEMERA$NEAR_SECTION_RADIUS;
+		int floor = nearby ? this.ephemera$nearPriorityFloor : 1;
+		return pacer.allowSnapshotStreamingWork(floor, this.ephemera$reserveVulkanUploadSlice);
 	}
 
 	@WrapOperation(
@@ -161,11 +179,13 @@ abstract class LevelExtractorSectionUpdatesMixin {
 		long sectionNode,
 		Operation<RenderSectionRegion> original
 	) {
-		if (this.ephemera$secStartNs == 0L) {
-			this.ephemera$secStartNs = System.nanoTime();
+		if (!this.ephemera$streamingBudgetActive) {
+			return original.call(cache, level, sectionNode);
 		}
-		this.ephemera$secCount++;
-		return original.call(cache, level, sectionNode);
+		long t0 = System.nanoTime();
+		RenderSectionRegion region = original.call(cache, level, sectionNode);
+		EphemeraPacerRuntime.budget().recordStreamingWork(System.nanoTime() - t0);
+		return region;
 	}
 
 	@Inject(
