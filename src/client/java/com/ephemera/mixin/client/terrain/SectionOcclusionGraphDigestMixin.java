@@ -28,11 +28,11 @@ public abstract class SectionOcclusionGraphDigestMixin {
 		method = "lambda$addSectionsInFrustum$0",
 		at = @At(
 			value = "INVOKE",
-			target = "Ljava/util/List;add:(Ljava/lang/Object;)Z",
+			target = "Ljava/util/List;add(Ljava/lang/Object;)Z",
 			ordinal = 0
 		)
 	)
-	private boolean ephemera$digestVisibleAppend(List<?> visible, Object section, Operation<Boolean> original) {
+	private static boolean ephemera$digestVisibleAppend(List<?> visible, Object section, Operation<Boolean> original) {
 		long node = section instanceof SectionRenderDispatcher.RenderSection render ? render.getSectionNode() : 0L;
 		TerrainTopology.visibleSectionsDigest1 = TerrainTopology.visibleSectionsDigest1 * 0x9E3779B97F4A7C15L + node;
 		TerrainTopology.visibleSectionsDigest2 = (TerrainTopology.visibleSectionsDigest2 ^ Long.rotateLeft(node, 31)) * 0xFF51AFD7ED558CCDL;

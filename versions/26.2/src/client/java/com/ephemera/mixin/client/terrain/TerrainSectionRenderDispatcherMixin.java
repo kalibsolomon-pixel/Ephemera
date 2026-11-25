@@ -48,7 +48,7 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 	@Shadow @Final @Mutable private TracingExecutor executor;
 
 	@Unique private int ephemera$epoch;
-	@Unique private final ObjectOpenHashSet<Object> ephemera$deferredKeys = new ObjectOpenHashSet<>(64);
+	@Unique private ObjectOpenHashSet<Object> ephemera$deferredKeys;
 	@Unique private ExecutorService ephemera$dedicatedChunkPool;
 
 	@Unique private static final AtomicLong EPHEMERA$CHUNK_BUILD_THREAD = new AtomicLong();
@@ -56,6 +56,7 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$tagUberBuffers(TracingExecutor executor, RenderBuffers renderBuffers, SectionCompiler sectionCompiler,
 										 Consumer<SectionRenderDispatcher.RenderSection> onSectionMeshUpdate, CallbackInfo ci) {
+		this.ephemera$deferredKeys = new ObjectOpenHashSet<>(64);
 		ephemera$swapInConfiguredChunkBuilderPool();
 		int epoch = NEXT_EPOCH.getAndIncrement();
 		for (Map.Entry<ChunkSectionLayer, Object> entry : chunkUberBuffers.entrySet()) {
@@ -164,19 +165,23 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 				int layerCap = capped ? remainingBudget : uncappedPerLayer;
 				int admittedCount = Math.min(Math.max(vStaged, iStaged), layerCap);
 				boolean deferred = false;
+				ObjectOpenHashSet<Object> deferredKeys = this.ephemera$deferredKeys;
+				if (deferredKeys == null) {
+					this.ephemera$deferredKeys = deferredKeys = new ObjectOpenHashSet<>(64);
+				}
 				if (vStaged > layerCap) {
-					this.ephemera$deferredKeys.clear();
-					vCtrl.ephemera$pickOverflowKeys(layerCap, this.ephemera$deferredKeys);
-					if (!this.ephemera$deferredKeys.isEmpty()) {
-						vCtrl.ephemera$deferKeys(this.ephemera$deferredKeys);
-						iCtrl.ephemera$deferKeys(this.ephemera$deferredKeys);
+					deferredKeys.clear();
+					vCtrl.ephemera$pickOverflowKeys(layerCap, deferredKeys);
+					if (!deferredKeys.isEmpty()) {
+						vCtrl.ephemera$deferKeys(deferredKeys);
+						iCtrl.ephemera$deferKeys(deferredKeys);
 						deferred = true;
 					}
 				} else if (vStaged == 0 && iStaged > layerCap) {
-					this.ephemera$deferredKeys.clear();
-					iCtrl.ephemera$pickOverflowKeys(layerCap, this.ephemera$deferredKeys);
-					if (!this.ephemera$deferredKeys.isEmpty()) {
-						iCtrl.ephemera$deferKeys(this.ephemera$deferredKeys);
+					deferredKeys.clear();
+					iCtrl.ephemera$pickOverflowKeys(layerCap, deferredKeys);
+					if (!deferredKeys.isEmpty()) {
+						iCtrl.ephemera$deferKeys(deferredKeys);
 						deferred = true;
 					}
 				}
@@ -190,7 +195,7 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 					if (deferred) {
 						vCtrl.ephemera$restoreDeferred();
 						iCtrl.ephemera$restoreDeferred();
-						this.ephemera$deferredKeys.clear();
+						deferredKeys.clear();
 					}
 				}
 				if (capped) {
