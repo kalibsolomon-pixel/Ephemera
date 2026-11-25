@@ -103,7 +103,7 @@ public abstract class TerrainRenderSectionVertexSortingMixin implements SectionM
 	private VertexSorting ephemera$radixSorting(float x, float y, float z, Operation<VertexSorting> original) {
 		if (TerrainFeatures.fastTranslucentSort()) {
 			try {
-				return new FastVertexSorting(x, y, z);
+				return FastVertexSorting.forCurrentThread(x, y, z);
 			} catch (Throwable t) {
 				TerrainFeatures.disableSort(t);
 			}

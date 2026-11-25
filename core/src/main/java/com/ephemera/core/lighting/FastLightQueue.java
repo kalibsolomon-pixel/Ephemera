@@ -26,12 +26,25 @@ public final class FastLightQueue {
         long value = entries[head];
         head = (head + 1) & (entries.length - 1);
         size--;
-        // Retain ordinary bursts, release exceptionally large buffers after the wave.
-        if (size == 0 && entries.length > 16384) {
-            entries = new long[1024];
-            head = 0;
+        // Shrink progressively once utilization drops below 1/4 instead of retaining megabytes
+        // of ring after a relight storm until a fully-drained instant that may never come. The
+        // halving floor of 4096 stays above LightWorkMixin's 2048-per-call burst constant so
+        // routine chunk-load waves never oscillate the capacity; every length stays a power of
+        // two for the index masks.
+        int cap = entries.length;
+        if (cap > 4096 && size < (cap >> 2)) {
+            compact(Math.max(4096, cap >> 1));
         }
         return value;
+    }
+
+    private void compact(int newCap) {
+        long[] shrunk = new long[newCap];
+        int wrapped = Math.min(size, entries.length - head);
+        System.arraycopy(entries, head, shrunk, 0, wrapped);
+        System.arraycopy(entries, 0, shrunk, wrapped, size - wrapped);
+        entries = shrunk;
+        head = 0;
     }
 
     public boolean isEmpty() {

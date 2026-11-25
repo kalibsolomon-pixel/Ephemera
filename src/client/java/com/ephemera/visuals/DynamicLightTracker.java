@@ -13,6 +13,7 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.IdentityHashMap;
 
@@ -28,6 +29,15 @@ public final class DynamicLightTracker {
 	private static final DynamicLightGrid GRID = new DynamicLightGrid(256);
 	private static final IdentityHashMap<Item, Integer> ITEM_LIGHT = new IdentityHashMap<>();
 	private static final long MIN_REBUILD_NS = 1_000_000L;
+	// Emission-driven tracking radius. Light reach around each emitter caps at 15 blocks (4-bit
+	// vanilla block light, lava-bucket item maximum), so emitters beyond 128 blocks of the camera
+	// cannot light anything meaningfully resolvable; standard mobs render well inside that radius
+	// (only large mobs with high entityDistanceScaling exceed it, and their dynamic boost is
+	// imperceptible at that distance). The entity walk itself stays O(rendered entities); the
+	// cutoff merely skips the emission() work (spectator/fire/type chain/ItemStack lookups) for
+	// distant ones and keeps far-away emitters from crowding the grid's 256-slot capacity.
+	private static final double TRACK_RADIUS = 128.0;
+	private static final double TRACK_RADIUS_SQ = TRACK_RADIUS * TRACK_RADIUS;
 
 	private static ClientLevel lastLevel;
 	private static long lastRebuildNs;
@@ -96,7 +106,29 @@ public final class DynamicLightTracker {
 		lastLevel = level;
 		lastRebuildNs = now;
 		GRID.clear();
+		// Only cut off when the camera carries a live position: before the first Camera.update()
+		// and across world/dimension switches (Camera.reset leaves the old position in place) the
+		// position is zero or stale, which would prune every local emitter — fail open instead.
+		net.minecraft.client.Camera camera = Minecraft.getInstance().gameRenderer.mainCamera();
+		boolean useCutoff = camera.isInitialized();
+		double camX = 0.0;
+		double camY = 0.0;
+		double camZ = 0.0;
+		if (useCutoff) {
+			Vec3 cam = camera.position();
+			camX = cam.x;
+			camY = cam.y;
+			camZ = cam.z;
+		}
 		for (Entity entity : level.entitiesForRendering()) {
+			if (useCutoff) {
+				double dx = entity.getX() - camX;
+				double dy = entity.getY() - camY;
+				double dz = entity.getZ() - camZ;
+				if (dx * dx + dy * dy + dz * dz > TRACK_RADIUS_SQ) {
+					continue;
+				}
+			}
 			int emission = emission(entity);
 			if (emission > 0) {
 				GRID.add(entity.getX(), entity.getY() + entity.getBbHeight() * 0.5, entity.getZ(), emission);

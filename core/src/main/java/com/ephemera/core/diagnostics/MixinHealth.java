@@ -34,6 +34,11 @@ public final class MixinHealth {
 		return anyFailed && FAILED.containsKey(mixinSimpleName);
 	}
 
+	/** Zero-allocation applied check for hot paths (unlike {@link #applied()}, which wraps a set). */
+	public static boolean isApplied(String mixinSimpleName) {
+		return APPLIED.contains(mixinSimpleName);
+	}
+
 	public static boolean hasAnyFailure() {
 		return anyFailed;
 	}

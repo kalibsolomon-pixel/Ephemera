@@ -157,4 +157,52 @@ final class FrameBudgetPacerTest {
 		assertTrue(budget.remainingStreamingHeadroomNs(deadline - 300_000L) >= 300_000L);
 		assertEquals(0L, budget.remainingStreamingHeadroomNs(deadline + 1L));
 	}
+
+	@Test
+	void cappedFrameDeadlineExpiresAndDenialStreaksStayDenied() {
+		FrameBudgetPacer budget = new FrameBudgetPacer();
+		budget.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, 240);
+		long now = System.nanoTime();
+		budget.beginFrameWork(now);
+		// Generous budget so the SPENT check never binds: every denial below must come from the
+		// cached wall clock actually observing the latched deadline expire.
+		long deadline = budget.resolveStreamingDeadlineNs(8, true, 4_000_000L, now);
+		assertTrue(deadline < Long.MAX_VALUE, "capped frame must latch a hard deadline");
+
+		// Admit a small batch with negligible recorded work (1 us each, far under both the
+		// budget and the 250 us refresh quantum) so the loop ends well before expiry.
+		int admitted = 0;
+		while (admitted < 3 && budget.allowStreamingWork(1)) {
+			budget.recordStreamingWork(1_000L);
+			admitted++;
+		}
+		assertEquals(3, admitted, "fresh capped frame with free budget must admit the batch");
+		assertTrue(budget.frameStreamingSpentNs() < budget.frameStreamingBudgetNs(),
+			"spent must stay under budget so later denials are clock-driven");
+
+		// Push the real wall clock well past the latched deadline, then confirm the cached clock
+		// admits at most a bounded stale window (8 items since the last read) before denying for
+		// the remainder of the frame — with spent still below budget, proving denials are
+		// deadline-driven, not budget-driven.
+		while (System.nanoTime() - now < 12_000_000L) {
+			Thread.onSpinWait();
+		}
+		int staleAdmitted = 0;
+		while (staleAdmitted < 64 && budget.allowStreamingWork(1)) {
+			budget.recordStreamingWork(1_000L);
+			staleAdmitted++;
+		}
+		assertTrue(staleAdmitted <= 8,
+			"post-expiry stale admissions must be bounded by the cache quantum, got " + staleAdmitted);
+		assertTrue(budget.frameStreamingSpentNs() < budget.frameStreamingBudgetNs(),
+			"denials must be deadline-driven (spent stayed under budget)");
+		for (int i = 0; i < 24; i++) {
+			assertFalse(budget.allowStreamingWork(1), "expired deadline must deny (call " + i + ")");
+			assertFalse(budget.hasSnapshotStreamingHeadroom(false), "expired deadline must deny headroom");
+		}
+		// Stage 2 re-entry: resolveStreamingDeadlineNs re-seeds the clock from the caller's fresh
+		// timestamp, which is again past the deadline, so gates must stay denied.
+		budget.resolveStreamingDeadlineNs(8, true, 4_000_000L, System.nanoTime());
+		assertFalse(budget.allowStreamingWork(1), "post-reseed expired deadline must deny");
+	}
 }

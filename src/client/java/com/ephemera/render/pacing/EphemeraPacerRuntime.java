@@ -35,8 +35,20 @@ public final class EphemeraPacerRuntime {
 	private static final EphemeraFramePacer PACER = new EphemeraFramePacer(new EphemeraFramePacer.WaitOps() {
 		@Override public long nanoTime() { return System.nanoTime(); }
 		@Override public void parkNanos(long nanos) { Win32DisplayRuntime.parkNanos(nanos); }
-		@Override public void onSpinWait() { Thread.onSpinWait(); }
+		// Unroll the pause instruction ~8x between nanoTime() reads: the spin tail is hundreds of
+		// microseconds, so deadline precision is unchanged while QPC read traffic drops ~8x.
+		@Override public void onSpinWait() {
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+			Thread.onSpinWait();
+		}
 		@Override public boolean isInterrupted() { return Thread.currentThread().isInterrupted(); }
+		@Override public boolean preciseWakeSource() { return Win32DisplayRuntime.isHighResWaitTimerActive(); }
 	});
 	private static final FrameBudgetPacer BUDGET = new FrameBudgetPacer();
 

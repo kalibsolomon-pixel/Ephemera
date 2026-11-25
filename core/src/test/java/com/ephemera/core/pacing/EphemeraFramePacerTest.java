@@ -13,6 +13,7 @@ final class EphemeraFramePacerTest {
 		long parkOvershootNs;
 		long earlyWakeActualNs = -1L;
 		boolean interrupted;
+		boolean precise;
 		final List<Long> parkRequests = new ArrayList<>();
 		int spins;
 
@@ -45,6 +46,11 @@ final class EphemeraFramePacerTest {
 		@Override
 		public boolean isInterrupted() {
 			return interrupted;
+		}
+
+		@Override
+		public boolean preciseWakeSource() {
+			return precise;
 		}
 	}
 
@@ -259,6 +265,31 @@ final class EphemeraFramePacerTest {
 		// At 500 FPS (2.0 ms period), reserve must clamp <= 1.2 ms
 		long res500 = pacer.effectiveReserveNs(500_000L, false, 2_000_000L);
 		assertTrue(res500 <= 1_200_000L && res500 >= 200_000L, "500 FPS reserve=" + res500);
+	}
+
+	@Test
+	void preciseWakeSourceDecaysReserveBelowLegacyAdaptiveFloor() {
+		FakeWaitOps precise = new FakeWaitOps(1_000_000_000L);
+		precise.precise = true;
+		EphemeraFramePacer precisePacer = new EphemeraFramePacer(precise);
+		FakeWaitOps coarse = new FakeWaitOps(1_000_000_000L);
+		EphemeraFramePacer coarsePacer = new EphemeraFramePacer(coarse);
+
+		// Long quiet stretch with exact wakes: precise sources decay to the 80 us estimate floor,
+		// coarse LockSupport-style sources keep the conservative 200 us floor.
+		for (int i = 0; i < 400; i++) {
+			precisePacer.observeParkOvershoot(1_000_000L, 1_000_000L);
+			coarsePacer.observeParkOvershoot(1_000_000L, 1_000_000L);
+		}
+		// Precise steady state at 1000 FPS: adaptive floor ~200 us (80 * 1.25 + 100 pad), configured
+		// tail clamped to period/5 -> reserve ~200 us, well under the legacy 430 us adaptive floor.
+		long preciseRes = precisePacer.effectiveReserveNs(500_000L, false, 1_000_000L);
+		assertTrue(preciseRes >= 200_000L, "Precise reserve must keep the minimum tail, got " + preciseRes);
+		assertTrue(preciseRes <= 250_000L, "Precise steady reserve=" + preciseRes);
+		// Coarse steady state keeps the legacy conservative floor.
+		long coarseRes = coarsePacer.effectiveReserveNs(500_000L, false, 1_000_000L);
+		assertTrue(coarseRes >= 400_000L, "Coarse steady reserve=" + coarseRes);
+		assertTrue(coarseRes <= 600_000L, "Coarse steady reserve=" + coarseRes);
 	}
 
 	@Test

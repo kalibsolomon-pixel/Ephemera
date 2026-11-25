@@ -36,6 +36,7 @@ public final class FrameBudgetPacer {
 	private double ewmaJitterNs;
 	private long throttledUploadCount;
 	private long completedFrames;
+	private long frameSequence;
 
 	// Unified per-frame chunk-streaming budget shared across section snapshots and Vulkan mesh uploads.
 	// Uncapped frames budget ACTUAL streaming work spent (so unrelated CPU work between stages never
@@ -50,6 +51,19 @@ public final class FrameBudgetPacer {
 	private long lastCadenceRefNs;
 	private int frameStreamingItemsDone;
 	private int frameStreamingThrottled;
+	// Cached wall clock for the per-item budget gates: re-reads System.nanoTime() only after >= 8
+	// further admitted items or >= 250 us of recorded streaming work since the last read (delta
+	// based — denied items do not move the admission counter, so a modulo test here would
+	// re-read the clock on every denied item in a throttled pass), so a ~2000-section extract
+	// pass costs a handful of timer reads instead of ~2000 on capped frames. The cache is seeded
+	// from the caller-supplied nowNs in resolveStreamingDeadlineNs (both the initial latch and
+	// Stage 2 re-entry), which keeps the value fresh across the stage boundary without any extra
+	// timer reads. Deadline error is bounded to that same quantum (all gates still enforce the
+	// spent-work budget with plain field reads).
+	private static final long CLOCK_UNSET = Long.MIN_VALUE;
+	private long frameStreamingClockNs = CLOCK_UNSET;
+	private long frameStreamingSpentAtClockNs;
+	private int frameStreamingItemsAtClock = -1;
 
 	public void reset() {
 		lastFrameStartNs = 0L;
@@ -71,6 +85,9 @@ public final class FrameBudgetPacer {
 		frameLatchedPresentTargetNs = 0L;
 		frameStreamingItemsDone = 0;
 		frameStreamingThrottled = 0;
+		frameStreamingClockNs = CLOCK_UNSET;
+		frameStreamingSpentAtClockNs = 0L;
+		frameStreamingItemsAtClock = -1;
 	}
 
 	/**
@@ -169,6 +186,9 @@ public final class FrameBudgetPacer {
 		}
 		lastFrameStartNs = nowNs;
 		currentFrameWorkStartNs = nowNs;
+		// Unconditional frame sequence for per-frame stamping (completedFrames only advances when
+		// work fits the sample cap, so it can stall across > 250 ms world-load hitch frames).
+		frameSequence++;
 		resetFrameStreaming();
 	}
 
@@ -253,6 +273,11 @@ public final class FrameBudgetPacer {
 			return Long.MAX_VALUE;
 		}
 		if (!frameStreamingDeadlineSet) {
+			// Seed the cached wall clock from the caller-supplied timestamp (free — no timer read)
+			// so Stage 1's gates start from this frame's real time instead of a stale value.
+			frameStreamingClockNs = nowNs;
+			frameStreamingItemsAtClock = frameStreamingItemsDone;
+			frameStreamingSpentAtClockNs = frameStreamingSpentNs;
 			int targetFps = effectiveTargetFps;
 			long computed;
 			if (targetFps > 0) {
@@ -289,8 +314,44 @@ public final class FrameBudgetPacer {
 				frameStreamingDeadlineNs = Long.MAX_VALUE;
 			}
 			frameStreamingDeadlineSet = true;
+		} else {
+			// Stage 2 re-entry (Vulkan mesh upload drain): re-seed from the caller's fresh
+			// timestamp so gates never admit from a clock left over before the frame's render work.
+			frameStreamingClockNs = nowNs;
+			frameStreamingItemsAtClock = frameStreamingItemsDone;
+			frameStreamingSpentAtClockNs = frameStreamingSpentNs;
 		}
 		return frameStreamingDeadlineNs;
+	}
+
+	/**
+	 * Cached wall-clock check against the frame's hard streaming deadline. Re-reads
+	 * {@code System.nanoTime()} only after >= 8 further admissions or >= 250 us of recorded
+	 * streaming work since the last read, so a ~2000-section extract pass on a capped frame costs
+	 * a handful of timer reads instead of ~2000, with admission error bounded to that same
+	 * quantum. The deadline is frame-fixed and the clock monotonic, so an expired cached read
+	 * short-circuits as expired. Always returns {@code false} when no hard deadline is set
+	 * (uncapped frames: zero timer reads).
+	 */
+	private boolean pastHardDeadline() {
+		long hardDeadline = frameStreamingDeadlineNs;
+		if (hardDeadline == Long.MAX_VALUE) {
+			return false;
+		}
+		long clock = frameStreamingClockNs;
+		if (clock != CLOCK_UNSET && clock >= hardDeadline) {
+			return true;
+		}
+		long spent = frameStreamingSpentNs;
+		if (clock == CLOCK_UNSET
+			|| frameStreamingItemsDone - frameStreamingItemsAtClock >= 8
+			|| spent - frameStreamingSpentAtClockNs >= 250_000L) {
+			clock = System.nanoTime();
+			frameStreamingClockNs = clock;
+			frameStreamingItemsAtClock = frameStreamingItemsDone;
+			frameStreamingSpentAtClockNs = spent;
+		}
+		return clock >= hardDeadline;
 	}
 
 	/**
@@ -306,8 +367,7 @@ public final class FrameBudgetPacer {
 		if (frameStreamingSpentNs >= cap) {
 			return false;
 		}
-		long hardDeadline = frameStreamingDeadlineNs;
-		return hardDeadline == Long.MAX_VALUE || System.nanoTime() < hardDeadline;
+		return !pastHardDeadline();
 	}
 
 	/**
@@ -318,9 +378,7 @@ public final class FrameBudgetPacer {
 		if (!frameStreamingDeadlineSet) {
 			return true;
 		}
-		long hardDeadline = frameStreamingDeadlineNs;
-		boolean pastHardDeadline = hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline;
-		if (pastHardDeadline) {
+		if (pastHardDeadline()) {
 			// On FPS-capped frames whose deadline has already elapsed, allow at most 1 item so streaming
 			// never starves without letting priorityFloor > 1 pile extra latency onto a late frame.
 			if (frameStreamingItemsDone == 0) {
@@ -346,14 +404,13 @@ public final class FrameBudgetPacer {
 	/**
 	 * Fast-path check for whether a streaming stage (section snapshot or Vulkan mesh upload) may
 	 * process another non-urgent item under the shared frame budget. Zero {@code System.nanoTime()}
-	 * calls on uncapped frames; checks wall-clock hard deadline only on FPS-capped frames.
+	 * calls on uncapped frames; checks the cached wall-clock hard deadline only on FPS-capped frames.
 	 */
 	public boolean allowStreamingWork(int priorityFloor) {
 		if (!frameStreamingDeadlineSet) {
 			return true;
 		}
-		long hardDeadline = frameStreamingDeadlineNs;
-		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
+		if (pastHardDeadline()) {
 			if (frameStreamingItemsDone == 0) {
 				return true;
 			}
@@ -474,5 +531,13 @@ public final class FrameBudgetPacer {
 
 	public long completedFrames() {
 		return completedFrames;
+	}
+
+	/**
+	 * Unconditional per-frame counter that advances once per {@link #beginFrameWork(long)} even
+	 * when the frame's measured work exceeds the sample cap (unlike {@link #completedFrames()}).
+	 */
+	public long frameSequence() {
+		return frameSequence;
 	}
 }

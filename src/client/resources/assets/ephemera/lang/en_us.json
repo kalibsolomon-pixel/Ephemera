@@ -216,7 +216,7 @@
   "ephemera.tooltip.diagnosticsHudOverlay": "Shows a compact FPS, 1% low, frame time, and culling readout in the top-left corner while playing.",
   "ephemera.tooltip.terrainEngineEnabled": "Master switch for Ephemera's terrain renderer. Restart required.",
   "ephemera.tooltip.modStandDownEnabled": "Turn Ephemera features off automatically when another mod already provides them. Restart required.",
-  "ephemera.tooltip.chunkBuilderThreads": "0 picks a count tuned to your CPU.",
+  "ephemera.tooltip.chunkBuilderThreads": "Dedicated chunk-build worker pool. 0 uses the vanilla shared pool (default). Applies on world reload.",
   "ephemera.tooltip.leavesCullingMode": "How aggressively interior leaf faces are skipped.",
   "ephemera.tooltip.guiFontAtlasResizing": "Uses larger glyph atlas pages to reduce texture switches when rendering text. Applies to newly allocated pages after a resource reload (F3+T) or restart.",
   "ephemera.tooltip.guiFontAtlasSize": "Glyph atlas texture size used when Font Atlas Resizing is enabled. Applies on resource reload (F3+T) or restart.",

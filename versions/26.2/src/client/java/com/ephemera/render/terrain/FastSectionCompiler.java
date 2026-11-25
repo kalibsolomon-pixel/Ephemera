@@ -1,21 +1,30 @@
 package com.ephemera.render.terrain;
 
 import com.ephemera.core.terrain.BitmaskFaceCuller;
+import com.ephemera.mixin.client.terrain.SingleVariantAccessor;
 import com.ephemera.mixin.client.terrain.TerrainFluidStateModelSetAccessor;
+import com.ephemera.mixin.client.terrain.WeightedVariantsAccessor;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.renderer.block.BlockStateModelSet;
 import net.minecraft.client.renderer.block.FluidModel;
 import net.minecraft.client.renderer.block.FluidStateModelSet;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
+import net.minecraft.client.renderer.block.dispatch.SingleVariant;
+import net.minecraft.client.renderer.block.dispatch.WeightedVariants;
+import net.minecraft.client.renderer.block.dispatch.multipart.MultiPartModel;
 import net.minecraft.client.renderer.chunk.RenderSectionRegion;
 import net.minecraft.client.renderer.chunk.SectionCompiler;
+import net.minecraft.client.resources.model.SimpleModelWrapper;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.client.resources.model.geometry.QuadCollection;
 import net.minecraft.client.resources.model.sprite.Material;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.RandomSource;
+import net.minecraft.util.random.Weighted;
+import net.minecraft.util.random.WeightedList;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
@@ -47,12 +56,93 @@ import java.util.List;
 public final class FastSectionCompiler {
 	private static final Direction[] DIRECTIONS = Direction.values();
 	private static final ThreadLocal<Pass> PASSES = ThreadLocal.withInitial(Pass::new);
-	private static final ClassValue<Boolean> VANILLA_MODEL = new ClassValue<>() {
-		@Override
-		protected Boolean computeValue(Class<?> type) {
-			return type.getName().startsWith("net.minecraft.");
+	// Buried-skip model classification. The memo can only skip tessellation when the model's
+	// unculled quad output is provably empty under EVERY random seed, so the classification
+	// quantifies over all variants instead of sampling one (stone/deepslate/dirt-class states are
+	// WeightedVariants whose pick varies per position). Exact class checks (never instanceof)
+	// keep modded subclasses and Fabric Renderer API models (MeshQuadCollection returns empty
+	// getQuads(null) but emits via emitQuads) permanently out of the fast path.
+	private static final int MAX_MODEL_DEPTH = 8;
+	private static final byte CLASS_SKIP = 1;              // every seed provably emits zero unculled quads
+	private static final byte CLASS_VANILLA_NON_EMPTY = 2; // every seed provably emits >= 1 unculled quad
+	private static final byte CLASS_EVALUATE = 3;          // vanilla but seed-dependent: per-position check
+	private static final byte CLASS_UNSAFE = 4;            // modded/subclass/mesh-backed: never skip
+
+	private static boolean isOnlyCulledVanillaPart(@Nullable BlockStateModelPart part) {
+		if (part == null || part.getClass() != SimpleModelWrapper.class) {
+			return false;
 		}
-	};
+		QuadCollection quads = ((SimpleModelWrapper) part).quads();
+		return quads != null
+			&& quads.getClass() == QuadCollection.class
+			&& quads.getQuads(null).isEmpty();
+	}
+
+	private static byte classify(@Nullable BlockStateModel model, int depth) {
+		if (model == null || depth > MAX_MODEL_DEPTH) {
+			return CLASS_UNSAFE;
+		}
+		Class<?> cls = model.getClass();
+		if (cls == SingleVariant.class) {
+			if (!((Object) model instanceof SingleVariantAccessor)) {
+				return CLASS_EVALUATE; // accessor did not apply: fail open to the per-position check
+			}
+			BlockStateModelPart part = ((SingleVariantAccessor) (Object) model).ephemera$getModel();
+			if (part == null || part.getClass() != SimpleModelWrapper.class) {
+				return CLASS_UNSAFE;
+			}
+			QuadCollection quads = ((SimpleModelWrapper) part).quads();
+			if (quads == null || quads.getClass() != QuadCollection.class) {
+				return CLASS_UNSAFE;
+			}
+			return quads.getQuads(null).isEmpty() ? CLASS_SKIP : CLASS_VANILLA_NON_EMPTY;
+		}
+		if (cls == WeightedVariants.class) {
+			if (!((Object) model instanceof WeightedVariantsAccessor)) {
+				return CLASS_EVALUATE;
+			}
+			WeightedList<BlockStateModel> list = ((WeightedVariantsAccessor) (Object) model).ephemera$getList();
+			// isEmpty() also rejects all-zero-weight lists (their getRandomOrThrow throws).
+			if (list == null || list.isEmpty()) {
+				return CLASS_UNSAFE;
+			}
+			List<Weighted<BlockStateModel>> entries = list.unwrap();
+			if (entries.isEmpty()) {
+				return CLASS_UNSAFE;
+			}
+			boolean sawSkip = false;
+			boolean sawNonEmpty = false;
+			boolean sawEvaluate = false;
+			for (int i = 0, n = entries.size(); i < n; i++) {
+				Weighted<BlockStateModel> entry = entries.get(i);
+				if (entry == null) {
+					return CLASS_UNSAFE;
+				}
+				byte child = classify(entry.value(), depth + 1);
+				if (child == CLASS_UNSAFE) {
+					return CLASS_UNSAFE; // poison: a modded child may emit via emitQuads despite empty collectParts
+				}
+				if (child == CLASS_SKIP) {
+					sawSkip = true;
+				} else if (child == CLASS_VANILLA_NON_EMPTY) {
+					sawNonEmpty = true;
+				} else {
+					sawEvaluate = true;
+				}
+			}
+			if (sawEvaluate || (sawSkip && sawNonEmpty)) {
+				return CLASS_EVALUATE;
+			}
+			return sawSkip ? CLASS_SKIP : CLASS_VANILLA_NON_EMPTY;
+		}
+		if (cls == MultiPartModel.class) {
+			// Only 4 vanilla solid-render multipart blocks exist and the lazily-cached selection
+			// list is not safely inspectable without deeper mixins; the per-position check handles them.
+			return CLASS_EVALUATE;
+		}
+		return CLASS_UNSAFE;
+	}
+
 	private static volatile boolean fluidHandlersChecked;
 	private static volatile boolean waterHandlerDefault = true;
 	private static volatile boolean lavaHandlerDefault = true;
@@ -173,6 +263,49 @@ public final class FastSectionCompiler {
 		private int stamp;
 		private final BlockState[] maskStates = new BlockState[64];
 		private final byte[] maskBits = new byte[64];
+		// Per-section buried-skip memo (cleared in reset and finish): a solid section holds
+		// ~2,000-3,800 buried blocks across only ~5-15 distinct states, so this removes nearly all
+		// per-block model lookups, ClassValue probes, and collectParts scans. Keyed by state
+		// identity within one compile where the BlockStateModelSet is fixed, so resource reloads
+		// can never stale it. 1-slot MRU + direct-mapped table matching the maskStates pattern.
+		private static final byte MEMO_UNKNOWN = 0;
+		private static final byte MEMO_SKIP = 1;
+		private static final byte MEMO_VANILLA = 2;
+		private static final byte MEMO_EVALUATE = 3;
+		private static final byte MEMO_MODDED = 4;
+		private BlockState lastMemoState;
+		private byte lastMemoDecision;
+		private final BlockState[] memoStates = new BlockState[64];
+		private final byte[] memoDecisions = new byte[64];
+
+		private void clearMemo() {
+			lastMemoState = null;
+			lastMemoDecision = MEMO_UNKNOWN;
+			Arrays.fill(memoStates, null);
+			Arrays.fill(memoDecisions, MEMO_UNKNOWN);
+		}
+
+		private byte memoDecision(BlockState state) {
+			if (state == lastMemoState) {
+				return lastMemoDecision;
+			}
+			int slot = (System.identityHashCode(state) * 0x9E3779B9) >>> 26;
+			byte decision;
+			if (memoStates[slot] == state) {
+				decision = memoDecisions[slot];
+			} else {
+				byte cls = classify(blockModels.get(state), 0);
+				decision = cls == CLASS_SKIP ? MEMO_SKIP
+					: cls == CLASS_VANILLA_NON_EMPTY ? MEMO_VANILLA
+					: cls == CLASS_EVALUATE ? MEMO_EVALUATE
+					: MEMO_MODDED;
+				memoStates[slot] = state;
+				memoDecisions[slot] = decision;
+			}
+			lastMemoState = state;
+			lastMemoDecision = decision;
+			return decision;
+		}
 
 		void reset(SectionPos sectionPos, RenderSectionRegion region, BlockStateModelSet blockModels, boolean skip, boolean sprites) {
 			this.region = region;
@@ -184,6 +317,7 @@ public final class FastSectionCompiler {
 			this.trackSprites = sprites;
 			this.maskBuilt = false;
 			this.untracked = false;
+			clearMemo();
 			this.generation = VisibleSpriteTracker.generation();
 			this.spriteCount = 0;
 			if (spriteStamp.length < generation.count) {
@@ -245,16 +379,35 @@ public final class FastSectionCompiler {
 			if (!buried && !trackSprites) {
 				return false;
 			}
-			BlockStateModel model = blockModels.get(state);
-			boolean vanilla = VANILLA_MODEL.get(model.getClass());
-			if (buried && vanilla && hasOnlyCulledQuads(model, state, pos)) {
-				return true;
+			byte decision = memoDecision(state);
+			BlockStateModel model = null;
+			if (buried) {
+				if (decision == MEMO_SKIP) {
+					// Every seed of this baked model graph emits zero unculled quads, so the
+					// fully-buried block tessellates to nothing without any per-position work.
+					return true;
+				}
+				if (decision == MEMO_EVALUATE) {
+					model = blockModels.get(state);
+					if (hasOnlyCulledQuads(model, state, pos)) {
+						return true;
+					}
+				}
+				// MEMO_VANILLA provably has unculled quads and MEMO_MODDED may emit via Fabric's
+				// emitQuads path; both must tessellate normally.
 			}
 			if (trackSprites) {
-				if (!vanilla) {
+				if (decision == MEMO_MODDED) {
 					untracked = true;
-				} else if (model.hasMaterialFlag(BakedQuad.FLAG_ANIMATED)) {
-					collectAnimatedSprites(model, state, pos);
+				} else {
+					// Vanilla model graphs (including MEMO_SKIP: exposed directional faces can
+					// still be animated when the block is not fully buried).
+					if (model == null) {
+						model = blockModels.get(state);
+					}
+					if (model.hasMaterialFlag(BakedQuad.FLAG_ANIMATED)) {
+						collectAnimatedSprites(model, state, pos);
+					}
 				}
 			}
 			return false;
@@ -318,8 +471,15 @@ public final class FastSectionCompiler {
 			random.setSeed(state.getSeed(pos));
 			model.collectParts(random, list);
 			try {
+				// Empty part lists must NOT count as skippable: a Fabric model can emit unculled
+				// quads via emitQuads while collectParts returns nothing.
+				if (list.isEmpty()) {
+					return false;
+				}
 				for (int i = 0, n = list.size(); i < n; i++) {
-					if (!list.get(i).getQuads(null).isEmpty()) {
+					// Reject Fabric MeshQuadCollection-backed parts: they report empty getQuads(null)
+					// but emit real geometry through the Renderer API mesh path.
+					if (!isOnlyCulledVanillaPart(list.get(i))) {
 						return false;
 					}
 				}
@@ -364,6 +524,8 @@ public final class FastSectionCompiler {
 		public void finish(SectionCompiler.@Nullable Results results) {
 			region = null;
 			blockModels = null;
+			// Release memo state even when reset() is skipped (abnormal compile exits).
+			clearMemo();
 			VisibleSpriteTracker.Generation g = generation;
 			generation = null;
 			if (!trackSprites || g == null) {

@@ -37,6 +37,15 @@ public final class EphemeraFramePacer {
 		void parkNanos(long nanos);
 		void onSpinWait();
 		boolean isInterrupted();
+
+		/**
+		 * True when {@code parkNanos} wakes through a sub-100 us precision source (Windows
+		 * high-resolution waitable timer) rather than the coarse OS scheduler tick, letting the
+		 * overshoot-estimate floor and reserve pad shrink so capped frames spin far less.
+		 */
+		default boolean preciseWakeSource() {
+			return false;
+		}
 	}
 
 	private static final WaitOps SYSTEM_OPS = new WaitOps() {
@@ -346,7 +355,7 @@ public final class EphemeraFramePacer {
 			return 0L;
 		}
 		headWaitedThisFrame = true;
-		return waitUntil(deadline, configuredSpinTailMicros, captureMode);
+		return waitUntil(deadline, configuredSpinTailMicros, captureMode, 1_000_000_000L / targetFps);
 	}
 
 	/**
@@ -487,6 +496,10 @@ public final class EphemeraFramePacer {
 			return;
 		}
 		long overshoot = actualNanos - requestedNanos;
+		// Precise wake sources (Win32 hi-res waitable timer, ~50 us jitter) can decay far below the
+		// conservative LockSupport floor without trading away wake accuracy; the fast-attack path
+		// still raises the estimate within 1-2 frames if wake precision degrades.
+		double floorNs = ops.preciseWakeSource() ? 80_000.0 : 200_000.0;
 		if (overshoot > 0L) {
 			long clamped = Math.min(overshoot, MAX_RESERVE_NS);
 			if (clamped > overshootEstimateNs) {
@@ -496,7 +509,7 @@ public final class EphemeraFramePacer {
 			}
 		} else {
 			// Early or exact wake: relax slowly so one quiet burst never drops below OS wake jitter.
-			overshootEstimateNs = Math.max(200_000.0, overshootEstimateNs * 0.992);
+			overshootEstimateNs = Math.max(floorNs, overshootEstimateNs * 0.992);
 		}
 	}
 
@@ -518,8 +531,14 @@ public final class EphemeraFramePacer {
 			long res = Math.min(MAX_RESERVE_NS, Math.max(CAPTURE_MIN_RESERVE_NS, baseSpinNs));
 			return periodNs > 0L ? Math.min(res, Math.max(CAPTURE_MIN_RESERVE_NS, (periodNs * 2L) / 5L)) : res;
 		}
-		long adaptive = Math.round(overshootEstimateNs * 1.25) + 180_000L;
-		long chosen = Math.max(baseSpinNs, adaptive);
+		// Precise wake sources need a much smaller safety pad; also clamp the user-configured spin
+		// tail to a sane fraction of the frame period so a large setting cannot inflate the reserve
+		// beyond what the adaptive estimate actually requires at high FPS caps.
+		boolean precise = ops.preciseWakeSource();
+		long padNs = precise ? 100_000L : 180_000L;
+		long adaptive = Math.round(overshootEstimateNs * 1.25) + padNs;
+		long spinNs = periodNs > 0L ? Math.min(baseSpinNs, periodNs / 5L) : baseSpinNs;
+		long chosen = Math.max(spinNs, adaptive);
 		long maxForPeriod = periodNs > 0L
 			? Math.min(MAX_RESERVE_NS, Math.max(MIN_RESERVE_NS, (periodNs * 3L) / 5L))
 			: MAX_RESERVE_NS;

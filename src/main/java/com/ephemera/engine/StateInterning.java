@@ -182,6 +182,22 @@ public final class StateInterning {
 	}
 
 	private static int hashVoxelShape(VoxelShape value) {
+		// The mixin-applied cache makes repeat probes (and collision re-checks of stored shapes)
+		// allocation-free; a cached hash is consistent with equalsVoxelShape so it is also usable
+		// as a fast-reject there. 0 is the uncomputed sentinel (recompute on the rare collision).
+		if (value instanceof ShapeHashCache cacheable) {
+			int cached = cacheable.ephemera$cachedShapeHash();
+			if (cached != 0) {
+				return cached;
+			}
+			int computed = computeShapeHash(value);
+			cacheable.ephemera$setCachedShapeHash(computed);
+			return computed;
+		}
+		return computeShapeHash(value);
+	}
+
+	private static int computeShapeHash(VoxelShape value) {
 		int h = value.getClass().hashCode();
 		h = 31 * h + value.toAabbs().hashCode();
 		for (Axis axis : AXES) {
@@ -193,6 +209,13 @@ public final class StateInterning {
 	private static boolean equalsVoxelShape(VoxelShape a, VoxelShape b) {
 		if (a.getClass() != b.getClass()) {
 			return false;
+		}
+		if (a instanceof ShapeHashCache cacheA && b instanceof ShapeHashCache cacheB) {
+			int hashA = cacheA.ephemera$cachedShapeHash();
+			int hashB = cacheB.ephemera$cachedShapeHash();
+			if (hashA != 0 && hashB != 0 && hashA != hashB) {
+				return false;
+			}
 		}
 		List<AABB> aBoxes = a.toAabbs();
 		List<AABB> bBoxes = b.toAabbs();

@@ -3,6 +3,7 @@ package com.ephemera.mixin.client.engine;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.engine.client.ClientChunkCacheFastAccess;
 import com.ephemera.engine.client.ClientChunkStorageFastLookup;
+import com.ephemera.engine.common.EntityClassIndex;
 import com.ephemera.engine.common.FastChunkLookup;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -30,22 +31,6 @@ abstract class ClientLevelTickFastMixin implements FastChunkLookup {
 	@Shadow @Final private ClientChunkCache chunkSource;
 	@Shadow protected abstract void tickPassenger(Entity vehicle, Entity passenger);
 
-	@Unique
-	private static final ClassValue<Boolean> EPHEMERA$IS_COLLIDABLE_ENTITY = new ClassValue<>() {
-		@Override
-		protected Boolean computeValue(Class<?> type) {
-			for (Class<?> c = type; c != null && c != Entity.class; c = c.getSuperclass()) {
-				for (var m : c.getDeclaredMethods()) {
-					String n = m.getName();
-					if ("canBeCollidedWith".equals(n) || "canCollideWith".equals(n)) {
-						return true;
-					}
-				}
-			}
-			return false;
-		}
-	};
-
 	@Unique private int ephemera$collidableEntities;
 
 	@Override
@@ -67,7 +52,7 @@ abstract class ClientLevelTickFastMixin implements FastChunkLookup {
 
 	@Inject(method = "addEntity", at = @At("RETURN"))
 	private void ephemera$onAddEntity(Entity entity, CallbackInfo ci) {
-		if (entity != null && EPHEMERA$IS_COLLIDABLE_ENTITY.get(entity.getClass())) {
+		if (entity != null && EntityClassIndex.canCollideOverride(entity.getClass())) {
 			this.ephemera$collidableEntities++;
 		}
 	}
@@ -76,7 +61,7 @@ abstract class ClientLevelTickFastMixin implements FastChunkLookup {
 	private void ephemera$onRemoveEntity(int id, Entity.RemovalReason reason, CallbackInfo ci) {
 		if (this.ephemera$collidableEntities > 0) {
 			Entity existing = ((ClientLevel) (Object) this).getEntity(id);
-			if (existing != null && EPHEMERA$IS_COLLIDABLE_ENTITY.get(existing.getClass())) {
+			if (existing != null && EntityClassIndex.canCollideOverride(existing.getClass())) {
 				this.ephemera$collidableEntities--;
 			}
 		}

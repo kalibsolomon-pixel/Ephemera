@@ -46,7 +46,8 @@
     "TrackedEntityFastMixin",
     "UtilWorkerPriorityMixin",
     "VarIntFastMixin",
-    "VarLongFastMixin"
+    "VarLongFastMixin",
+    "VoxelShapeHashMixin"
   ],
   "injectors": {
     "defaultRequire": 1

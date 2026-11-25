@@ -87,6 +87,7 @@
     "terrain.RotatingSectionStorageFastMixin",
     "terrain.SectionCopyFastMixin",
     "terrain.SectionDirtyStateEpochMixin",
+    "terrain.SectionOcclusionGraphDigestMixin",
     "terrain.SectionOcclusionGraphExecutorMixin",
     "terrain.SectionUpdateTrackerFastMixin",
     "terrain.TerrainCompilePacingMixin",

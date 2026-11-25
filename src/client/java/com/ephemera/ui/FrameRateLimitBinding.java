@@ -94,6 +94,6 @@ final class FrameRateLimitBinding extends Binding<Integer> {
 		if (value == null || value <= FrameRateLimitPolicy.UNLIMITED) {
 			return Component.translatable("options.framerateLimit.max");
 		}
-		return Component.translatable("options.fps", value);
+		return Component.translatable("options.framerate", value);
 	}
 }

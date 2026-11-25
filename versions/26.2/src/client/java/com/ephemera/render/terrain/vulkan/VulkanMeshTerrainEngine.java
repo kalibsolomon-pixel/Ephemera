@@ -151,6 +151,15 @@ public final class VulkanMeshTerrainEngine {
 		return ((CommandEncoderBackendAccessor) encoder).ephemera$backend() instanceof VulkanEncoderBridge;
 	}
 
+	/**
+	 * True once the engine has permanently failed and fallen back. Cheaper than
+	 * {@link #isAvailable()} for mid-loop bail-outs: availability can only drop while iterating
+	 * visible sections when {@code uploadSection} fails inside the engine.
+	 */
+	public boolean isFailed() {
+		return failed;
+	}
+
 	public boolean usesTaskShader() {
 		return taskShaderMode;
 	}

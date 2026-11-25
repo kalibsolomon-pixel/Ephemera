@@ -23,7 +23,7 @@ public final class EphemeraConfig {
 	public boolean terrainVulkanMeshShaders = true;
 	public boolean terrainVulkanGpuCulling = true;
 	public boolean terrainFastFrustumAndGrid = true;
-	public int chunkBuilderThreads = 0; // 0 = auto tuned to CPU topology
+	public int chunkBuilderThreads = 0; // 0 = vanilla shared background executor; 1-32 = dedicated chunk-build pool (applies on world reload)
 	public int maxSectionUploadsPerFrameMs = 4;
 
 	// --- Backend Dispatch Optimization (OpenGL + Native Vulkan) ---

@@ -58,6 +58,7 @@ public final class Win32DisplayRuntime {
 	private static final int CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
 	private static final int TIMER_WAIT_ACCESS = 0x00100002; // SYNCHRONIZE | TIMER_MODIFY_STATE
 	private static final long WAIT_OBJECT_0 = 0L;
+	private static final long WAIT_TIMEOUT = 0x102L;
 
 	private static final long BORDERLESS_STRIP_STYLE =
 		(long) (User32.WS_CAPTION | User32.WS_THICKFRAME | User32.WS_BORDER | User32.WS_DLGFRAME
@@ -250,14 +251,35 @@ public final class Win32DisplayRuntime {
 			if (ticks100ns <= 0L) {
 				return true;
 			}
+			// Frame pacing never produces parks beyond ~2 s (caps are clamped to >= 10 FPS), so
+			// deadline bookkeeping is lazy: no extra nanoTime read on the per-frame path.
+			long deadline = nanos > 1_900_000_000L ? System.nanoTime() + nanos : 0L;
 			MemoryUtil.memPutLong(dueTimeAddr, -ticks100ns);
 			int ok = JNI.invokePPPPI(handle, dueTimeAddr, 0, 0L, 0L, 0, pSetWaitableTimer);
 			if (ok == 0) {
 				return false;
 			}
-			int timeoutMs = (int) Math.min(2000L, Math.max(10L, (nanos / 1_000_000L) + 50L));
-			int waitRes = JNI.invokePI(handle, timeoutMs, pWaitForSingleObject);
-			return (waitRes & 0xFFFFFFFFL) == WAIT_OBJECT_0;
+			// The armed one-shot timer fires at the exact deadline, so the wait normally returns
+			// via signal; the timeout is only a tight safety net (was: +50 ms with a 10 ms floor,
+			// which could park the render thread tens of milliseconds on a timer-path misfire).
+			// On a >2 s chunk timeout the timer is still armed, so just wait on it again without
+			// re-setting it; any other anomaly reports failure so the caller falls back to
+			// LockSupport.parkNanos for whatever is left.
+			long remainingNanos = nanos;
+			while (true) {
+				long timeoutMs = Math.min(2000L, Math.max(1L, remainingNanos / 1_000_000L + 2L));
+				int waitRes = JNI.invokePI(handle, (int) timeoutMs, pWaitForSingleObject);
+				if ((waitRes & 0xFFFFFFFFL) == WAIT_OBJECT_0) {
+					return true;
+				}
+				if ((waitRes & 0xFFFFFFFFL) != WAIT_TIMEOUT || timeoutMs < 2000L) {
+					return false;
+				}
+				remainingNanos = deadline - System.nanoTime();
+				if (remainingNanos <= 0L) {
+					return true;
+				}
+			}
 		}
 
 		@Override

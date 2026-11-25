@@ -133,12 +133,34 @@ public final class ParticleCullingManager {
         lastQuadStandard = standard;
         return standard;
     }
-    public static Quaternionf rotation(SingleQuadParticle particle) {
-        Quaternionf reused = tryReuseRotation(particle);
-        return reused != null ? reused : new Quaternionf();
-    }
+    /**
+     * Rotation reuse is safe for particle classes that do not override {@code
+     * extractRotatedQuad}: vanilla fills the quaternion (FacingCameraMode.setRotation) and
+     * consumes it within extract, so nothing escapes. An overriding subclass could stash or
+     * recursively extract the shared instance beyond that window, so it keeps a private one.
+     */
+    private static final ClassValue<Boolean> SAFE_ROTATION_REUSE = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            for (Class<?> c = type; c != null && c != SingleQuadParticle.class; c = c.getSuperclass()) {
+                for (var m : c.getDeclaredMethods()) {
+                    if ("extractRotatedQuad".equals(m.getName())) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    };
     public static Quaternionf tryReuseRotation(SingleQuadParticle particle) {
-        if (!isCullingEnabled() || !isStandardQuad(particle.getClass())) {
+        // Rotation reuse needs only the absence of an extractRotatedQuad override: vanilla fills
+        // the handed quaternion via FacingCameraMode.setRotation (a SET contract) and consumes it
+        // within extract, and every handout re-identities first — so even an incrementally
+        // mutating mode starts from identity exactly like a fresh instance. A subclass that
+        // overrides extractRotatedQuad could stash the reference beyond that window, so it keeps
+        // a private instance. Deliberately independent of the isStandardQuad culling-envelope
+        // gate, which guards particle size assumptions instead.
+        if (!SAFE_ROTATION_REUSE.get(particle.getClass())) {
             return null;
         }
         Thread cur = Thread.currentThread();

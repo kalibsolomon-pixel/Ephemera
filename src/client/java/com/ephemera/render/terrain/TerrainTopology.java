@@ -21,6 +21,18 @@ public final class TerrainTopology {
 	private static final AtomicLong DIRTY_SECTIONS = new AtomicLong(1L);
 	private static volatile long visibleSections;
 
+	// Content digest of the freshly refilled visibleSections list, maintained incrementally by
+	// SectionOcclusionGraphDigestMixin as applyFrustum's visitor appends and reset by
+	// TerrainLevelRendererChunkBatchMixin at each clearVisibleSections. Lets the extractor's
+	// clean-frame skip compare list CONTENT (which survives rotation-only frames) instead of the
+	// per-refill epoch (which every rotation frame defeats). Two independent 64-bit rolled mixes
+	// of the packed section node (never object identity: RotatingSectionStorage recycles
+	// RenderSection instances in place), plus the size. Render-thread confined; consumers must
+	// check via MixinHealth that both contributing mixins actually applied before trusting it.
+	public static long visibleSectionsDigest1;
+	public static long visibleSectionsDigest2;
+	public static int visibleSectionsDigestSize;
+
 	private TerrainTopology() {}
 
 	public static long topology() {
@@ -37,6 +49,9 @@ public final class TerrainTopology {
 
 	public static void bumpVisibleSections() {
 		visibleSections++;
+		visibleSectionsDigest1 = 0L;
+		visibleSectionsDigest2 = 0L;
+		visibleSectionsDigestSize = 0;
 	}
 
 	public static long dirtySections() {

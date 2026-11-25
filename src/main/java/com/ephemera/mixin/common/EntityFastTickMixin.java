@@ -1,6 +1,7 @@
 package com.ephemera.mixin.common;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.engine.common.EntityClassIndex;
 import com.ephemera.engine.common.FastChunkLookup;
 import com.ephemera.engine.common.FastCubeCollision;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -55,37 +56,6 @@ abstract class EntityFastTickMixin {
 	@Unique
 	private static final double EPHEMERA$SINGLE_STEP_DIST_SQR = 0.9999900000002526 * 0.9999900000002526;
 
-	@Unique
-	private static final ClassValue<Boolean> EPHEMERA$HAS_ENTITY_INSIDE = new ClassValue<>() {
-		@Override
-		protected Boolean computeValue(Class<?> type) {
-			for (Class<?> c = type; c != null && c != BlockBehaviour.class; c = c.getSuperclass()) {
-				for (var m : c.getDeclaredMethods()) {
-					if ("entityInside".equals(m.getName())) {
-						return true;
-					}
-				}
-			}
-			return false;
-		}
-	};
-
-	@Unique
-	private static final ClassValue<Boolean> EPHEMERA$CAN_COLLIDE_OVERRIDE = new ClassValue<>() {
-		@Override
-		protected Boolean computeValue(Class<?> type) {
-			for (Class<?> c = type; c != null && c != Entity.class; c = c.getSuperclass()) {
-				for (var m : c.getDeclaredMethods()) {
-					String n = m.getName();
-					if ("canCollideWith".equals(n) || "canBeCollidedWith".equals(n)) {
-						return true;
-					}
-				}
-			}
-			return false;
-		}
-	};
-
 	@WrapOperation(
 		method = "collide",
 		at = @At(
@@ -102,7 +72,7 @@ abstract class EntityFastTickMixin {
 		if (EphemeraCommon.config().engineFastCollisions
 			&& lvl instanceof FastChunkLookup lookup
 			&& !lookup.ephemera$hasCollidableEntities()
-			&& (entity == null || !EPHEMERA$CAN_COLLIDE_OVERRIDE.get(entity.getClass()))) {
+			&& (entity == null || !EntityClassIndex.canCollideOverride(entity.getClass()))) {
 			return List.of();
 		}
 		return original.call(lvl, entity, box);
@@ -274,7 +244,7 @@ abstract class EntityFastTickMixin {
 									continue;
 								}
 								if (!state.getFluidState().isEmpty()
-									|| EPHEMERA$HAS_ENTITY_INSIDE.get(state.getBlock().getClass())) {
+									|| EntityClassIndex.hasEntityInside(state.getBlock().getClass())) {
 									return;
 								}
 							}

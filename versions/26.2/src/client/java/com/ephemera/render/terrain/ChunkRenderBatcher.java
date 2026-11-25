@@ -855,7 +855,10 @@ public final class ChunkRenderBatcher {
 		if (meshEngine != null && (topology != lastMeshScanTopology || meshEpoch != lastMeshScanEpoch)) {
 			lastMeshScanTopology = topology;
 			lastMeshScanEpoch = meshEpoch;
-			for (int i = 0; i < size && meshEngine.isAvailable(); i++) {
+			// Probe full availability once (encoder bridge check); mid-scan only the permanent
+			// failure flag can flip, so keep per-section work to that cheap field read.
+			boolean meshAvailable = meshEngine.isAvailable();
+			for (int i = 0; i < size && meshAvailable && !meshEngine.isFailed(); i++) {
 				SectionRenderDispatcher.RenderSection section = (SectionRenderDispatcher.RenderSection) elements[i];
 				SectionMeshRenderCache cache = useSwapHook
 					? ((SectionMeshSwapHook) section).ephemera$compiledCache()
@@ -1332,11 +1335,14 @@ public final class ChunkRenderBatcher {
 	 * or queue completion, batched for distant terrain to avoid per-frame draw-plan thrash).
 	 */
 	private boolean drainPendingMeshUploads(VulkanMeshTerrainEngine meshEngine, int meshEpoch) {
+		if (!meshEngine.isAvailable()) {
+			return false;
+		}
 		boolean budgetActive = EphemeraPacerRuntime.beginFrameStreamingBudget();
 		FrameBudgetPacer budgetPacer = EphemeraPacerRuntime.budget();
 		int uploaded = 0;
 		boolean promotedNear = false;
-		while ((nearPendingCount | farPendingCount) != 0 && meshEngine.isAvailable()) {
+		while ((nearPendingCount | farPendingCount) != 0 && !meshEngine.isFailed()) {
 			boolean near = nearPendingCount > 0;
 			int priorityFloor = near ? 2 : 1;
 			if (budgetActive && !budgetPacer.allowStreamingWork(priorityFloor)) {

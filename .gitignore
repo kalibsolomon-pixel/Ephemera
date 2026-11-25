@@ -10,3 +10,6 @@ out/
 *.hprof
 __pycache__/
 *.pyc
+
+# Client run log archives
+logs/

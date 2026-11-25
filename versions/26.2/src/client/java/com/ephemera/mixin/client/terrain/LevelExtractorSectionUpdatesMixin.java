@@ -1,6 +1,7 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
 import com.ephemera.render.terrain.SectionUpdateTrackerFrameCache;
@@ -61,6 +62,12 @@ abstract class LevelExtractorSectionUpdatesMixin {
 	@Unique private long ephemera$lastCleanDirtyEpoch = Long.MIN_VALUE;
 	@Unique private long ephemera$lastCleanVisEpoch = Long.MIN_VALUE;
 	@Unique private int ephemera$lastCleanVisSize = -1;
+	// Content fingerprint of the visible list at the last clean scan; when the digest mixins are
+	// applied it replaces the (vEpoch, vSize) check so rotation frames whose refilled list is
+	// content-identical still skip the walk.
+	@Unique private long ephemera$lastCleanDigest1;
+	@Unique private long ephemera$lastCleanDigest2;
+	@Unique private int ephemera$lastCleanDigestSize;
 
 	@Unique private boolean ephemera$skipScan;
 	@Unique private long ephemera$dirtyEpochBefore;
@@ -73,6 +80,20 @@ abstract class LevelExtractorSectionUpdatesMixin {
 	@Unique private int ephemera$camSectionX;
 	@Unique private int ephemera$camSectionY;
 	@Unique private int ephemera$camSectionZ;
+	// Lazily allocated real region cache: vanilla allocates one per extract call, but only the
+	// first dirty section's createRegion ever uses it, so clean frames (including rotation frames
+	// whose walk still runs) need no allocation at all. Lives exactly one extract call.
+	@Unique private @Nullable RenderRegionCache ephemera$realRegionCache;
+
+	@Unique
+	private static boolean ephemera$digestActive() {
+		// Both contributors must be applied: the digest mixin maintains the rolling hashes and
+		// TerrainLevelRendererChunkBatchMixin resets them at every clearVisibleSections. Zero
+		// allocation (MixinHealth.applied() wraps a fresh unmodifiable set per call).
+		return MixinHealth.isApplied("SectionOcclusionGraphDigestMixin")
+			&& MixinHealth.isApplied("TerrainLevelRendererChunkBatchMixin")
+			&& !MixinHealth.hasFailed("SectionOcclusionGraphDigestMixin");
+	}
 
 	@WrapOperation(
 		method = "extract",
@@ -89,13 +110,21 @@ abstract class LevelExtractorSectionUpdatesMixin {
 		this.ephemera$visEpochBefore = vEpoch;
 		this.ephemera$visSizeBefore = vSize;
 		this.ephemera$sawDirty = false;
+		// The cache is per-extract-call state (section copy snapshots); drop last call's instance.
+		this.ephemera$realRegionCache = null;
 
+		boolean digestActive = ephemera$digestActive();
+		boolean cleanList = digestActive
+			? TerrainTopology.visibleSectionsDigest1 == this.ephemera$lastCleanDigest1
+				&& TerrainTopology.visibleSectionsDigest2 == this.ephemera$lastCleanDigest2
+				&& TerrainTopology.visibleSectionsDigestSize == this.ephemera$lastCleanDigestSize
+				&& TerrainTopology.visibleSectionsDigestSize == vSize
+			: vEpoch == this.ephemera$lastCleanVisEpoch && vSize == this.ephemera$lastCleanVisSize;
 		if (EphemeraCommon.config().terrainFastFrustumAndGrid
 			&& this.sectionUpdateTracker != null
 			&& this.sectionUpdateTracker == this.ephemera$lastCleanTracker
 			&& dEpoch == this.ephemera$lastCleanDirtyEpoch
-			&& vEpoch == this.ephemera$lastCleanVisEpoch
-			&& vSize == this.ephemera$lastCleanVisSize) {
+			&& cleanList) {
 			this.ephemera$skipScan = true;
 			this.ephemera$streamingBudgetActive = false;
 			return EPHEMERA$EMPTY_CACHE;
@@ -120,7 +149,8 @@ abstract class LevelExtractorSectionUpdatesMixin {
 			this.ephemera$reserveVulkanUploadSlice = false;
 			this.ephemera$nearPriorityFloor = EPHEMERA$NEAR_FLOOR_UNCAPPED;
 		}
-		return original.call();
+		// No cache allocation here: it happens lazily on the first dirty section's createRegion.
+		return EPHEMERA$EMPTY_CACHE;
 	}
 
 	@SuppressWarnings({"rawtypes", "unchecked"})
@@ -136,6 +166,35 @@ abstract class LevelExtractorSectionUpdatesMixin {
 			return ObjectIterators.EMPTY_ITERATOR;
 		}
 		return original.call(list);
+	}
+
+	@WrapOperation(
+		method = "extract",
+		at = @At(
+			value = "INVOKE",
+			target = "Lnet/minecraft/client/renderer/chunk/RenderRegionCache;createRegion(Lnet/minecraft/client/multiplayer/ClientLevel;J)Lnet/minecraft/client/renderer/chunk/RenderSectionRegion;"
+		)
+	)
+	private RenderSectionRegion ephemera$trackRegionSnapshot(
+		RenderRegionCache cache,
+		ClientLevel level,
+		long sectionNode,
+		Operation<RenderSectionRegion> original
+	) {
+		if (cache == EPHEMERA$EMPTY_CACHE) {
+			// First dirty section this frame: allocate the real cache now (clean frames never do).
+			cache = this.ephemera$realRegionCache;
+			if (cache == null) {
+				cache = this.ephemera$realRegionCache = new RenderRegionCache();
+			}
+		}
+		if (!this.ephemera$streamingBudgetActive) {
+			return original.call(cache, level, sectionNode);
+		}
+		long t0 = System.nanoTime();
+		RenderSectionRegion region = original.call(cache, level, sectionNode);
+		EphemeraPacerRuntime.budget().recordStreamingWork(System.nanoTime() - t0);
+		return region;
 	}
 
 	@ModifyExpressionValue(
@@ -166,33 +225,16 @@ abstract class LevelExtractorSectionUpdatesMixin {
 		return pacer.allowSnapshotStreamingWork(floor, this.ephemera$reserveVulkanUploadSlice);
 	}
 
-	@WrapOperation(
-		method = "extract",
-		at = @At(
-			value = "INVOKE",
-			target = "Lnet/minecraft/client/renderer/chunk/RenderRegionCache;createRegion(Lnet/minecraft/client/multiplayer/ClientLevel;J)Lnet/minecraft/client/renderer/chunk/RenderSectionRegion;"
-		)
-	)
-	private RenderSectionRegion ephemera$trackRegionSnapshot(
-		RenderRegionCache cache,
-		ClientLevel level,
-		long sectionNode,
-		Operation<RenderSectionRegion> original
-	) {
-		if (!this.ephemera$streamingBudgetActive) {
-			return original.call(cache, level, sectionNode);
-		}
-		long t0 = System.nanoTime();
-		RenderSectionRegion region = original.call(cache, level, sectionNode);
-		EphemeraPacerRuntime.budget().recordStreamingWork(System.nanoTime() - t0);
-		return region;
-	}
-
 	@Inject(
 		method = "extract",
 		at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/extract/LevelExtractor;extractVisibleEntities(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/culling/Frustum;Lnet/minecraft/client/DeltaTracker;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V")
 	)
 	private void ephemera$recordCleanScan(CallbackInfo ci) {
+		// All createRegion calls of this frame happened before extractVisibleEntities, so the
+		// per-call cache dies here — strictly earlier than vanilla's local going out of scope at
+		// extract return, and unconditionally (even on skip frames or after disconnect when the
+		// sectionUpdates block never ran), so nothing pins the section-copy map.
+		this.ephemera$realRegionCache = null;
 		if (this.ephemera$skipScan) {
 			return;
 		}
@@ -204,6 +246,9 @@ abstract class LevelExtractorSectionUpdatesMixin {
 			this.ephemera$lastCleanDirtyEpoch = this.ephemera$dirtyEpochBefore;
 			this.ephemera$lastCleanVisEpoch = this.ephemera$visEpochBefore;
 			this.ephemera$lastCleanVisSize = this.ephemera$visSizeBefore;
+			this.ephemera$lastCleanDigest1 = TerrainTopology.visibleSectionsDigest1;
+			this.ephemera$lastCleanDigest2 = TerrainTopology.visibleSectionsDigest2;
+			this.ephemera$lastCleanDigestSize = TerrainTopology.visibleSectionsDigestSize;
 		} else {
 			this.ephemera$lastCleanTracker = null;
 		}

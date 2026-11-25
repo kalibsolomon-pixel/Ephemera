@@ -54,6 +54,30 @@ public final class FastQuadWriter {
 
 	private FastQuadWriter() {}
 
+	// Per-run direction caches for writeSheetedDecalRun (never escape the method). Reachable from
+	// chunk-builder worker threads (item-frame glint bakes during section compile) as well as the
+	// render thread, so mirror the FastCuboidWriter dual pattern: render-thread static + ThreadLocal.
+	private static final class DecalScratch {
+		final int[] cachedNormal = new int[6];
+		final int[] cachedDecalOrd = new int[6];
+	}
+
+	private static final DecalScratch RENDER_DECAL_SCRATCH = new DecalScratch();
+	private static final ThreadLocal<DecalScratch> DECAL_SCRATCH = ThreadLocal.withInitial(DecalScratch::new);
+	private static volatile Thread decalRenderThread;
+
+	private static DecalScratch decalScratch() {
+		Thread cur = Thread.currentThread();
+		if (cur == decalRenderThread) {
+			return RENDER_DECAL_SCRATCH;
+		}
+		if (decalRenderThread == null && com.mojang.blaze3d.systems.RenderSystem.isOnRenderThread()) {
+			decalRenderThread = cur;
+			return RENDER_DECAL_SCRATCH;
+		}
+		return DECAL_SCRATCH.get();
+	}
+
 	public static boolean write(VertexConsumer consumer, PoseStack.Pose pose, BakedQuad quad, QuadInstance instance) {
 		return pose != null && write(consumer, pose, 0, 0, 0, quad, instance);
 	}
@@ -496,8 +520,9 @@ public final class FastQuadWriter {
 
 		// Lazily cache per-cardinal-direction packed normal and projected decal face ordinal (max 6 entries).
 		int dirMask = 0;
-		int[] cachedNormal = new int[6];
-		int[] cachedDecalOrd = new int[6];
+		DecalScratch sc = decalScratch();
+		int[] cachedNormal = sc.cachedNormal;
+		int[] cachedDecalOrd = sc.cachedDecalOrd;
 
 		for (int qIdx = start; qIdx < end; qIdx++) {
 			BakedQuad quad = quads.get(qIdx);

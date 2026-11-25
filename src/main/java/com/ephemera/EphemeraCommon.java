@@ -2,6 +2,7 @@ package com.ephemera;
 
 import com.ephemera.core.config.ConfigStore;
 import com.ephemera.core.config.EphemeraConfig;
+import com.ephemera.engine.common.EntityClassIndex;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
@@ -42,6 +43,12 @@ public final class EphemeraCommon implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		config();
+		// Warm the collision fast-path class indexes off the ticking thread when the fast paths
+		// are enabled; blocks registered later by other mods fall back to lazy population on
+		// first use.
+		if (config().engineFastCollisions) {
+			EntityClassIndex.prepopulate();
+		}
 		String mc = FabricLoader.getInstance().getModContainer("minecraft")
 			.map(m -> m.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
 		LOGGER.info("Ephemera common engine initialized (mc {})", mc);

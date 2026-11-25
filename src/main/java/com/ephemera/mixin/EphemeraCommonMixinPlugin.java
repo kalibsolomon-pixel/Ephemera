@@ -59,7 +59,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 	protected boolean isConfigEnabled(String simpleName, EphemeraConfig cfg) {
 		return switch (simpleName) {
 			case "BlockStateCacheMixin", "BlockStateMixin", "StateHolderMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
-			case "BlockShapeMixin", "ArrayVoxelShapeMixin" -> cfg.memoryDeduplicateShapes;
+			case "BlockShapeMixin", "ArrayVoxelShapeMixin", "VoxelShapeHashMixin" -> cfg.memoryDeduplicateShapes;
 			case "CompactTrigMixin" -> cfg.engineFastMath;
 			case "ChunkModuloMixin", "LevelChunkIndexMixin", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin",
 				 "FlowingFluidFastMixin", "EntityFluidInteractionFastMixin", "EntityFluidTrackerMixin",
@@ -88,6 +88,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("BlockStateMixin", "ferritecore");
 		registerYield("StateHolderMixin", "ferritecore");
 		registerYield("ArrayVoxelShapeMixin", "ferritecore");
+		registerYield("VoxelShapeHashMixin", "ferritecore", "lithium", "radium", "canary");
 		registerYield("BlockShapeMixin", "ferritecore", "lithium", "radium", "canary");
 		registerYield("CompactTrigMixin", "lithium", "radium", "canary");
 		registerYield("ChunkModuloMixin", "lithium", "radium", "canary");

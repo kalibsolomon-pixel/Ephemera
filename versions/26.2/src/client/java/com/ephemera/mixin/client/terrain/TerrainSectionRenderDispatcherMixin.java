@@ -20,6 +20,7 @@ import net.minecraft.client.renderer.chunk.SectionCompiler;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -27,6 +28,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -39,13 +45,18 @@ import java.util.function.Consumer;
 public abstract class TerrainSectionRenderDispatcherMixin implements SectionDispatcherEpoch {
 	@Shadow @Final private Map<ChunkSectionLayer, Object> chunkUberBuffers;
 	@Shadow @Final private StagingBuffer stagingBuffer;
+	@Shadow @Final @Mutable private TracingExecutor executor;
 
 	@Unique private int ephemera$epoch;
 	@Unique private final ObjectOpenHashSet<Object> ephemera$deferredKeys = new ObjectOpenHashSet<>(64);
+	@Unique private ExecutorService ephemera$dedicatedChunkPool;
+
+	@Unique private static final AtomicLong EPHEMERA$CHUNK_BUILD_THREAD = new AtomicLong();
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$tagUberBuffers(TracingExecutor executor, RenderBuffers renderBuffers, SectionCompiler sectionCompiler,
 										 Consumer<SectionRenderDispatcher.RenderSection> onSectionMeshUpdate, CallbackInfo ci) {
+		ephemera$swapInConfiguredChunkBuilderPool();
 		int epoch = NEXT_EPOCH.getAndIncrement();
 		for (Map.Entry<ChunkSectionLayer, Object> entry : chunkUberBuffers.entrySet()) {
 			if (!(entry.getValue() instanceof TerrainSectionUberBuffersAccessor buffers)
@@ -58,6 +69,45 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 			index.ephemera$assignSlot(SectionMeshRenderCache.indexSlot(layer), epoch);
 		}
 		ephemera$epoch = epoch;
+	}
+
+	/**
+	 * Wires the {@code chunkBuilderThreads} setting: {@code 0} (auto) keeps vanilla's shared
+	 * {@code Util.backgroundExecutor()} unchanged, and {@code 1..32} swaps in a dedicated fixed
+	 * pool so chunk builds stop competing with worldgen/resource-load storms during streaming.
+	 * The ctor only stores the executor (no task was submitted yet), so swapping the final field
+	 * here is unobservable to any other reader. Threads run at {@code NORM_PRIORITY - 1} to match
+	 * the shared pool's {@code UtilWorkerPriorityMixin} policy (never preempting render/server
+	 * threads), and use {@link ThreadPoolExecutor.DiscardPolicy} because vanilla's
+	 * {@code runTask()} self-reschedules via {@code executor.execute(...)} after {@code dispose()}
+	 * without re-checking {@code closed} and escalates {@code RejectedExecutionException} into a
+	 * client crash — discarding instead keeps world switch / reload teardown safe.
+	 */
+	@Unique
+	private void ephemera$swapInConfiguredChunkBuilderPool() {
+		int configured = EphemeraCommon.config().chunkBuilderThreads;
+		if (configured <= 0) {
+			return; // auto: keep vanilla's shared background executor exactly
+		}
+		try {
+			int threads = Math.max(1, Math.min(configured, Runtime.getRuntime().availableProcessors()));
+			ThreadPoolExecutor pool = new ThreadPoolExecutor(threads, threads,
+				30L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(),
+				r -> {
+					Thread t = new Thread(r, "Ephemera-ChunkBuild-" + EPHEMERA$CHUNK_BUILD_THREAD.incrementAndGet());
+					t.setDaemon(true);
+					t.setPriority(Thread.NORM_PRIORITY - 1);
+					return t;
+				},
+				new ThreadPoolExecutor.DiscardPolicy());
+			pool.allowCoreThreadTimeOut(true);
+			this.ephemera$dedicatedChunkPool = pool;
+			this.executor = new TracingExecutor(pool);
+		} catch (Throwable t) {
+			// Fail-soft: keep vanilla's shared executor rather than breaking chunk building.
+			this.ephemera$dedicatedChunkPool = null;
+			EphemeraCommon.LOGGER.debug("Dedicated chunk builder pool unavailable: {}", t.toString());
+		}
 	}
 
 	@Inject(method = "uploadTerrainBuffersToGpu", at = @At("HEAD"), cancellable = true)
@@ -160,6 +210,13 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 	@Inject(method = "dispose", at = @At("HEAD"))
 	private void ephemera$releaseBatcher(CallbackInfo ci) {
 		ChunkRenderBatcher.get().release();
+		ExecutorService pool = ephemera$dedicatedChunkPool;
+		ephemera$dedicatedChunkPool = null;
+		if (pool != null) {
+			// Non-blocking: vanilla's shared executor is never shut down here, only our dedicated
+			// pool; daemon threads + DiscardPolicy make in-flight post-shutdown reschedules safe.
+			pool.shutdown();
+		}
 	}
 
 	@Override

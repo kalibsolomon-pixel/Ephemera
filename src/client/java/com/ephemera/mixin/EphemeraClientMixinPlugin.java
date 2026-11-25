@@ -38,6 +38,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			"SectionDirtyStateEpochMixin",
 			"SectionOcclusionGraphExecutorMixin",
 			"SectionUpdateTrackerFastMixin",
+			"SectionOcclusionGraphDigestMixin",
+			"SingleVariantAccessor",
 			"TerrainCompilePacingMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
@@ -59,7 +61,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			"TerrainUberGpuBufferHeapAccessor",
 			"TerrainUberGpuBufferMixin",
 			"VertexSortingFastMixin",
-			"VisGraphFastMixin"
+			"VisGraphFastMixin",
+			"WeightedVariantsAccessor"
 		};
 		for (String m : terrainMixins) {
 			registerYield(m, "sodium");
@@ -94,7 +97,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		}
 		for (String m : new String[] {
 			"BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-			"ItemFeatureRendererFastMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
+			"ItemFeatureRendererFastMixin", "ItemStackRenderStateLazyLayersMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
 			"QuadParticleFastWriteMixin", "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
 			"BakedSheetGlyphAccess", "GlyphEffectAccess"
 		}) {
@@ -217,7 +220,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 				cfg.backendVulkanModernGpu || cfg.terrainVulkanMeshShaders;
 			case "VulkanBufferViewMixin", "VulkanDirectBufferMixin" -> cfg.backendVulkanBufferViewCache;
 			case "BufferBuilderAccess", "ByteBufferBuilderAccess", "BufferBuilderFastWriteMixin",
-				 "ItemFeatureRendererFastMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
+				 "ItemFeatureRendererFastMixin", "ItemStackRenderStateLazyLayersMixin", "ModelPartCubeFastWriteMixin", "PoseStackPoseAccess",
 				 "QuadParticleFastWriteMixin", "SheetedDecalFastWriteMixin", "SpriteCoordinateExpanderFastWriteMixin",
 				 "BakedSheetGlyphAccess", "GlyphEffectAccess", "BakedSheetGlyphFastWriteMixin",
 				 "AuroraSdfCellMixin", "AuroraSdfInstanceFastMixin", "AuroraWorldLineFastMixin" ->
