@@ -85,7 +85,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("GlProgramTerrainBatchMixin", "sodium", "iris", "oculus", "vulkanmod");
 		for (String m : new String[] {
 			"CommandEncoderBackendAccessor", "RenderPassBackendAccessor",
-			"VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
+			"VulkanBackendMixin", "VulkanCommandEncoderMixin",
 			"VulkanGpuSurfaceMixin", "VulkanInstanceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
 			"VulkanRenderPassMixin", "VulkanRenderPassFormatsMixin",
 			"VulkanTextureBindingAccess", "VulkanBufferViewMixin", "VulkanDirectBufferMixin"
@@ -210,7 +210,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 				 "VertexArrayIdAccess" -> cfg.backendGlDispatchCache;
 			case "GlDeviceNoErrorMixin", "MinecraftGlDebugOptionsMixin", "WindowGlNoErrorMixin" -> cfg.backendGlNoErrorContext;
 			case "VulkanRenderPassMixin", "VulkanTextureBindingAccess" -> cfg.backendVulkanDispatchCache || cfg.terrainVulkanMeshShaders;
-			case "VulkanBackendMixin", "VulkanCommandEncoderMixin", "VulkanGlslCompilerMixin",
+			case "VulkanBackendMixin", "VulkanCommandEncoderMixin",
 				 "VulkanGpuSurfaceMixin", "VulkanQueueMixin", "VulkanTransientMemoryMixin",
 				 "VulkanRenderPassFormatsMixin",
 				 "CommandEncoderBackendAccessor", "RenderPassBackendAccessor" ->
