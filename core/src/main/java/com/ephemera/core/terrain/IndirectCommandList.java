@@ -1,9 +1,8 @@
 package com.ephemera.core.terrain;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /**
@@ -16,8 +15,6 @@ import java.util.Arrays;
 public final class IndirectCommandList {
 	public static final int INTS_PER_COMMAND = 5;
 	public static final int BYTES_PER_COMMAND = INTS_PER_COMMAND * Integer.BYTES;
-
-	private static final VarHandle NATIVE_INT = MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.nativeOrder());
 
 	private int[] data;
 	private int size;
@@ -155,14 +152,20 @@ public final class IndirectCommandList {
 	 */
 	public int writeTo(ByteBuffer out, int offset) {
 		int ints = size * INTS_PER_COMMAND;
-		if (offset < 0 || out.limit() - offset < ints * Integer.BYTES) {
-			throw new IllegalArgumentException("need " + ints * Integer.BYTES + " bytes at " + offset + ", limit " + out.limit());
+		int bytes = ints * Integer.BYTES;
+		if (offset < 0 || out.limit() - offset < bytes) {
+			throw new IllegalArgumentException("need " + bytes + " bytes at " + offset + ", limit " + out.limit());
 		}
-		int[] d = data;
-		int p = offset;
-		for (int i = 0; i < ints; i++, p += Integer.BYTES) {
-			NATIVE_INT.set(out, p, d[i]);
+		if (ints > 0) {
+			int pos = out.position();
+			if (pos == 0) {
+				MemorySegment.copy(data, 0, MemorySegment.ofBuffer(out), ValueLayout.JAVA_INT_UNALIGNED, offset, ints);
+			} else if (offset >= pos) {
+				MemorySegment.copy(data, 0, MemorySegment.ofBuffer(out), ValueLayout.JAVA_INT_UNALIGNED, offset - pos, ints);
+			} else {
+				MemorySegment.copy(data, 0, MemorySegment.ofBuffer(out.duplicate().clear()), ValueLayout.JAVA_INT_UNALIGNED, offset, ints);
+			}
 		}
-		return p;
+		return offset + bytes;
 	}
 }

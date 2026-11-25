@@ -3,6 +3,7 @@ package com.ephemera.mixin.client.backend;
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.render.BufferViewCache;
 import com.ephemera.render.backend.VulkanBufferViews;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Share;
@@ -41,6 +42,8 @@ abstract class VulkanDirectBufferMixin implements VulkanBufferViews {
 
 	@Unique private BufferViewCache ephemera$views;
 	@Unique private long ephemera$mappedPtr;
+	@Unique private ByteBuffer ephemera$cachedBuf;
+	@Unique private long ephemera$cachedOffset = -1L;
 
 	// The allocation runs before super(), so the constructor-local pointer is stored at return.
 	@WrapOperation(method = "<init>(Lcom/mojang/blaze3d/vulkan/VulkanDevice;Ljava/util/function/Supplier;IJZ)V",
@@ -77,12 +80,11 @@ abstract class VulkanDirectBufferMixin implements VulkanBufferViews {
 		ephemera$mappedPtr = mappedPtr.get();
 	}
 
-	@Inject(method = "map(JJZZ)Lcom/mojang/blaze3d/buffers/GpuBufferSlice$MappedView;",
-		at = @At("HEAD"), cancellable = true)
-	private void ephemera$mapPersistent(long offset, long length, boolean read, boolean write,
-			CallbackInfoReturnable<GpuBufferSlice.MappedView> cir) {
+	@WrapMethod(method = "map(JJZZ)Lcom/mojang/blaze3d/buffers/GpuBufferSlice$MappedView;")
+	private GpuBufferSlice.MappedView ephemera$mapPersistent(long offset, long length, boolean read, boolean write,
+			Operation<GpuBufferSlice.MappedView> original) {
 		if (ephemera$mappedPtr == 0L) {
-			return;
+			return original.call(offset, length, read, write);
 		}
 		if (isClosed()) {
 			throw new IllegalStateException("Buffer already closed");
@@ -110,9 +112,31 @@ abstract class VulkanDirectBufferMixin implements VulkanBufferViews {
 			throw new IllegalArgumentException("Offset or length must be positive integer values");
 		}
 
+		int len = (int) length;
+		ByteBuffer data;
+		PersistentUnmap unmap;
+		if (mappingRefCount == 0) {
+			ByteBuffer cached = ephemera$cachedBuf;
+			if (cached != null && ephemera$cachedOffset == offset && cached.capacity() >= len) {
+				cached.clear();
+				cached.limit(len);
+				data = cached;
+			} else {
+				// For offset == 0, wrap the entire buffer once so subsequent prefix maps reuse it without allocating.
+				int wrapLen = (offset == 0L && size <= Integer.MAX_VALUE) ? (int) size : len;
+				ByteBuffer wrapped = MemoryUtil.memByteBuffer(ephemera$mappedPtr + offset, wrapLen);
+				wrapped.limit(len);
+				ephemera$cachedBuf = wrapped;
+				ephemera$cachedOffset = offset;
+				data = wrapped;
+			}
+			unmap = new PersistentUnmap(this);
+		} else {
+			data = MemoryUtil.memByteBuffer(ephemera$mappedPtr + offset, len);
+			unmap = new PersistentUnmap(this);
+		}
 		mappingRefCount++;
-		ByteBuffer data = MemoryUtil.memByteBuffer(ephemera$mappedPtr + offset, (int) length);
-		cir.setReturnValue(new GpuBufferSlice.MappedView(self.slice(offset, length), data, new PersistentUnmap(this)));
+		return new GpuBufferSlice.MappedView(self.slice(offset, length), data, unmap);
 	}
 
 	@Unique
@@ -148,6 +172,8 @@ abstract class VulkanDirectBufferMixin implements VulkanBufferViews {
 	@Inject(method = "destroy", at = @At("HEAD"))
 	private void ephemera$destroyViews(CallbackInfo ci) {
 		ephemera$mappedPtr = 0L;
+		ephemera$cachedBuf = null;
+		ephemera$cachedOffset = -1L;
 		// close() queues this destroy() after submitted users retire. Views must die before the VkBuffer.
 		if (ephemera$views != null) {
 			VkDevice nativeDevice = device.vkDevice();

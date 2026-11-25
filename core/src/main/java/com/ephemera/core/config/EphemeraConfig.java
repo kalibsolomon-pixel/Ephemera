@@ -98,6 +98,8 @@ public final class EphemeraConfig {
 	public boolean framePacerLowLatency = true;
 	public boolean framePacerAdaptiveUploadBudget = true;
 	public int framePacerSpinTailMicros = 500;
+	/** Extended FPS limit for caps > 250 (260..300 step 10, 400..1000 step 100); 0 defers to vanilla option. */
+	public int extendedFpsLimit = 0;
 	public boolean unfocusedFpsLimitEnabled = false;
 	public int unfocusedFpsLimit = 30;
 

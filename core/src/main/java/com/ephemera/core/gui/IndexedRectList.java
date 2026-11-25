@@ -19,7 +19,7 @@ public final class IndexedRectList<T> extends ArrayList<T> {
 	}
 
 	private final BoundsSink<? super T> sink;
-	private final GuiBoundsIndex index = new GuiBoundsIndex(4);
+	private final GuiBoundsIndex index = new GuiBoundsIndex(16);
 	private int indexedModCount;
 
 	public IndexedRectList(BoundsSink<? super T> sink) {
@@ -58,6 +58,18 @@ public final class IndexedRectList<T> extends ArrayList<T> {
 			sink.addTo(get(i), index);
 		}
 		indexedModCount = modCount;
+	}
+
+	@Override
+	public void clear() {
+		super.clear();
+		index.clear();
+		indexedModCount = modCount;
+	}
+
+	/** Capacity of the backing rectangle index (used to skip pooling abnormally huge lists). */
+	public int indexBackingCapacity() {
+		return index.backingRectCapacity();
 	}
 
 	/** A shallow copy must not share this list's index. */

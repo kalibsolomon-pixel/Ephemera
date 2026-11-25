@@ -10,6 +10,7 @@
     "BiomeManagerFastMixin",
     "BlenderFastMixin",
     "BlendingDataFastMixin",
+    "CubicSplineFastMixin",
     "GradientNoiseFastMixin",
     "MaterialRuleContextPoolMixin",
     "MaterialSystemFastMixin",

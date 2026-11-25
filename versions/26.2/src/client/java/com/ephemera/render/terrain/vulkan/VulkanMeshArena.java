@@ -6,11 +6,13 @@ import com.ephemera.core.terrain.BakedSectionMeshlets;
 import com.ephemera.core.terrain.MeshletBaker;
 import com.ephemera.core.terrain.MeshletSlabAllocator;
 import com.ephemera.render.backend.VulkanEncoderBridge;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -108,6 +110,7 @@ final class VulkanMeshArena {
 	private int freeSlotCount;
 
 	private final DeferredFreeQueue[] deferRings = new DeferredFreeQueue[DEFER_FRAMES];
+	private final ConcurrentLinkedQueue<VulkanMeshSectionHandle> pendingOffThreadFrees = new ConcurrentLinkedQueue<>();
 	private int frameCounter;
 	private int arenaEpoch = 1;
 	private boolean closed;
@@ -205,6 +208,13 @@ final class VulkanMeshArena {
 			meshletAlloc.free(reclaim.meshletHandles[i]);
 		}
 		reclaim.count = 0;
+
+		// Drain off-thread mesh releases (e.g. worker empty-mesh CompileTask.doTask) into the current
+		// defer bucket so they wait the full DEFER_FRAMES frames without ever racing deferRings.
+		VulkanMeshSectionHandle offThread;
+		while ((offThread = pendingOffThreadFrees.poll()) != null) {
+			deferFreeSectionOnRenderThread(offThread);
+		}
 	}
 
 	/**
@@ -247,8 +257,10 @@ final class VulkanMeshArena {
 		int quadBase = MeshletSlabAllocator.offsetOf(qHandle);
 		int meshletBase = MeshletSlabAllocator.offsetOf(mHandle);
 
-		long quadBytes = (long) baked.quadWords.length * 4L;
-		long meshletBytes = (long) baked.meshletWords.length * 4L;
+		int quadWordCount = baked.quadWordCount();
+		int meshletWordCount = baked.meshletWordCount();
+		long quadBytes = (long) quadWordCount * 4L;
+		long meshletBytes = (long) meshletWordCount * 4L;
 		long totalStage = align16(quadBytes) + align16(meshletBytes) + SECTION_META_BYTES;
 		long stageBase = reserveStaging(encoder, totalStage);
 		if (stageBase < 0L) {
@@ -262,8 +274,8 @@ final class VulkanMeshArena {
 		long ptr = stage.mappedPtr + stageBase;
 
 		int[] qw = baked.quadWords;
-		if (qw.length > 0) {
-			MemoryUtil.memIntBuffer(ptr, qw.length).put(qw);
+		if (quadWordCount > 0) {
+			MemoryUtil.memIntBuffer(ptr, quadWordCount).put(qw, 0, quadWordCount);
 		}
 
 		long mStageOff = stageBase + align16(quadBytes);
@@ -394,7 +406,18 @@ final class VulkanMeshArena {
 	}
 
 	void deferFreeSection(VulkanMeshSectionHandle handle) {
-		if (closed || handle == null || handle.released || handle.arenaEpoch != arenaEpoch) {
+		if (handle == null) {
+			return;
+		}
+		if (!RenderSystem.isOnRenderThread()) {
+			pendingOffThreadFrees.add(handle);
+			return;
+		}
+		deferFreeSectionOnRenderThread(handle);
+	}
+
+	private void deferFreeSectionOnRenderThread(VulkanMeshSectionHandle handle) {
+		if (closed || handle.released || handle.arenaEpoch != arenaEpoch) {
 			return;
 		}
 		handle.released = true;
@@ -429,6 +452,7 @@ final class VulkanMeshArena {
 		for (DeferredFreeQueue q : deferRings) {
 			q.count = 0;
 		}
+		pendingOffThreadFrees.clear();
 		Arrays.fill(ringTasksVersion, 0L);
 		Arrays.fill(stagingIdleFrames, 0);
 		pendingStagingShrinkOnReset = true;
@@ -460,6 +484,7 @@ final class VulkanMeshArena {
 			return;
 		}
 		closed = true;
+		pendingOffThreadFrees.clear();
 		destroyBufDeferred(encoder, quadBuf);
 		destroyBufDeferred(encoder, meshletBuf);
 		destroyBufDeferred(encoder, sectionMetaBuf);

@@ -156,10 +156,13 @@ public final class ChunkRenderBatcher {
 	private int planAtlasHeight;
 	private boolean planTrackSprites;
 	private boolean planMeshActive;
+	private boolean planCamIndependent;
 	private boolean planSortTranslucent;
 	private long planFadeMs;
 	private boolean planSmoothFade;
 	private long lastSpriteStamp = Long.MIN_VALUE / 4;
+	private long lastMeshScanTopology = Long.MIN_VALUE;
+	private int lastMeshScanEpoch = Integer.MIN_VALUE;
 
 	// Per-frame camera, fog, and fade state.
 	private boolean fogCull;
@@ -225,7 +228,11 @@ public final class ChunkRenderBatcher {
 		plan.release();
 		instanceRing.close();
 		VulkanMeshTerrainEngine.get().resetSections();
+		com.ephemera.core.terrain.MeshletBaker.clearPool();
 		planValid = false;
+		planCamIndependent = false;
+		lastMeshScanTopology = Long.MIN_VALUE;
+		lastMeshScanEpoch = Integer.MIN_VALUE;
 		planDispatcher = null;
 		java.util.Arrays.fill(planSections, null);
 		if (planSections.length > 4096) {
@@ -415,7 +422,8 @@ public final class ChunkRenderBatcher {
 		if (!planValid || !TerrainFeatures.planReuse()
 			|| dispatcher != planDispatcher || epoch != planEpoch
 			|| planTopology != TerrainTopology.topology()
-			|| hasCamera != planHasCamera || camX != planCamX || camY != planCamY || camZ != planCamZ
+			|| hasCamera != planHasCamera
+			|| (!planCamIndependent && (camX != planCamX || camY != planCamY || camZ != planCamZ))
 			|| fogCull != planFogCull || Float.compare(envEnd, planEnvEnd) != 0 || Float.compare(rdEnd, planRdEnd) != 0
 			|| cullMask != planCullMask || atlasWidth != planAtlasWidth || atlasHeight != planAtlasHeight
 			|| trackSprites != planTrackSprites || meshActive != planMeshActive
@@ -524,9 +532,10 @@ public final class ChunkRenderBatcher {
 												  boolean meshActive, boolean dirCull, boolean sortTranslucent) {
 		long topology = TerrainTopology.topology();
 		planValid = false;
-		clearFading();
-		clearMeshFading();
-		clearPendingMeshUploads(false);
+		int prevFadingCount = fadingCount;
+		fadingCount = 0;
+		int prevMeshFadingCount = meshFadingCount;
+		meshFadingCount = 0;
 		meshSolidTaskCount = 0;
 		meshCutoutTaskCount = 0;
 		meshSectionCount = 0;
@@ -535,6 +544,9 @@ public final class ChunkRenderBatcher {
 		VulkanMeshTerrainEngine meshEngine = meshActive ? VulkanMeshTerrainEngine.get() : null;
 		boolean meshTaskMode = meshEngine != null && meshEngine.usesTaskShader();
 		int meshEpoch = meshEngine != null ? meshEngine.arenaEpoch() : -1;
+		if (meshEpoch != lastMeshScanEpoch) {
+			clearPendingMeshUploads(false);
+		}
 
 		instCount = 0;
 		plan.begin(sortTranslucent);
@@ -589,6 +601,81 @@ public final class ChunkRenderBatcher {
 		long effectiveFadeMs = frameEffectiveFadeMs;
 		boolean fadeEnabled = effectiveFadeMs > 0L;
 		boolean smoothFade = frameSmoothFade;
+		boolean usedCpuDirCull = false;
+
+		// Pre-upload newly compiled Vulkan mesh sections OUTSIDE dispatcher.lock() so chunk builder
+		// worker threads never block on VMA / staging-buffer copies (eliminates lock inversion spikes).
+		if (meshEngine != null && (topology != lastMeshScanTopology || meshEpoch != lastMeshScanEpoch)) {
+			lastMeshScanTopology = topology;
+			lastMeshScanEpoch = meshEpoch;
+			for (int i = 0; i < size && meshEngine.isAvailable(); i++) {
+				SectionRenderDispatcher.RenderSection section = (SectionRenderDispatcher.RenderSection) elements[i];
+				SectionMeshRenderCache cache = useSwapHook
+					? ((SectionMeshSwapHook) section).ephemera$compiledCache()
+					: (section.getSectionMesh() instanceof SectionMeshRenderCache c ? c : null);
+				if (cache == null) {
+					continue;
+				}
+				VulkanMeshSectionHandle existing = cache.ephemera$meshHandle();
+				if (existing != null && !existing.released && existing.arenaEpoch == meshEpoch) {
+					continue;
+				}
+				SectionLayout preLayout = cache.ephemera$layout();
+				if (preLayout == null || preLayout.meshlets == null) {
+					continue;
+				}
+				if (doFog) {
+					double fMinX = preLayout.sectionX - cxMin, fMaxX = preLayout.sectionX - cxMax;
+					double dx = fMinX > 0.0 ? fMinX : (fMaxX < 0.0 ? -fMaxX : 0.0);
+					double fMinZ = preLayout.sectionZ - czMin, fMaxZ = preLayout.sectionZ - czMax;
+					double dz = fMinZ > 0.0 ? fMinZ : (fMaxZ < 0.0 ? -fMaxZ : 0.0);
+					double horizSq = dx * dx + dz * dz;
+					if (checkRdFog && horizSq >= rdSq) {
+						continue;
+					}
+					double fMinY = preLayout.sectionY - cyMin, fMaxY = preLayout.sectionY - cyMax;
+					double dy = fMinY > 0.0 ? fMinY : (fMaxY < 0.0 ? -fMaxY : 0.0);
+					if ((checkRdFog && dy >= rdVal) || (checkEnvFog && horizSq + dy * dy >= envSq)) {
+						continue;
+					}
+				}
+				if (!streamingBudgetChecked) {
+					streamingBudgetActive = EphemeraPacerRuntime.beginFrameStreamingBudget();
+					streamingBudgetChecked = true;
+				}
+				float vis = fadeEnabled
+					? (useSwapHook
+						? ((SectionMeshSwapHook) section).ephemera$visibility(now, effectiveFadeMs, smoothFade)
+						: visibility(section, now))
+					: 1.0f;
+				double sdx = (preLayout.sectionX + 8.0) - cx;
+				double sdy = (preLayout.sectionY + 8.0) - cy;
+				double sdz = (preLayout.sectionZ + 8.0) - cz;
+				boolean near = (sdx * sdx + sdy * sdy + sdz * sdz) <= 2304.0;
+				int priorityFloor = near ? 2 : 1;
+				if (!streamingBudgetActive || budgetPacer.allowStreamingWork(priorityFloor)) {
+					long tUp = streamingBudgetActive ? System.nanoTime() : 0L;
+					VulkanMeshSectionHandle uploaded = meshEngine.uploadSection(preLayout.meshlets, vis);
+					if (streamingBudgetActive) {
+						budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
+					}
+					cache.ephemera$setMeshHandle(uploaded);
+					if (uploaded != null) {
+						long freed = preLayout.releaseCpuMeshlets();
+						if (freed > 0L) {
+							MemoryPressurePolicy.recordHeapReclaimed(freed);
+						}
+					}
+				} else {
+					enqueuePendingMeshUpload(cache, vis, near);
+				}
+			}
+			if (!meshEngine.isAvailable()) {
+				meshEngine = null;
+				meshActive = false;
+			}
+		}
+
 		dispatcher.lock();
 		try {
 			for (int i = 0; i < size; i++) {
@@ -652,34 +739,14 @@ public final class ChunkRenderBatcher {
 					if (h == null) {
 						layout = cache.ephemera$layout();
 						if (layout != null && layout.meshlets != null) {
-							if (!streamingBudgetChecked) {
-								streamingBudgetActive = EphemeraPacerRuntime.beginFrameStreamingBudget();
-								streamingBudgetChecked = true;
-							}
+							// Never run Vulkan VMA/staging mesh uploads while holding dispatcher.lock();
+							// defer any section that entered visibleSections without a topology bump to
+							// the unlocked frame-head drain while drawing its indexed mesh this frame.
 							double sdx = (layout.sectionX + 8.0) - cx;
 							double sdy = (layout.sectionY + 8.0) - cy;
 							double sdz = (layout.sectionZ + 8.0) - cz;
-							boolean near = (sdx * sdx + sdy * sdy + sdz * sdz) <= 2304.0; // <= 48 blocks (~3 sections)
-							int priorityFloor = near ? 2 : 1;
-							if (!streamingBudgetActive || budgetPacer.allowStreamingWork(priorityFloor)) {
-								long tUp = streamingBudgetActive ? System.nanoTime() : 0L;
-								h = meshEngine.uploadSection(layout.meshlets, visibility);
-								cache.ephemera$setMeshHandle(h);
-								if (h != null) {
-									if (streamingBudgetActive) {
-										budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
-									}
-									long freed = layout.releaseCpuMeshlets();
-									if (freed > 0L) {
-										MemoryPressurePolicy.recordHeapReclaimed(freed);
-									}
-								}
-							} else {
-								h = null;
-								enqueuePendingMeshUpload(cache, visibility, near);
-							}
-						} else {
-							h = null;
+							boolean near = (sdx * sdx + sdy * sdy + sdz * sdz) <= 2304.0;
+							enqueuePendingMeshUpload(cache, visibility, near);
 						}
 					}
 					if (h != null) {
@@ -792,6 +859,7 @@ public final class ChunkRenderBatcher {
 						}
 						QuadBuckets buckets = (cullMask & bit) != 0 ? state.cullBuckets[l] : null;
 						if (buckets != null) {
+							usedCpuDirCull = true;
 							int spanOff = l * SectionDrawState.SPAN_STRIDE;
 							int n;
 							if ((state.validCamLayers & bit) != 0) {
@@ -824,6 +892,13 @@ public final class ChunkRenderBatcher {
 			}
 		} finally {
 			dispatcher.unlock();
+		}
+		if (fadingCount < prevFadingCount) {
+			java.util.Arrays.fill(fadingSections, fadingCount, prevFadingCount, null);
+		}
+		if (meshFadingCount < prevMeshFadingCount) {
+			java.util.Arrays.fill(meshFadingSections, meshFadingCount, prevMeshFadingCount, null);
+			java.util.Arrays.fill(meshFadingHandles, meshFadingCount, prevMeshFadingCount, null);
 		}
 
 		meshSolidTaskCount = solidCount;
@@ -898,6 +973,7 @@ public final class ChunkRenderBatcher {
 		planAtlasHeight = atlasHeight;
 		planTrackSprites = trackSprites;
 		planMeshActive = meshActive;
+		planCamIndependent = !usedCpuDirCull && (!fogCull || fogCulled == 0);
 		planSortTranslucent = sortTranslucent;
 		planFadeMs = frameEffectiveFadeMs;
 		planSmoothFade = frameSmoothFade;
@@ -990,14 +1066,14 @@ public final class ChunkRenderBatcher {
 			}
 			long tUp = budgetActive ? System.nanoTime() : 0L;
 			VulkanMeshSectionHandle h = meshEngine.uploadSection(layout.meshlets, vis);
+			if (budgetActive) {
+				budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
+			}
 			cache.ephemera$setMeshHandle(h);
 			if (h != null) {
 				uploaded++;
 				if (near) {
 					promotedNear = true;
-				}
-				if (budgetActive) {
-					budgetPacer.recordStreamingWork(System.nanoTime() - tUp);
 				}
 				long freed = layout.releaseCpuMeshlets();
 				if (freed > 0L) {

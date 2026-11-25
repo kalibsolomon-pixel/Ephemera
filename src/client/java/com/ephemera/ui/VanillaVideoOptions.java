@@ -57,7 +57,7 @@ final class VanillaVideoOptions {
 		}
 		add(r, options.preferredGraphicsBackend());
 		r.add(new SettingRow.Header("ephemera.section.frameRate"));
-		add(r, options.framerateLimit());
+		r.add(FrameRateLimitBinding.row(options));
 		add(r, options.enableVsync());
 		add(r, options.inactivityFpsLimit());
 		r.add(new SettingRow.Header("ephemera.section.interface"));

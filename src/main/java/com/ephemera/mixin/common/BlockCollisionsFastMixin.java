@@ -15,6 +15,7 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -24,6 +25,8 @@ import org.spongepowered.asm.mixin.injection.At;
 /**
  * Accelerates {@link BlockCollisions#computeNext} without replacing the loop:
  * <ul>
+ *   <li>Defers {@code Shapes.create(box)} ({@code CubeVoxelShape} + 3 {@code DoubleArrayList}s)
+ *       until a non-full-cube block actually overlaps, eliminating ~89 MB of render/server allocs.</li>
  *   <li>Caches the active {@link LevelChunkSection} on standard non-debug {@link LevelChunk}s so
  *       air-only sections and repeated block lookups bypass full chunk section indexing.</li>
  *   <li>Skips allocating moved {@link VoxelShape}s when the shape is empty or its translated AABB
@@ -35,11 +38,44 @@ abstract class BlockCollisionsFastMixin {
 	@Shadow @Final private AABB box;
 	@Shadow @Final private BlockPos.MutableBlockPos pos;
 
+	@Unique private VoxelShape ephemera$lazyEntityShape;
 	@Unique private LevelChunk ephemera$lastChunk;
 	@Unique private LevelChunkSection[] ephemera$lastSections;
 	@Unique private int ephemera$lastMinSection;
 	@Unique private int ephemera$lastSectionIdx = Integer.MIN_VALUE;
 	@Unique private LevelChunkSection ephemera$lastSection;
+
+	@WrapOperation(
+		method = "<init>(Lnet/minecraft/world/level/CollisionGetter;Lnet/minecraft/world/phys/shapes/CollisionContext;Lnet/minecraft/world/phys/AABB;ZLjava/util/function/BiFunction;)V",
+		at = @At(
+			value = "INVOKE",
+			target = "Lnet/minecraft/world/phys/shapes/Shapes;create(Lnet/minecraft/world/phys/AABB;)Lnet/minecraft/world/phys/shapes/VoxelShape;"
+		)
+	)
+	private VoxelShape ephemera$deferEntityShape(AABB aabb, Operation<VoxelShape> original) {
+		return EphemeraCommon.config().engineFastCollisions ? null : original.call(aabb);
+	}
+
+	@WrapOperation(
+		method = "computeNext",
+		at = @At(
+			value = "FIELD",
+			target = "Lnet/minecraft/world/level/BlockCollisions;entityShape:Lnet/minecraft/world/phys/shapes/VoxelShape;",
+			opcode = Opcodes.GETFIELD
+		)
+	)
+	private VoxelShape ephemera$getOrCreateEntityShape(BlockCollisions instance, Operation<VoxelShape> original) {
+		VoxelShape existing = original.call(instance);
+		if (existing != null) {
+			return existing;
+		}
+		VoxelShape lazy = this.ephemera$lazyEntityShape;
+		if (lazy == null) {
+			lazy = Shapes.create(this.box);
+			this.ephemera$lazyEntityShape = lazy;
+		}
+		return lazy;
+	}
 
 	@WrapOperation(
 		method = "computeNext",

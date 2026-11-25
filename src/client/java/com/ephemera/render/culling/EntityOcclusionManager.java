@@ -56,17 +56,26 @@ public final class EntityOcclusionManager {
     private static final CullingBounds BOUNDS = new CullingBounds();
     private static final OpaqueLayerSweep SWEEP = new OpaqueLayerSweep(EntityOcclusionManager::isOpaqueUnchecked);
     private static final ParticleCellOcclusion PARTICLES = new ParticleCellOcclusion(EntityOcclusionManager::isOpaqueUnchecked);
+    private static final int MAX_SWEEP_TESTS_PER_FRAME = 1536;
+    private static final int MAX_OCCLUDED_RECHECK_TESTS = 2048;
+    private static final double CHUNK_INVALIDATE_RADIUS_SQ = 320.0 * 320.0;
     private static final IntOpenHashSet LEASH_HOLDERS = new IntOpenHashSet();
     private static final IntOpenHashSet PACKET_HOLDERS = new IntOpenHashSet();
     private static ClientLevel level;
     private static boolean frameActive, cameraValid, entityShadowsEnabled, hasGlobalBlockEntities;
-    private static long terrainStamp = 1, frame = 1, now;
+    private static long terrainStamp = 1, sectionResetStamp = 1, frame = 1, now;
+    private static long lastBlockInvalidatedFrame = -1L, lastTerrainBumpFrame = -1L;
+    private static int lastInvSx = Integer.MIN_VALUE, lastInvSy = Integer.MIN_VALUE, lastInvSz = Integer.MIN_VALUE;
     private static double cameraX, cameraY, cameraZ;
     private static int camCellX, camCellY, camCellZ;
     private static Vec3 lastCamPos;
     private static Thread renderThread;
     private static Frustum frustum;
-    private static int occludedEntities, occludedBlockEntities, visibleSections;
+    private static int occludedEntities, occludedBlockEntities, visibleSections, frameSweepTests;
+
+    static {
+        PARTICLES.setFrameProbeBudget(128);
+    }
     private static final ClassValue<Boolean> VANILLA_CLASS = new ClassValue<>() {
         @Override protected Boolean computeValue(Class<?> type) {
             return type.getName().startsWith("net.minecraft.");
@@ -99,7 +108,7 @@ public final class EntityOcclusionManager {
         WorldPreparedTextCache.beginFrame();
         VisualsRuntime.tickFrame(now);
         DynamicLightTracker.tickFrame(current, now);
-        occludedEntities = occludedBlockEntities = 0;
+        occludedEntities = occludedBlockEntities = frameSweepTests = 0;
         SECTIONS.releaseSections();
     }
     public static long frameTimeNs() {
@@ -110,8 +119,46 @@ public final class EntityOcclusionManager {
         frameActive = false; frame++; SECTIONS.releaseSections(); ParticleCullingManager.endFrame();
     }
     private static void releaseSection() { SECTIONS.releaseSections(); }
+    public static boolean isOcclusionOpaque(BlockState state) {
+        return state != null && state.isSolidRender() && state.canOcclude()
+                && !state.getBlock().hasDynamicShape() && !state.hasOffsetFunction();
+    }
+    public static boolean sameOcclusionOpacity(BlockState a, BlockState b) {
+        return a == b || isOcclusionOpaque(a) == isOcclusionOpaque(b);
+    }
+    public static void blockChanged(int x, int y, int z) {
+        int sx = x >> 4;
+        int sy = y >> 4;
+        int sz = z >> 4;
+        long curFrame = frame;
+        if (curFrame == lastBlockInvalidatedFrame && sx == lastInvSx && sy == lastInvSy && sz == lastInvSz) {
+            return;
+        }
+        lastBlockInvalidatedFrame = curFrame;
+        lastInvSx = sx;
+        lastInvSy = sy;
+        lastInvSz = sz;
+        SECTIONS.invalidateSection(sx, sy, sz);
+        if (lastTerrainBumpFrame != curFrame) {
+            lastTerrainBumpFrame = curFrame;
+            terrainStamp++;
+        }
+    }
+    public static void chunkChanged(int cx, int cz) {
+        SECTIONS.invalidateColumn(cx, cz);
+        if (!cameraValid) {
+            terrainStamp++;
+            return;
+        }
+        double dx = (cx * 16.0 + 8.0) - cameraX;
+        double dz = (cz * 16.0 + 8.0) - cameraZ;
+        if (dx * dx + dz * dz <= CHUNK_INVALIDATE_RADIUS_SQ) {
+            terrainStamp++;
+        }
+    }
     public static void terrainChanged() {
         terrainStamp++;
+        sectionResetStamp++;
         SECTIONS.clear();
         // Every mutation invalidates the geometry proof, including cached visible results.
         ParticleCullingManager.invalidateLight();
@@ -119,6 +166,8 @@ public final class EntityOcclusionManager {
     public static void reset(ClientLevel current) {
         level = current; cameraValid = false; frustum = null; frameActive = false; lastCamPos = null;
         hasGlobalBlockEntities = false;
+        lastBlockInvalidatedFrame = -1L; lastTerrainBumpFrame = -1L;
+        lastInvSx = lastInvSy = lastInvSz = Integer.MIN_VALUE;
         terrainChanged(); ENTITIES.clear(); BLOCK_ENTITIES.clear(); BOX_QUERIES.clear();
         FastShadowCache.invalidate();
         WorldPreparedTextCache.invalidate();
@@ -153,7 +202,7 @@ public final class EntityOcclusionManager {
         return entity.isPassenger() || entity.isVehicle()
                 || entity instanceof FishingHook || entity instanceof EnderDragon || entity instanceof WitherBoss
                 || entity instanceof Guardian || entity instanceof Frog
-                || LEASH_HOLDERS.contains(entity.getId())
+                || (!LEASH_HOLDERS.isEmpty() && LEASH_HOLDERS.contains(entity.getId()))
                 || (entity instanceof Leashable leashable && leashable.getLeashData() != null)
                 || entity.shouldShowName() || entity.isCurrentlyGlowing()
                 || entity.getTeam() != null || entity.belowNameDisplay() != null;
@@ -310,7 +359,19 @@ public final class EntityOcclusionManager {
         long time = frameActive ? now : System.nanoTime();
         int result = cache.lookup(id, terrainStamp, time, cx, cy, cz, ax, ay, az, bx, by, bz);
         if (result != DirectMappedSweepCache.MISS) return result == DirectMappedSweepCache.OCCLUDED;
+        if (frameActive) {
+            int limit = cache.lastResultForId(id) == DirectMappedSweepCache.OCCLUDED
+                    ? MAX_OCCLUDED_RECHECK_TESTS
+                    : MAX_SWEEP_TESTS_PER_FRAME;
+            if (frameSweepTests >= limit) {
+                // Fail open without polluting the cache so remaining entities refresh cleanly on the next frame.
+                return false;
+            }
+        }
         boolean hidden = sweep(cx, cy, cz, ax * .25, ay * .25, az * .25, bx * .25, by * .25, bz * .25);
+        if (frameActive) {
+            frameSweepTests += SWEEP.lastTestsUsed();
+        }
         cache.put(id, terrainStamp, time, cx, cy, cz, ax, ay, az, bx, by, bz, hidden);
         return hidden;
     }
@@ -340,7 +401,7 @@ public final class EntityOcclusionManager {
         finally { if (!frameActive) releaseSection(); }
     }
     private static boolean isOpaqueUnchecked(int x, int y, int z) {
-        return SECTIONS.isOpaque(level, x, y, z, terrainStamp, frame);
+        return SECTIONS.isOpaque(level, x, y, z, sectionResetStamp, frame);
     }
     public static boolean particleOccluded(double x, double y, double z, double radius) {
         if (!ready()) return false;

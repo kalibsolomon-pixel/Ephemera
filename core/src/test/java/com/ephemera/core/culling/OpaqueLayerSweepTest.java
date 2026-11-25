@@ -74,5 +74,15 @@ class OpaqueLayerSweepTest {
         assertTrue(sweep.isOccluded(.375, 131.375, .375, .875, 131.875, .875,
                 -.25, 129, 11.75, 1.25, 131.25, 13.25));
         assertTrue(reads[0] <= 32, "a nearby full separating layer should not exhaust the 512-read budget");
+        assertEquals(reads[0], sweep.lastTestsUsed());
+    }
+
+    @Test void centerVoxelEarlyOutRejectsOpenAirInOneProbePerLayer() {
+        int[] reads = {0};
+        OpaqueLayerSweep sweep = new OpaqueLayerSweep((x, y, z) -> { reads[0]++; return false; });
+        assertFalse(sweep.isOccluded(0, 1, 0, .5, 1.5, .5, 20, 0, -2, 22, 3, 2));
+        // Only X axis has a separating gap of 19 layers -> 1 center-voxel read per layer = 19 reads
+        assertTrue(reads[0] <= 20, "open-air early-out should check 1 center voxel per layer, got " + reads[0]);
+        assertEquals(reads[0], sweep.lastTestsUsed());
     }
 }

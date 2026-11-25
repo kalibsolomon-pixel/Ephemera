@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.Unique;
 
 /**
  * Replaces the thrashing 100-entry {@code Long2IntLinkedOpenHashMap} /
- * {@code Long2FloatLinkedOpenHashMap} LRU caches inside 26.3 {@code BlockModelLighter$Cache}
+ * {@code Long2FloatLinkedOpenHashMap} LRU caches inside {@code BlockModelLighter$Cache}
  * with direct-mapped 1024-entry L1-resident spatial caches ({@code 16x16x4} local neighborhood,
  * O(1) generation-bumped clear, zero eviction/hashing overhead, bit-exact {@code BlockPos.asLong()}
  * verification). Uses {@code @Overwrite} so primitive {@code int}/{@code float} returns avoid

@@ -3,6 +3,7 @@ package com.ephemera.render.terrain;
 import net.minecraft.client.renderer.texture.SpriteContents;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.resources.Identifier;
 import net.minecraft.util.Util;
 
 import java.util.Arrays;
@@ -65,6 +66,7 @@ public final class VisibleSpriteTracker {
 	private static volatile Thread renderThread;
 	private static long lastBatchMillis = NEVER;
 	private static long lastUntrackedVisibleMillis = NEVER;
+	private static long tickNowMillis = NEVER;
 	private static boolean trackingFrame;
 
 	private VisibleSpriteTracker() {}
@@ -82,7 +84,30 @@ public final class VisibleSpriteTracker {
 				handle.ephemera$setAnimId(contents.isAnimated() ? count++ : -1);
 			}
 		}
-		current = new Generation(nextGenerationId++, count);
+		Generation g = new Generation(nextGenerationId++, count);
+		for (TextureAtlasSprite sprite : sprites) {
+			SpriteContents contents = sprite.contents();
+			if (contents instanceof AnimatedSpriteHandle handle) {
+				int id = handle.ephemera$animId();
+				if (id >= 0 && id < count) {
+					Identifier name = contents.name();
+					// Non-vanilla or non-block sprites on the block atlas, plus burning-entity flames
+					// (rendered on entities without any fire block in terrain), stay conservatively active.
+					if (!"minecraft".equals(name.getNamespace())
+						|| !name.getPath().startsWith("block/")
+						|| "block/fire_0".equals(name.getPath())
+						|| "block/fire_1".equals(name.getPath())) {
+						g.neverSkip[id] = true;
+					}
+				}
+			}
+		}
+		current = g;
+	}
+
+	/** Caches wall-clock millis once per atlas tick so per-sprite/per-mip checks avoid JNI glfwGetTime. */
+	public static void beginAtlasTick() {
+		tickNowMillis = Util.getMillis();
 	}
 
 	/** Called when the block atlas drops its texture data; every id becomes unknown. */
@@ -143,10 +168,13 @@ public final class VisibleSpriteTracker {
 			return true;
 		}
 		Generation g = current;
-		if (id >= g.count || !g.seenInTerrain[id] || g.neverSkip[id]) {
+		if (id >= g.count || g.neverSkip[id]) {
 			return true;
 		}
-		long now = Util.getMillis();
+		long now = tickNowMillis;
+		if (now == NEVER) {
+			now = Util.getMillis();
+		}
 		if (now - lastBatchMillis > INACTIVE_MS || now - lastUntrackedVisibleMillis < GRACE_MS) {
 			return true;
 		}

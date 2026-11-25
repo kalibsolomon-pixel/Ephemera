@@ -17,6 +17,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -54,6 +55,28 @@ public abstract class TerrainSectionCompilerMixin {
 									   SectionBufferBuilderPack builders, CallbackInfoReturnable<SectionCompiler.Results> cir,
 									   @Share("ephemera$pass") LocalRef<FastSectionCompiler.Pass> pass) {
 		pass.set(FastSectionCompiler.begin(sectionPos, region, blockModelSet, fluidModelSet));
+	}
+
+	@ModifyExpressionValue(
+		method = "compile",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/material/FluidState;isEmpty()Z")
+	)
+	private boolean ephemera$skipBuriedFluid(boolean empty, @Local FluidState fluidState, @Local(ordinal = 2) BlockPos pos,
+											 @Share("ephemera$pass") LocalRef<FastSectionCompiler.Pass> pass) {
+		if (empty) {
+			return true;
+		}
+		FastSectionCompiler.Pass p = pass.get();
+		if (p == null) {
+			return false;
+		}
+		try {
+			return p.shouldSkipBuriedFluid(fluidState, pos);
+		} catch (Throwable t) {
+			TerrainFeatures.disableCompiler(t);
+			pass.set(null);
+			return false;
+		}
 	}
 
 	@ModifyExpressionValue(

@@ -1,3 +1,16 @@
 accessWidener	v2	official
 accessible	class	net/minecraft/world/level/chunk/PalettedContainer$Data
 accessible	class	net/minecraft/world/level/levelgen/SurfaceRules$SurfaceRule
+accessible	class	net/minecraft/world/level/levelgen/SurfaceRules$Context
+accessible	field	net/minecraft/world/level/levelgen/SurfaceRules$Context	blockX	I
+accessible	field	net/minecraft/world/level/levelgen/SurfaceRules$Context	blockY	I
+accessible	field	net/minecraft/world/level/levelgen/SurfaceRules$Context	blockZ	I
+accessible	class	net/minecraft/world/level/levelgen/SurfaceRules$LazyCondition
+extendable	class	net/minecraft/world/level/levelgen/SurfaceRules$LazyCondition
+accessible	class	net/minecraft/world/level/levelgen/SurfaceRules$LazyYCondition
+extendable	class	net/minecraft/world/level/levelgen/SurfaceRules$LazyYCondition
+accessible	field	net/minecraft/world/level/levelgen/OreVeinifier$VeinType	ore	Lnet/minecraft/world/level/block/state/BlockState;
+accessible	field	net/minecraft/world/level/levelgen/OreVeinifier$VeinType	rawOreBlock	Lnet/minecraft/world/level/block/state/BlockState;
+accessible	field	net/minecraft/world/level/levelgen/OreVeinifier$VeinType	filler	Lnet/minecraft/world/level/block/state/BlockState;
+accessible	field	net/minecraft/world/level/levelgen/OreVeinifier$VeinType	minY	I
+accessible	field	net/minecraft/world/level/levelgen/OreVeinifier$VeinType	maxY	I

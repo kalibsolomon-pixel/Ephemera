@@ -98,19 +98,63 @@ final class FrameBudgetPacerTest {
 		budget.beginFrameWork(f2);
 		long d1 = budget.resolveStreamingDeadlineNs(4, true, 4_000_000L, f2);
 		assertEquals(Long.MAX_VALUE, d1);
+		// Sub-ms uncapped frame should NOT receive a 3.0 ms floor spike; budget clamps cleanly to 1.0 ms.
+		assertEquals(1_000_000L, budget.frameStreamingBudgetNs());
 
-		// Stage 1 spends 2.3 ms on snapshots (exceeds 75% snapshot reserve of 2.25 ms out of 3.0 ms).
+		// Stage 1 spends 0.8 ms on snapshots (exceeds 75% snapshot reserve of 0.75 ms out of 1.0 ms).
 		assertTrue(budget.allowSnapshotStreamingWork(1, true));
-		budget.recordStreamingWork(2_300_000L);
+		budget.recordStreamingWork(800_000L);
 		assertFalse(budget.allowSnapshotStreamingWork(1, true));
 
 		// Even if 10 ms of unrelated entity/world work happened before stage 2, GPU uploads still
-		// have the reserved 0.7 ms slice of the shared 3.0 ms budget.
+		// have the reserved 0.2 ms slice of the shared 1.0 ms budget.
 		assertTrue(budget.allowStreamingWork(f2 + 10_000_000L, d1, 1));
-		budget.recordStreamingWork(800_000L);
+		budget.recordStreamingWork(300_000L);
 
-		// Now shared spent time (3.1 ms) exceeds the 3.0 ms budget -> stops cleanly.
+		// Now shared spent time (1.1 ms) exceeds the 1.0 ms budget -> stops cleanly.
 		assertFalse(budget.allowStreamingWork(1));
 		assertEquals(2, budget.frameStreamingThrottled());
+	}
+
+	@Test
+	void priorityFloorDoesNotPileExtraItemsOntoAlreadyLateCappedFrame() {
+		FrameBudgetPacer budget = new FrameBudgetPacer();
+		long t0 = 9_000_000_000L;
+		budget.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, 240);
+		budget.beginFrameWork(t0);
+		long deadline = budget.resolveStreamingDeadlineNs(4, true, 4_000_000L, t0 + 100_000L);
+
+		// First item is allowed even after deadline so streaming can never starve...
+		assertTrue(budget.allowStreamingWork(deadline + 50_000L, deadline, 4));
+		budget.recordStreamingWork(200_000L);
+		// ...but item #2 must stop immediately despite priorityFloor=4 once past hard deadline!
+		assertFalse(budget.allowStreamingWork(deadline + 250_000L, deadline, 4));
+	}
+
+	@Test
+	void latchedPresentTargetAndCadenceTimestampDriveAccurateStreamingDeadline() {
+		FrameBudgetPacer budget = new FrameBudgetPacer();
+		long t0 = 20_000_000_000L;
+		budget.setActiveOwner(FrameBudgetPacer.PacerOwner.EPHEMERA, 240); // 4.166 ms period
+		// Feed clean 4.166 ms cadence timestamps while deliberately staggering beginFrameWork (Stage 1 tick wake).
+		for (int i = 0; i < 6; i++) {
+			long cadence = t0 + i * 4_166_666L;
+			long workStart = cadence + ((i & 1) == 0 ? 500_000L : 1_800_000L);
+			budget.beginFrameWork(workStart);
+			budget.observeCadenceTimestamp(cadence);
+			budget.endFrameWork(workStart + 1_200_000L);
+		}
+		assertTrue(budget.jitterMs() < 0.05,
+			"Deliberate Stage 1 tick-wake shifts must not inflate cadence jitter; got " + budget.jitterMs() + " ms");
+
+		long frameStart = t0 + 6 * 4_166_666L + 1_500_000L;
+		long targetPresent = t0 + 7 * 4_166_666L;
+		budget.beginFrameWork(frameStart);
+		budget.setLatchedPresentTargetNs(targetPresent);
+		long deadline = budget.resolveStreamingDeadlineNs(4, true, 4_000_000L, frameStart + 200_000L);
+		assertTrue(deadline < targetPresent,
+			"Streaming deadline must lie strictly before latched targetPresent; got " + deadline + " vs " + targetPresent);
+		assertTrue(budget.remainingStreamingHeadroomNs(deadline - 300_000L) >= 300_000L);
+		assertEquals(0L, budget.remainingStreamingHeadroomNs(deadline + 1L));
 	}
 }

@@ -58,23 +58,124 @@ public final class MeshletBaker {
 	private static final VarHandle FLOAT = MethodHandles.byteArrayViewVarHandle(float[].class, ByteOrder.nativeOrder());
 	private static final VarHandle INT = MethodHandles.byteArrayViewVarHandle(int[].class, ByteOrder.nativeOrder());
 
+	// Bounded power-of-2 int[] recycling pool for off-thread baked meshlet payloads (256 B .. 512 KB).
+	// Sized at 32 MB / 32 per bucket so chunk-rebuild bursts recycle cleanly without pool misses.
+	private static final int POOL_MIN_SHIFT = 6;   // 64 ints = 256 B
+	private static final int POOL_MAX_SHIFT = 17;  // 131072 ints = 512 KB
+	private static final int POOL_BUCKETS = POOL_MAX_SHIFT - POOL_MIN_SHIFT + 1;
+	private static final int POOL_MAX_PER_BUCKET = 32;
+	private static final long POOL_MAX_BYTES = 32L * 1024L * 1024L;
+	private static final Object POOL_LOCK = new Object();
+	private static final int[][][] POOL = new int[POOL_BUCKETS][POOL_MAX_PER_BUCKET][];
+	private static final int[] POOL_COUNTS = new int[POOL_BUCKETS];
+	private static long poolBytes;
+
+	private static int poolBucket(int len) {
+		if (len <= 0) {
+			return -1;
+		}
+		int shift = 32 - Integer.numberOfLeadingZeros(Math.max(1, len - 1));
+		if (shift < POOL_MIN_SHIFT) {
+			shift = POOL_MIN_SHIFT;
+		}
+		return shift <= POOL_MAX_SHIFT ? (shift - POOL_MIN_SHIFT) : -1;
+	}
+
+	private static int[] borrowInts(int needed) {
+		int b = poolBucket(needed);
+		if (b < 0) {
+			return new int[needed];
+		}
+		synchronized (POOL_LOCK) {
+			int n = POOL_COUNTS[b];
+			if (n > 0) {
+				int[] arr = POOL[b][--n];
+				POOL[b][n] = null;
+				POOL_COUNTS[b] = n;
+				poolBytes -= (long) arr.length * 4L;
+				return arr;
+			}
+		}
+		return new int[1 << (b + POOL_MIN_SHIFT)];
+	}
+
+	/** Returns a baked payload's CPU arrays to the bounded pool after GPU upload. */
+	public static void recycle(BakedSectionMeshlets baked) {
+		if (baked == null) {
+			return;
+		}
+		returnInts(baked.quadWords);
+		returnInts(baked.meshletWords);
+	}
+
+	private static void returnInts(int[] arr) {
+		if (arr == null || arr.length == 0 || (arr.length & (arr.length - 1)) != 0) {
+			return;
+		}
+		int shift = Integer.numberOfTrailingZeros(arr.length);
+		if (shift < POOL_MIN_SHIFT || shift > POOL_MAX_SHIFT) {
+			return;
+		}
+		int b = shift - POOL_MIN_SHIFT;
+		long bytes = (long) arr.length * 4L;
+		synchronized (POOL_LOCK) {
+			int n = POOL_COUNTS[b];
+			if (n < POOL_MAX_PER_BUCKET && poolBytes + bytes <= POOL_MAX_BYTES) {
+				POOL[b][n] = arr;
+				POOL_COUNTS[b] = n + 1;
+				poolBytes += bytes;
+			}
+		}
+	}
+
+	/** Flushes all pooled meshlet arrays (called on world unload). */
+	public static void clearPool() {
+		synchronized (POOL_LOCK) {
+			for (int b = 0; b < POOL_BUCKETS; b++) {
+				int n = POOL_COUNTS[b];
+				for (int i = 0; i < n; i++) {
+					POOL[b][i] = null;
+				}
+				POOL_COUNTS[b] = 0;
+			}
+			poolBytes = 0L;
+		}
+	}
+
 	private byte[] scratchBytes = new byte[0];
 	private int[] scratchQuads = new int[0];
 	private int[] scratchMeshlets = new int[0];
 
 	/**
 	 * Bakes up to two opaque layers (SOLID and/or CUTOUT) of one section into a single
-	 * {@link BakedSectionMeshlets} payload.
-	 *
-	 * @param subtractDx X offset to subtract from vertex positions to recover section-local coords (0 if already local)
-	 * @param subtractDy Y offset to subtract
-	 * @param subtractDz Z offset to subtract
-	 * @return baked meshlets if at least one layer packed cleanly, else {@code null}
+	 * {@link BakedSectionMeshlets} payload with exact-sized arrays.
 	 */
 	public BakedSectionMeshlets bake(int sectionX, int sectionY, int sectionZ,
 									 float subtractDx, float subtractDy, float subtractDz,
 									 ByteBuffer solidVerts, int solidVertCount, QuadBuckets solidBuckets,
 									 ByteBuffer cutoutVerts, int cutoutVertCount, QuadBuckets cutoutBuckets) {
+		return bakeInternal(sectionX, sectionY, sectionZ, subtractDx, subtractDy, subtractDz,
+			solidVerts, solidVertCount, solidBuckets, cutoutVerts, cutoutVertCount, cutoutBuckets, false);
+	}
+
+	/**
+	 * Bakes up to two opaque layers using bounded pooled {@code int[]} backing arrays; callers
+	 * must read {@link BakedSectionMeshlets#quadWordCount()} / {@link BakedSectionMeshlets#meshletWordCount()}
+	 * and call {@link #recycle(BakedSectionMeshlets)} after GPU upload.
+	 */
+	public BakedSectionMeshlets bakePooled(int sectionX, int sectionY, int sectionZ,
+										   float subtractDx, float subtractDy, float subtractDz,
+										   ByteBuffer solidVerts, int solidVertCount, QuadBuckets solidBuckets,
+										   ByteBuffer cutoutVerts, int cutoutVertCount, QuadBuckets cutoutBuckets) {
+		return bakeInternal(sectionX, sectionY, sectionZ, subtractDx, subtractDy, subtractDz,
+			solidVerts, solidVertCount, solidBuckets, cutoutVerts, cutoutVertCount, cutoutBuckets, true);
+	}
+
+	private BakedSectionMeshlets bakeInternal(int sectionX, int sectionY, int sectionZ,
+											  float subtractDx, float subtractDy, float subtractDz,
+											  ByteBuffer solidVerts, int solidVertCount, QuadBuckets solidBuckets,
+											  ByteBuffer cutoutVerts, int cutoutVertCount, QuadBuckets cutoutBuckets,
+											  boolean pooled) {
 		int solidQuads = usableQuads(solidVerts, solidVertCount);
 		int cutoutQuads = usableQuads(cutoutVerts, cutoutVertCount);
 		if (solidQuads == 0 && cutoutQuads == 0) {
@@ -121,11 +222,13 @@ public final class MeshletBaker {
 			return null;
 		}
 
-		int[] finalQuads = new int[totalQuads * INTS_PER_QUAD];
-		System.arraycopy(qOut, 0, finalQuads, 0, finalQuads.length);
+		int qLen = totalQuads * INTS_PER_QUAD;
+		int[] finalQuads = pooled ? borrowInts(qLen) : new int[qLen];
+		System.arraycopy(qOut, 0, finalQuads, 0, qLen);
 		int totalMeshlets = solidMeshlets + cutoutMeshlets;
-		int[] finalMeshlets = new int[totalMeshlets * INTS_PER_MESHLET];
-		System.arraycopy(mOut, 0, finalMeshlets, 0, finalMeshlets.length);
+		int mLen = totalMeshlets * INTS_PER_MESHLET;
+		int[] finalMeshlets = pooled ? borrowInts(mLen) : new int[mLen];
+		System.arraycopy(mOut, 0, finalMeshlets, 0, mLen);
 
 		return new BakedSectionMeshlets(sectionX, sectionY, sectionZ, layerMask,
 			totalQuads, finalQuads, solidMeshlets, cutoutMeshlets, finalMeshlets, mergedPlanes);

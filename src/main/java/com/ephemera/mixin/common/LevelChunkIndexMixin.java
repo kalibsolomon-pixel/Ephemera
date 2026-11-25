@@ -1,8 +1,6 @@
 package com.ephemera.mixin.common;
 
 import com.ephemera.EphemeraCommon;
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.world.level.chunk.LevelChunk;
 import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.*;
@@ -22,9 +20,9 @@ abstract class LevelChunkIndexMixin {
         }
     }
 
-    @WrapOperation(method = {"getBlockState", "getFluidState(III)Lnet/minecraft/world/level/material/FluidState;", "setBlockState"},
+    @Redirect(method = {"getBlockState", "getFluidState(III)Lnet/minecraft/world/level/material/FluidState;", "setBlockState"},
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/chunk/LevelChunk;getSectionIndex(I)I"))
-    private int ephemera$sectionIndex(LevelChunk chunk, int y, Operation<Integer> original) {
-        return ephemera$fixedHeight ? (y >> 4) - ephemera$minSection : original.call(chunk, y);
+    private int ephemera$sectionIndex(LevelChunk chunk, int y) {
+        return ephemera$fixedHeight ? (y >> 4) - ephemera$minSection : chunk.getSectionIndex(y);
     }
 }

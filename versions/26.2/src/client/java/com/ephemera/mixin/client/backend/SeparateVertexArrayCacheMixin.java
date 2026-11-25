@@ -4,11 +4,11 @@ import com.ephemera.render.backend.DispatchSettings;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Share;
+import com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef;
 import com.llamalad7.mixinextras.sugar.ref.LocalIntRef;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.opengl.VertexArrayCache.VertexArray;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.spongepowered.asm.mixin.Mixin;
@@ -24,19 +24,35 @@ abstract class SeparateVertexArrayCacheMixin {
 	@Unique private final VertexFormat[][] ephemera$snapshots = new VertexFormat[EPHEMERA_CACHE_SIZE][];
 	@Unique private final VertexArray[] ephemera$arrays = new VertexArray[EPHEMERA_CACHE_SIZE];
 
+	@Unique
+	private static boolean ephemera$sameFormats(VertexFormat[] snapshot, Object[] elements) {
+		if (snapshot == null || snapshot.length != elements.length) {
+			return false;
+		}
+		for (int i = 0; i < snapshot.length; i++) {
+			if (snapshot[i] != elements[i]) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	@WrapOperation(method = "bindVertexArray", at = @At(value = "INVOKE",
 		target = "Ljava/util/Arrays;asList([Ljava/lang/Object;)Ljava/util/List;"))
 	private List<?> ephemera$useIdentityKey(Object[] elements, Operation<List<?>> original,
-			@Share("slot") LocalIntRef cacheSlot) {
+			@Share("slot") LocalIntRef cacheSlot, @Share("hit") LocalBooleanRef cacheHit) {
 		if (!DispatchSettings.glDispatch()) {
 			cacheSlot.set(-1);
+			cacheHit.set(false);
 			return original.call((Object) elements);
 		}
 		int slot = System.identityHashCode(elements) & (EPHEMERA_CACHE_SIZE - 1);
 		cacheSlot.set(slot);
-		if (ephemera$keys[slot] == elements && Arrays.equals(ephemera$snapshots[slot], elements)) {
+		if (ephemera$keys[slot] == elements && ephemera$sameFormats(ephemera$snapshots[slot], elements)) {
+			cacheHit.set(true);
 			return null; // The paired Map.get wrapper returns the cached VAO.
 		}
+		cacheHit.set(false);
 		return original.call((Object) elements);
 	}
 
@@ -49,9 +65,12 @@ abstract class SeparateVertexArrayCacheMixin {
 
 	@Inject(method = "bindVertexArray", at = @At("RETURN"))
 	private void ephemera$rememberVertexArray(VertexFormat[] formats, GpuBufferSlice[] buffers, VertexArray previous,
-			CallbackInfoReturnable<VertexArray> ci, @Share("slot") LocalIntRef cacheSlot) {
+			CallbackInfoReturnable<VertexArray> ci, @Share("slot") LocalIntRef cacheSlot, @Share("hit") LocalBooleanRef cacheHit) {
+		if (cacheHit.get()) {
+			return;
+		}
 		int slot = cacheSlot.get();
-		if (slot >= 0 && (ephemera$keys[slot] != formats || !Arrays.equals(ephemera$snapshots[slot], formats))) {
+		if (slot >= 0) {
 			ephemera$keys[slot] = formats;
 			ephemera$snapshots[slot] = formats.clone();
 			ephemera$arrays[slot] = ci.getReturnValue();

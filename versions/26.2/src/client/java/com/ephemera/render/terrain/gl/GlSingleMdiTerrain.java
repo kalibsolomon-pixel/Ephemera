@@ -301,7 +301,7 @@ public final class GlSingleMdiTerrain {
 		entryCount = 0;
 	}
 
-	/** Appends one entry; returns its index, or -1 when the block is full. */
+	/** Appends one entry into the L1-cached shadow buffer; call {@link #finishBuild()} to flush. */
 	public int addEntry(int ox, int oy, int oz, float visibility) {
 		int idx = entryCount;
 		if (idx >= maxEntries || !ready) {
@@ -309,18 +309,20 @@ public final class GlSingleMdiTerrain {
 		}
 		long off = (long) idx << 4;
 		int vis = Float.floatToRawIntBits(visibility);
-		long dst = mappedPtrs[frameSlot] + off;
 		long shadow = shadowPtr + off;
-		MemoryUtil.memPutInt(dst, ox);
-		MemoryUtil.memPutInt(dst + 4L, oy);
-		MemoryUtil.memPutInt(dst + 8L, oz);
-		MemoryUtil.memPutInt(dst + 12L, vis);
 		MemoryUtil.memPutInt(shadow, ox);
 		MemoryUtil.memPutInt(shadow + 4L, oy);
 		MemoryUtil.memPutInt(shadow + 8L, oz);
 		MemoryUtil.memPutInt(shadow + 12L, vis);
 		entryCount = idx + 1;
 		return idx;
+	}
+
+	/** Flushes all entries written since {@link #beginBuild()} into the persistent mapped UBO in one sequential copy. */
+	public void finishBuild() {
+		if (entryCount > 0 && ready) {
+			MemoryUtil.memCopy(shadowPtr, mappedPtrs[frameSlot], (long) entryCount << 4);
+		}
 	}
 
 	/**

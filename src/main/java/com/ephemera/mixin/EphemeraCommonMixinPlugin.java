@@ -24,6 +24,14 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 	protected final Set<String> disabledViaProp = parseDisabledProp();
 	protected final Map<String, List<String>> yieldRules = new HashMap<>();
 	protected final Map<String, String> requiresRules = new HashMap<>();
+	private static final Set<String> MC_26_2_ONLY = Set.of(
+		"EntityFluidInteractionFastMixin",
+		"EntityFluidTrackerMixin"
+	);
+	private static final boolean IS_MC_26_2 = FabricLoader.getInstance()
+		.getModContainer("minecraft")
+		.map(c -> c.getMetadata().getVersion().getFriendlyString().startsWith("26.2"))
+		.orElse(true);
 
 	protected static Set<String> parseDisabledProp() {
 		String raw = System.getProperty("ephemera.mixin.disable", "");
@@ -53,17 +61,21 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 			case "BlockStateCacheMixin", "BlockStateMixin", "StateHolderMixin" -> cfg.memoryCompactBlockStates || cfg.memoryDeduplicateShapes;
 			case "BlockShapeMixin", "ArrayVoxelShapeMixin" -> cfg.memoryDeduplicateShapes;
 			case "CompactTrigMixin" -> cfg.engineFastMath;
-			case "ChunkModuloMixin", "LevelChunkIndexMixin", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin", "ServerChunkCacheFastMixin" -> cfg.engineFastChunkLookup;
-			case "CubeVoxelShapeFastMixin", "BlockCollisionsFastMixin" -> cfg.engineFastCollisions;
-			case "EntitySectionStorageFastMixin", "TrackedEntityFastMixin" -> cfg.engineFastEntityLookup;
+			case "ChunkModuloMixin", "LevelChunkIndexMixin", "SectionStateMixin", "FluidAccess", "FluidStateFastMixin",
+				 "FlowingFluidFastMixin", "EntityFluidInteractionFastMixin", "EntityFluidTrackerMixin",
+				 "LegacyRandomSourceAccessor", "ServerChunkCacheFastMixin" -> cfg.engineFastChunkLookup;
+			case "CubeVoxelShapeFastMixin", "BlockCollisionsFastMixin", "BlockGetterFastMixin", "CollisionGetterFastMixin", "EntityFastTickMixin" -> cfg.engineFastCollisions;
+			case "EntityEquipmentFastMixin", "EntitySectionStorageFastMixin", "TrackedEntityFastMixin", "LeavesBlockFastMixin" -> cfg.engineFastEntityLookup;
 			case "SimpleBitStorageFastMixin", "LinearPaletteFastMixin", "PalettedContainerFastMixin" -> cfg.engineFastPalettedStorage;
-			case "AquiferFastMixin", "BlenderFastMixin", "BlendingDataFastMixin", "GradientNoiseFastMixin", "ImprovedNoiseFastMixin", "MaterialRuleContextPoolMixin",
-				 "MaterialSystemFastMixin", "PerlinNoiseFastMixin", "RandomStatePoolMixin", "SmearedPerlinNoiseFastMixin",
+			case "AquiferFastMixin", "BlenderFastMixin", "BlendingDataFastMixin", "CubicSplineFastMixin",
+				 "DensityFunctionsAp2FastMixin", "GradientNoiseFastMixin", "ImprovedNoiseFastMixin", "MaterialRuleContextPoolMixin",
+				 "MaterialSystemFastMixin", "OreVeinifierFastMixin", "PerlinNoiseFastMixin", "RandomStatePoolMixin", "SmearedPerlinNoiseFastMixin",
 				 "VerticalGradientFastMixin", "XoroshiroPositionalFastMixin",
 				 "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess", "SurfaceRulesSequenceFastMixin" -> cfg.engineFastWorldgenNoise;
 			case "BiomeManagerFastMixin", "ClimateRTreeFastMixin", "ClimateRTreeNodeFastMixin" -> cfg.engineFastBiomeLookup;
 			case "UtilWorkerPriorityMixin" -> cfg.engineWorkerPriorityIsolation;
-			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin" -> cfg.engineFastLighting;
+			case "LightChunkCacheMixin", "LightSectionCacheMixin", "LightWorkMixin", "DataLayerMixin",
+				 "BlockLightMapCopyMixin", "SkyLightMapCopyMixin" -> cfg.engineFastLighting;
 			case "ConnectionFlushMixin" -> cfg.networkFlushConsolidation;
 			case "VarIntFastMixin", "VarLongFastMixin" -> cfg.networkFastVarInt;
 			default -> true;
@@ -83,8 +95,16 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("SectionStateMixin", "lithium", "radium", "canary");
 		registerYield("FluidAccess", "lithium", "radium", "canary");
 		registerYield("FluidStateFastMixin", "lithium", "radium", "canary");
+		registerYield("FlowingFluidFastMixin", "lithium", "radium", "canary");
+		registerYield("EntityFluidInteractionFastMixin", "lithium", "radium", "canary");
+		registerYield("EntityFluidTrackerMixin", "lithium", "radium", "canary");
+		registerYield("EntityEquipmentFastMixin", "lithium", "radium", "canary");
 		registerYield("CubeVoxelShapeFastMixin", "lithium", "radium", "canary");
 		registerYield("BlockCollisionsFastMixin", "lithium", "radium", "canary");
+		registerYield("BlockGetterFastMixin", "lithium", "radium", "canary");
+		registerYield("CollisionGetterFastMixin", "lithium", "radium", "canary");
+		registerYield("EntityFastTickMixin", "lithium", "radium", "canary");
+		registerYield("LeavesBlockFastMixin", "lithium", "radium", "canary");
 		registerYield("EntitySectionStorageFastMixin", "lithium", "radium", "canary", "vmp");
 		registerYield("TrackedEntityFastMixin", "lithium", "radium", "canary", "vmp");
 		registerYield("ServerChunkCacheFastMixin", "lithium", "radium", "canary", "vmp", "c2me");
@@ -95,10 +115,13 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("AquiferFastMixin", "c2me", "noisium");
 		registerYield("BlenderFastMixin", "c2me", "noisium");
 		registerYield("BlendingDataFastMixin", "c2me", "noisium");
+		registerYield("CubicSplineFastMixin", "c2me", "noisium");
+		registerYield("DensityFunctionsAp2FastMixin", "c2me", "noisium");
 		registerYield("GradientNoiseFastMixin", "c2me", "noisium");
 		registerYield("ImprovedNoiseFastMixin", "c2me", "noisium");
 		registerYield("MaterialRuleContextPoolMixin", "c2me", "noisium");
 		registerYield("MaterialSystemFastMixin", "c2me", "noisium");
+		registerYield("OreVeinifierFastMixin", "c2me", "noisium");
 		registerYield("PerlinNoiseFastMixin", "c2me", "noisium");
 		registerYield("RandomStatePoolMixin", "c2me", "noisium");
 		registerYield("SmearedPerlinNoiseFastMixin", "c2me", "noisium");
@@ -113,6 +136,8 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("UtilWorkerPriorityMixin", "c2me");
 		registerYield("LightChunkCacheMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
 		registerYield("LightSectionCacheMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
+		registerYield("BlockLightMapCopyMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
+		registerYield("SkyLightMapCopyMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
 		registerYield("LightWorkMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
 		registerYield("DataLayerMixin", "scalablelux", "starlight", "lithium", "radium", "canary");
 		registerYield("ConnectionFlushMixin", "krypton");
@@ -131,6 +156,10 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		String simple = mixinClassName.substring(mixinClassName.lastIndexOf('.') + 1);
 		if (disabledViaProp.contains(simple) || disabledViaProp.contains("ALL")) {
 			MixinHealth.recordStoodDown(simple, "ephemera.mixin.disable");
+			return false;
+		}
+		if (MC_26_2_ONLY.contains(simple) && !IS_MC_26_2) {
+			MixinHealth.recordStoodDown(simple, "mc!=26.2");
 			return false;
 		}
 		EphemeraConfig cfg = EphemeraCommon.config();

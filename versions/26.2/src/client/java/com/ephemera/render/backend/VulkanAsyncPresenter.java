@@ -1,5 +1,6 @@
 package com.ephemera.render.backend;
 
+import com.ephemera.platform.Win32DisplayRuntime;
 import com.ephemera.render.pacing.CaptureOptimizationService;
 import com.mojang.blaze3d.vulkan.VulkanQueue;
 import java.util.concurrent.locks.LockSupport;
@@ -247,7 +248,9 @@ public final class VulkanAsyncPresenter {
 	 * outputs remain readable by the render thread afterwards.
 	 */
 	public static void harvest() {
-		awaitCondition(COND_PRESENT_DONE, 0L);
+		if (!presentAcquireDone && head != tail) {
+			awaitCondition(COND_PRESENT_DONE, 0L);
+		}
 		presentAcquirePending = false;
 		presentAcquireDone = false;
 		checkAsyncError();
@@ -289,6 +292,9 @@ public final class VulkanAsyncPresenter {
 	 * and the worker reads it after its volatile state writes, so a wakeup can never be lost.
 	 */
 	private static void awaitCondition(int cond, long arg) {
+		if (conditionMet(cond, arg)) {
+			return;
+		}
 		renderWaiter = Thread.currentThread();
 		try {
 			long start = System.nanoTime();
@@ -320,6 +326,7 @@ public final class VulkanAsyncPresenter {
 	private static final long CAPTURE_WORKER_SPIN_NS = 10_000L;
 
 	private static void runLoop() {
+		Win32DisplayRuntime.boostCurrentThreadHighQoS();
 		boolean capturePrio = false;
 		while (true) {
 			boolean wantCapturePrio = CaptureOptimizationService.isCaptureActive();

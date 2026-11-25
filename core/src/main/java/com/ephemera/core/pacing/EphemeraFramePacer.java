@@ -27,6 +27,7 @@ public final class EphemeraFramePacer {
 	public enum HookPoint {
 		NONE,
 		FRAME_HEAD,
+		PRE_PRESENT,
 		POST_SWAP
 	}
 
@@ -61,6 +62,13 @@ public final class EphemeraFramePacer {
 	private long originNs;
 	private double nextDeadlineNs;
 	private boolean headWaitedThisFrame;
+	private long stage2TargetDeadlineNs;
+	private long lastPresentStartNs;
+
+	// Fast-attack / slow-decay CPU work & present-block estimators (nanoseconds) for two-stage predictive pacing.
+	private double nonTickWorkHighNs;
+	private double tickWorkHighNs;
+	private double presentBlockHighNs;
 
 	// Fast-attack / slow-decay park overshoot estimate (nanoseconds).
 	private double overshootEstimateNs = 350_000.0;
@@ -82,6 +90,229 @@ public final class EphemeraFramePacer {
 		originNs = 0L;
 		nextDeadlineNs = 0.0;
 		headWaitedThisFrame = false;
+		stage2TargetDeadlineNs = 0L;
+		lastPresentStartNs = 0L;
+	}
+
+	/** Latched Stage 2 present deadline in {@code nanoTime()} ticks for the active frame, or 0 if uncapped/arming. */
+	public long latchedTargetPresentNs() {
+		return stage2TargetDeadlineNs;
+	}
+
+	/**
+	 * Records post-present completion after {@code GpuSurface.present()} returns (blocking GL
+	 * {@code glfwSwapBuffers} or synchronous present paths) so Stage 1 accounts for driver-side
+	 * present time and severe present stalls re-anchor cleanly instead of causing short catch-up frames.
+	 */
+	public void observePostPresent(long postPresentNs, int targetFps) {
+		long start = lastPresentStartNs;
+		lastPresentStartNs = 0L;
+		if (start <= 0L || postPresentNs <= start) {
+			return;
+		}
+		long blockNs = postPresentNs - start;
+		long periodNs = targetFps > 0 ? (1_000_000_000L / targetFps) : 16_666_667L;
+		double sample = Math.min(blockNs, periodNs * 0.45);
+		if (presentBlockHighNs <= 0.0) {
+			presentBlockHighNs = sample;
+		} else if (sample > presentBlockHighNs) {
+			presentBlockHighNs = presentBlockHighNs * 0.75 + sample * 0.25;
+		} else {
+			presentBlockHighNs = presentBlockHighNs * 0.985 + sample * 0.015;
+		}
+		if (activeOwner == HookPoint.PRE_PRESENT && activeFps == targetFps && targetFps > 0
+			&& originNs != 0L && nextDeadlineNs > 0.0) {
+			double periodD = 1_000_000_000.0 / targetFps;
+			double relPost = postPresentNs - originNs;
+			if (relPost > nextDeadlineNs + periodD * 0.50) {
+				// Present blocked well past the next frame's start: re-anchor cleanly.
+				originNs = postPresentNs;
+				nextDeadlineNs = periodD;
+			}
+		}
+	}
+
+	/**
+	 * Records observed pure CPU work duration (from frame-work start to GPU submit, excluding all
+	 * pacer waits), tracked separately for 20 Hz game-tick frames and non-tick frames so Stage 1
+	 * wakes early on tick frames and never delays {@code present()}.
+	 */
+	public void observeCpuWork(long workNs, boolean hadGameTick) {
+		if (workNs <= 0L || workNs > 100_000_000L) {
+			return;
+		}
+		long periodNs = activeFps > 0 ? (1_000_000_000L / activeFps) : 16_666_667L;
+		// Clamp single outlier spikes (e.g. stop-the-world GC pauses) so they cannot blow up
+		// predicted Stage 1 work for seconds; tick frames run at 20 Hz (12x slower than 240 FPS),
+		// so tick decay uses a faster per-sample factor to match the non-tick wall-clock half-life.
+		double sample = Math.min(workNs, Math.max(periodNs * 0.90, 2_500_000.0));
+		if (hadGameTick) {
+			if (tickWorkHighNs <= 0.0) {
+				tickWorkHighNs = sample;
+			} else if (sample > tickWorkHighNs) {
+				tickWorkHighNs = tickWorkHighNs * 0.78 + sample * 0.22;
+			} else {
+				tickWorkHighNs = tickWorkHighNs * 0.90 + sample * 0.10;
+			}
+		} else {
+			if (nonTickWorkHighNs <= 0.0) {
+				nonTickWorkHighNs = sample;
+			} else if (sample > nonTickWorkHighNs) {
+				nonTickWorkHighNs = nonTickWorkHighNs * 0.70 + sample * 0.30;
+			} else {
+				nonTickWorkHighNs = nonTickWorkHighNs * 0.985 + sample * 0.015;
+			}
+		}
+	}
+
+	/**
+	 * Two-stage predictive low-latency Stage 1 at {@code Minecraft.runTick} HEAD.
+	 */
+	public long paceTwoStageHead(int targetFps, boolean lowLatency, boolean tickLikely,
+								 int configuredSpinTailMicros, boolean captureMode) {
+		return paceTwoStageHead(targetFps, lowLatency, tickLikely ? 0L : Long.MAX_VALUE, configuredSpinTailMicros, captureMode);
+	}
+
+	/**
+	 * Two-stage predictive low-latency Stage 1 at {@code Minecraft.runTick} HEAD using exact time
+	 * until the next 20 Hz game tick.
+	 *
+	 * <p>Anchors canonical cadence to {@code GpuSurface.present()} (Stage 2). On non-tick frames,
+	 * sleeps until {@code targetPresent - nonTickPredicted}. On frames where a 20 Hz tick will
+	 * actually become due before {@code normalWake}, wakes early enough for the tick + render to
+	 * finish before {@code targetPresent} while never waking prematurely before the tick boundary.
+	 */
+	public long paceTwoStageHead(int targetFps, boolean lowLatency, long nsUntilNextTick,
+								 int configuredSpinTailMicros, boolean captureMode) {
+		headWaitedThisFrame = false;
+		if (targetFps <= 0) {
+			if (activeOwner == HookPoint.PRE_PRESENT || activeOwner == HookPoint.FRAME_HEAD) {
+				reset();
+			}
+			return 0L;
+		}
+		if (activeOwner != HookPoint.PRE_PRESENT || activeFps != targetFps) {
+			activeOwner = HookPoint.PRE_PRESENT;
+			activeFps = targetFps;
+			originNs = 0L;
+			nextDeadlineNs = 0.0;
+			stage2TargetDeadlineNs = 0L;
+			return 0L;
+		}
+		if (originNs == 0L || nextDeadlineNs == 0.0) {
+			stage2TargetDeadlineNs = 0L;
+			return 0L;
+		}
+		long nowNs = ops.nanoTime();
+		double periodNs = 1_000_000_000.0 / targetFps;
+		double relNowNs = nowNs - originNs;
+		if (relNowNs > nextDeadlineNs + periodNs * 0.75) {
+			// Genuine hitch before frame start: let Stage 2 re-anchor cleanly at present time.
+			originNs = 0L;
+			nextDeadlineNs = 0.0;
+			stage2TargetDeadlineNs = 0L;
+			return 0L;
+		}
+		long targetPresent = originNs + Math.round(nextDeadlineNs);
+		stage2TargetDeadlineNs = targetPresent;
+		if (!lowLatency) {
+			return 0L;
+		}
+		double nonTickBase = nonTickWorkHighNs > 0.0 ? nonTickWorkHighNs : Math.min(1_200_000.0, periodNs * 0.35);
+		double tickBase = Math.max(tickWorkHighNs, nonTickBase);
+		// Include observed driver present-block latency (e.g. GL glfwSwapBuffers) capped to 25% of period
+		// so blocking swaps do not eat into Stage 2 slack on the following frame.
+		long presentPadNs = Math.min(Math.round(periodNs * 0.25), Math.round(presentBlockHighNs * 0.5));
+		long marginNs = captureMode
+			? 150_000L
+			: Math.min(350_000L, Math.max(150_000L, Math.round(periodNs * 0.08)));
+		long maxPredictedNs = Math.round(periodNs * 0.85);
+		long normalPredictedNs = Math.min(maxPredictedNs, Math.round(nonTickBase) + presentPadNs + marginNs);
+		long tickPredictedNs = Math.min(maxPredictedNs, Math.round(tickBase) + presentPadNs + marginNs);
+
+		long normalWake = targetPresent - normalPredictedNs;
+		long tickWake = targetPresent - tickPredictedNs;
+		long stage1Deadline = normalWake;
+		if (nsUntilNextTick <= 0L) {
+			stage1Deadline = tickWake;
+		} else if (nsUntilNextTick != Long.MAX_VALUE) {
+			long tickDueNs = nowNs + nsUntilNextTick;
+			// Only wake early if the 20 Hz tick will actually become due by normalWake (+1 ms for Util.getMillis() quantization),
+			// and never wake earlier than tickDueNs + 0.5 ms so advanceGameTime() actually executes the tick on this frame.
+			if (tickDueNs <= normalWake + 1_000_000L) {
+				stage1Deadline = Math.min(normalWake, Math.max(tickDueNs + 500_000L, tickWake));
+			}
+		}
+		if (stage1Deadline <= nowNs) {
+			return 0L;
+		}
+		headWaitedThisFrame = true;
+		return waitUntil(stage1Deadline, configuredSpinTailMicros, captureMode, Math.round(periodNs));
+	}
+
+	/**
+	 * Two-stage Stage 2 immediately AFTER {@code CommandEncoder.submit()} and BEFORE
+	 * {@code GpuSurface.present()}. Aligns present calls to exact nanosecond cadence across both
+	 * normal and 20 Hz tick frames while overlapping GPU command execution during the residual wait.
+	 *
+	 * @return {@code true} if Ephemera handled this frame's pacing
+	 */
+	public boolean paceTwoStagePrePresent(int targetFps, int configuredSpinTailMicros, boolean captureMode) {
+		if (targetFps <= 0) {
+			if (activeOwner == HookPoint.PRE_PRESENT) {
+				reset();
+			}
+			return false;
+		}
+		long nowNs = ops.nanoTime();
+		double periodNs = 1_000_000_000.0 / targetFps;
+		if (activeOwner != HookPoint.PRE_PRESENT || activeFps != targetFps || originNs == 0L || nextDeadlineNs == 0.0) {
+			activeOwner = HookPoint.PRE_PRESENT;
+			activeFps = targetFps;
+			originNs = nowNs;
+			nextDeadlineNs = periodNs;
+			stage2TargetDeadlineNs = 0L;
+			return true;
+		}
+		long target = stage2TargetDeadlineNs != 0L ? stage2TargetDeadlineNs : (originNs + Math.round(nextDeadlineNs));
+		stage2TargetDeadlineNs = 0L;
+		double relNowNs = nowNs - originNs;
+		if (relNowNs > nextDeadlineNs + periodNs * 0.75) {
+			// Genuine hitch during tick/render: re-anchor cleanly at present without burst catch-up.
+			originNs = nowNs;
+			nextDeadlineNs = periodNs;
+			return true;
+		}
+		if (nowNs > target) {
+			// Mildly late frame: shift next deadline forward by 85% of lateness to eliminate
+			// short-after-long sawtooth compression while preserving average frame rate.
+			double lateness = relNowNs - nextDeadlineNs;
+			nextDeadlineNs = nextDeadlineNs + periodNs + lateness * 0.85;
+			lastPresentStartNs = nowNs;
+			return true;
+		}
+		waitUntil(target, configuredSpinTailMicros, captureMode, Math.round(periodNs));
+		long afterWaitNs = ops.nanoTime();
+		lastPresentStartNs = afterWaitNs;
+		long wakeOvershoot = afterWaitNs - target;
+		if (wakeOvershoot > 200_000L && wakeOvershoot < periodNs * 0.75) {
+			// Damp mild OS timer wake overshoot so the next interval is not artificially compressed.
+			nextDeadlineNs = nextDeadlineNs + periodNs + wakeOvershoot * 0.50;
+		} else if (wakeOvershoot >= periodNs * 0.75) {
+			originNs = afterWaitNs;
+			nextDeadlineNs = periodNs;
+		} else {
+			nextDeadlineNs += periodNs;
+		}
+		return true;
+	}
+
+	public double predictedNonTickWorkMs() {
+		return nonTickWorkHighNs / 1_000_000.0;
+	}
+
+	public double predictedTickWorkMs() {
+		return tickWorkHighNs / 1_000_000.0;
 	}
 
 	/**
@@ -105,7 +336,7 @@ public final class EphemeraFramePacer {
 	public long paceFrameHead(int targetFps, boolean lowLatency, int configuredSpinTailMicros, boolean captureMode) {
 		headWaitedThisFrame = false;
 		if (targetFps <= 0 || !lowLatency) {
-			if (activeOwner == HookPoint.FRAME_HEAD) {
+			if (activeOwner == HookPoint.FRAME_HEAD || activeOwner == HookPoint.PRE_PRESENT) {
 				reset();
 			}
 			return 0L;
@@ -129,10 +360,10 @@ public final class EphemeraFramePacer {
 	}
 
 	public boolean pacePostSwap(int targetFps, int configuredSpinTailMicros, boolean captureMode) {
-		if (activeOwner == HookPoint.FRAME_HEAD) {
+		if (activeOwner == HookPoint.FRAME_HEAD || activeOwner == HookPoint.PRE_PRESENT) {
 			if (targetFps > 0 && activeFps <= targetFps) {
-				// Frame-head owns this frame's cadence even when it only armed or re-anchored after a
-				// hitch (headWaitedThisFrame == false); letting vanilla sleep here would double-wait.
+				// Frame-head or pre-present owns this frame's cadence even when it only armed or
+				// re-anchored after a hitch; letting vanilla sleep here would double-wait.
 				return true;
 			}
 			// A tighter native restriction appeared mid-frame (e.g. minimized); let it take effect.
@@ -148,7 +379,7 @@ public final class EphemeraFramePacer {
 			// Arming or recovering from a big hitch: already anchored, cancel vanilla to avoid double-drift.
 			return true;
 		}
-		waitUntil(deadline, configuredSpinTailMicros, captureMode);
+		waitUntil(deadline, configuredSpinTailMicros, captureMode, 1_000_000_000L / targetFps);
 		return true;
 	}
 
@@ -197,6 +428,10 @@ public final class EphemeraFramePacer {
 	 * overshoot spikes never expand busy-spinning at the expense of capture encoders.
 	 */
 	public long waitUntil(long deadlineNs, int configuredSpinTailMicros, boolean captureMode) {
+		return waitUntil(deadlineNs, configuredSpinTailMicros, captureMode, 0L);
+	}
+
+	long waitUntil(long deadlineNs, int configuredSpinTailMicros, boolean captureMode, long periodNs) {
 		long startNs = ops.nanoTime();
 		long remaining = deadlineNs - startNs;
 		if (remaining <= 0L) {
@@ -206,7 +441,7 @@ public final class EphemeraFramePacer {
 
 		long minReserve = captureMode ? CAPTURE_MIN_RESERVE_NS : MIN_RESERVE_NS;
 		long baseSpinNs = Math.max(minReserve, configuredSpinTailMicros * 1_000L);
-		long reserveNs = effectiveReserveNs(baseSpinNs, captureMode);
+		long reserveNs = effectiveReserveNs(baseSpinNs, captureMode, periodNs);
 		long reparkMargin = captureMode ? CAPTURE_REPARK_EXTRA_MARGIN_NS : REPARK_EXTRA_MARGIN_NS;
 
 		int parks = 0;
@@ -226,7 +461,7 @@ public final class EphemeraFramePacer {
 			observeParkOvershoot(parkRequest, actualPark);
 			parks++;
 			remaining = deadlineNs - now;
-			reserveNs = effectiveReserveNs(baseSpinNs, captureMode);
+			reserveNs = effectiveReserveNs(baseSpinNs, captureMode, periodNs);
 		}
 
 		while (now < deadlineNs) {
@@ -270,12 +505,25 @@ public final class EphemeraFramePacer {
 	}
 
 	public long effectiveReserveNs(long baseSpinNs, boolean captureMode) {
+		return effectiveReserveNs(baseSpinNs, captureMode, 0L);
+	}
+
+	/**
+	 * Computes the spin reserve, bounded cleanly against {@code periodNs} when active so high-FPS
+	 * caps (300–1000 FPS, where {@code periodNs} is 1.0–3.33 ms) never lock into 100% busy-spinning
+	 * after a transient OS preemption spike.
+	 */
+	public long effectiveReserveNs(long baseSpinNs, boolean captureMode, long periodNs) {
 		if (captureMode) {
-			return Math.min(MAX_RESERVE_NS, Math.max(CAPTURE_MIN_RESERVE_NS, baseSpinNs));
+			long res = Math.min(MAX_RESERVE_NS, Math.max(CAPTURE_MIN_RESERVE_NS, baseSpinNs));
+			return periodNs > 0L ? Math.min(res, Math.max(CAPTURE_MIN_RESERVE_NS, (periodNs * 2L) / 5L)) : res;
 		}
 		long adaptive = Math.round(overshootEstimateNs * 1.25) + 180_000L;
 		long chosen = Math.max(baseSpinNs, adaptive);
-		return Math.min(MAX_RESERVE_NS, Math.max(MIN_RESERVE_NS, chosen));
+		long maxForPeriod = periodNs > 0L
+			? Math.min(MAX_RESERVE_NS, Math.max(MIN_RESERVE_NS, (periodNs * 3L) / 5L))
+			: MAX_RESERVE_NS;
+		return Math.min(maxForPeriod, Math.max(MIN_RESERVE_NS, chosen));
 	}
 
 	public int adaptiveOvershootMicros() {

@@ -12,10 +12,17 @@ public final class ParticleCellOcclusion {
     private boolean lastHidden;
     private double cameraX, cameraY, cameraZ;
     private boolean cameraValid;
+    private int frameProbeBudget = Integer.MAX_VALUE;
+    private int frameProbesUsed;
 
     public ParticleCellOcclusion(OpaqueLayerSweep.Solidity solidity) {
         if (solidity == null) throw new IllegalArgumentException("solidity required");
         this.solidity = solidity;
+    }
+
+    /** Caps new world-reading cell probes per frame (0 or negative = unlimited); cache hits stay free. */
+    public void setFrameProbeBudget(int maxProbesPerFrame) {
+        this.frameProbeBudget = maxProbesPerFrame > 0 ? maxProbesPerFrame : Integer.MAX_VALUE;
     }
 
     /** Updates camera/terrain epoch once per frame so per-particle queries skip repeated camera checks. */
@@ -25,8 +32,12 @@ public final class ParticleCellOcclusion {
             return false;
         }
         cameraValid = true;
+        if (this.frame != frame) {
+            this.frame = frame;
+            this.frameProbesUsed = 0;
+        }
         if (stamp != terrainStamp || cameraX != cx || cameraY != cy || cameraZ != cz) {
-            this.frame = frame; stamp = terrainStamp; cameraX = cx; cameraY = cy; cameraZ = cz;
+            stamp = terrainStamp; cameraX = cx; cameraY = cy; cameraZ = cz;
             epoch++;
             lastEpoch = -1L;
         }
@@ -52,6 +63,11 @@ public final class ParticleCellOcclusion {
             lastEpoch = epoch; lastKey = key; lastHidden = h;
             return h;
         }
+        if (frameProbesUsed >= frameProbeBudget) {
+            // Fail open without polluting the cell cache when per-frame probe budget is exhausted.
+            return false;
+        }
+        frameProbesUsed++;
         double ax = Math.abs(bx + .5 - cx), ay = Math.abs(by + .5 - cy), az = Math.abs(bz + .5 - cz);
         boolean result;
         if (ax >= ay && ax >= az) result = probe(0, cx, cy, cz, bx, by, bz);

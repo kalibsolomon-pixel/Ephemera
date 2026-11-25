@@ -118,7 +118,7 @@ public final class RegionVertexBaking {
 			try {
 				QuadBuckets sb = layout != null ? layout[ChunkSectionLayer.SOLID.ordinal()] : null;
 				QuadBuckets cb = layout != null ? layout[ChunkSectionLayer.CUTOUT.ordinal()] : null;
-				meshlets = MESHLET_BAKERS.get().bake(sx, sy, sz, dx, dy, dz,
+				meshlets = MESHLET_BAKERS.get().bakePooled(sx, sy, sz, dx, dy, dz,
 					solidVerts, solidVertCount, sb, cutoutVerts, cutoutVertCount, cb);
 			} catch (Throwable t) {
 				meshlets = null;

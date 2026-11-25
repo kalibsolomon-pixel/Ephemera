@@ -63,6 +63,14 @@ public final class BakedSectionMeshlets {
 		return solidMeshletCount + cutoutMeshletCount;
 	}
 
+	public int quadWordCount() {
+		return quadCount * MeshletBaker.INTS_PER_QUAD;
+	}
+
+	public int meshletWordCount() {
+		return totalMeshlets() * MeshletBaker.INTS_PER_MESHLET;
+	}
+
 	public boolean hasLayer(int layerOrdinal) {
 		return layerOrdinal >= 0 && layerOrdinal < 2 && (layerMask & (1 << layerOrdinal)) != 0;
 	}

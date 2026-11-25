@@ -27,6 +27,10 @@ public final class DirectMappedSweepCache {
         h ^= h >>> 33;
         return (int) h & mask;
     }
+    public int lastResultForId(long id) {
+        int s = slot(id);
+        return ids[s] == id ? results[s] : MISS;
+    }
     public int lookup(long id, long stamp, long now, int cx, int cy, int cz,
                       int x0, int y0, int z0, int x1, int y1, int z1) {
         int s = slot(id);

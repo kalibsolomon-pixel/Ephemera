@@ -474,6 +474,30 @@ public final class Win32DisplayRuntime {
 		return JNI.invokePPI(hThread, THREAD_POWER_THROTTLING, addr, 12, pSetThreadInformation) != 0;
 	}
 
+	/**
+	 * Marks a latency-critical worker thread (such as {@code Ephemera-VkPresent}) as HighQoS so
+	 * Windows 11 hybrid schedulers never demote present/submit calls onto an E-core. Fails soft.
+	 */
+	public static void boostCurrentThreadHighQoS() {
+		if (!IS_WINDOWS || !EphemeraCommon.config().windowsLowLatencyRuntime) {
+			return;
+		}
+		ensureLibrariesLoaded();
+		if (pGetCurrentThread == 0L) {
+			return;
+		}
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long hThread = JNI.invokeP(pGetCurrentThread);
+			if (pSetThreadInformation != 0L) {
+				setThreadPowerThrottling(stack, hThread, THREAD_POWER_THROTTLING_EXECUTION_SPEED, 0);
+			}
+			if (pSetThreadPriority != 0L) {
+				JNI.invokePI(hThread, THREAD_PRIORITY_ABOVE_NORMAL, pSetThreadPriority);
+			}
+		} catch (Throwable ignored) {
+		}
+	}
+
 	private static void initHighResWaitTimer() {
 		if (WAIT_TIMER.isActive()) {
 			return;
@@ -492,9 +516,15 @@ public final class Win32DisplayRuntime {
 		if (nanos <= 0L) {
 			return;
 		}
-		if (runtimeEnabled
-			&& EphemeraCommon.config().windowsLowLatencyRuntime
-			&& WAIT_TIMER.tryParkNanos(nanos, Thread.currentThread())) {
+		if (runtimeEnabled && EphemeraCommon.config().windowsLowLatencyRuntime) {
+			long deadline = System.nanoTime() + nanos;
+			if (WAIT_TIMER.tryParkNanos(nanos, Thread.currentThread())) {
+				return;
+			}
+			long remaining = deadline - System.nanoTime();
+			if (remaining > 0L) {
+				LockSupport.parkNanos(remaining);
+			}
 			return;
 		}
 		LockSupport.parkNanos(nanos);

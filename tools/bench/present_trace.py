@@ -59,6 +59,8 @@ def build_presentmon_command(exe: Path, pid: int, output_csv: Path) -> list[str]
     """Builds a scoped PresentMon command targeting a single game PID."""
     return [
         str(exe),
+        "--session_name",
+        f"EphemeraBench_{pid}",
         "--process_id",
         str(pid),
         "--output_file",
