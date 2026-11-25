@@ -71,6 +71,13 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 				 "DensityFunctionsAp2FastMixin", "GradientNoiseFastMixin", "ImprovedNoiseFastMixin", "MaterialRuleContextPoolMixin",
 				 "MaterialSystemFastMixin", "OreVeinifierFastMixin", "PerlinNoiseFastMixin", "RandomStatePoolMixin", "SmearedPerlinNoiseFastMixin",
 				 "VerticalGradientFastMixin", "XoroshiroPositionalFastMixin",
+				 "DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
+				 "DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin", "DensityMarkerOrMarkedIdentityMixin",
+				 "DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
+				 "DensityShiftedNoiseIdentityMixin",
+				 "DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",
+				 "DensitySplineIdentityMixin", "SplineCoordinateIdentityMixin",
+				 "FeaturePlacementFastMixin", "PlacementFilterShouldPlaceAccessor",
 				 "BeardifierFastMixin", "NoiseChunkFastMixin", "NoiseInterpolatorAccess", "SurfaceRulesSequenceFastMixin" -> cfg.engineFastWorldgenNoise;
 			case "BiomeManagerFastMixin", "ClimateRTreeFastMixin", "ClimateRTreeNodeFastMixin" -> cfg.engineFastBiomeLookup;
 			case "UtilWorkerPriorityMixin" -> cfg.engineWorkerPriorityIsolation;
@@ -110,6 +117,17 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("TrackedEntityFastMixin", "lithium", "radium", "canary", "vmp");
 		registerYield("ServerChunkCacheFastMixin", "lithium", "radium", "canary", "vmp", "c2me");
 		registerYield("SurfaceRulesSequenceFastMixin", "c2me", "noisium", "lithium", "radium", "canary", "vmp");
+		for (String m : new String[] {
+			"DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
+			"DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin", "DensityMarkerOrMarkedIdentityMixin",
+			"DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
+			"DensityShiftedNoiseIdentityMixin",
+			"DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",
+			"DensitySplineIdentityMixin", "SplineCoordinateIdentityMixin",
+			"FeaturePlacementFastMixin", "PlacementFilterShouldPlaceAccessor"
+		}) {
+			registerYield(m, "c2me", "noisium");
+		}
 		registerYield("SimpleBitStorageFastMixin", "lithium", "radium", "canary", "c2me");
 		registerYield("LinearPaletteFastMixin", "lithium", "radium", "canary", "c2me");
 		registerYield("PalettedContainerFastMixin", "lithium", "radium", "canary", "c2me");

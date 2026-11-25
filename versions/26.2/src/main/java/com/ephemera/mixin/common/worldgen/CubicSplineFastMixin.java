@@ -32,10 +32,29 @@ abstract class CubicSplineFastMixin<I extends BoundedFloatFunction<?>> {
 		I mappedCoord = visitor.apply(this.coordinate);
 		List<CubicSpline<I>> src = this.values;
 		int n = src.size();
-		ArrayList<CubicSpline<I>> mapped = new ArrayList<>(n);
+		// Identity short-circuit (wave 5): when the coordinate and every child spline map to
+		// themselves, this node is semantically identical - return it without allocating the
+		// ArrayList / Multipoint / unmodifiableList wrapper (the 8x-per-chunk NoiseChunk graph
+		// walks rebuild every spline node per walk otherwise).
+		ArrayList<CubicSpline<I>> mapped = null;
 		for (int i = 0; i < n; i++) {
-			mapped.add(src.get(i).mapCoordinates(visitor));
+			CubicSpline<I> child = src.get(i).mapCoordinates(visitor);
+			if (mapped == null) {
+				if (child != src.get(i)) {
+					mapped = new ArrayList<>(n);
+					for (int j = 0; j < i; j++) {
+						mapped.add(src.get(j));
+					}
+					mapped.add(child);
+				}
+			} else {
+				mapped.add(child);
+			}
 		}
-		return new CubicSpline.Multipoint<>(mappedCoord, this.locations, Collections.unmodifiableList(mapped), this.derivatives);
+		if (mappedCoord == this.coordinate && mapped == null) {
+			return (CubicSpline<I>) (Object) this;
+		}
+		List<CubicSpline<I>> children = mapped != null ? Collections.unmodifiableList(mapped) : this.values;
+		return new CubicSpline.Multipoint<>(mappedCoord, this.locations, children, this.derivatives);
 	}
 }
