@@ -16,6 +16,7 @@
     "culling.LeavesOpaqueFaceMixin",
     "culling.LevelExtractorCullingMixin",
     "culling.ModelPartFastChildrenMixin",
+    "culling.ModelPartTransformScratchMixin",
     "culling.RendererTypeCacheMixin",
     "culling.ShadowGroundCacheMixin",
     "culling.SignTextCullingMixin",

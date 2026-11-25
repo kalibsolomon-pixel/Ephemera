@@ -117,6 +117,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		// Culling, shadows, particles & MoreCulling block states
 		registerYield("EntityRendererCacheMixin", "badoptimizations");
 		registerYield("ModelPartFastChildrenMixin", "entity_model_features", "optifabric");
+		registerYield("ModelPartTransformScratchMixin", "entity_model_features", "optifabric");
 		registerYield("RenderTypesEntityCacheMixin", "iris", "oculus");
 		registerYield("EntityRendererFrustumFastMixin", "sodium", "entityculling", "badoptimizations");
 		registerYield("LevelExtractorPlayerStateFastMixin", "badoptimizations");
