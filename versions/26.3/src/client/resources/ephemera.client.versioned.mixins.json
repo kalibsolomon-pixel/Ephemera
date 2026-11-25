@@ -23,7 +23,6 @@
     "backend.VulkanBufferViewMixin",
     "backend.VulkanCommandEncoderMixin",
     "backend.VulkanDirectBufferMixin",
-    "backend.VulkanGlslCompilerMixin",
     "backend.VulkanGpuSurfaceMixin",
     "backend.VulkanInstanceMixin",
     "backend.VulkanQueueMixin",
