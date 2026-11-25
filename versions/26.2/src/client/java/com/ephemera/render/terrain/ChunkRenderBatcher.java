@@ -1,5 +1,6 @@
 package com.ephemera.render.terrain;
 
+import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.core.terrain.FastFrustumMath;
@@ -152,6 +153,9 @@ public final class ChunkRenderBatcher {
 	private @Nullable SectionRenderDispatcher planDispatcher;
 	private int planEpoch;
 	private long planTopology;
+	private long planDigest1;
+	private long planDigest2;
+	private int planDigestSize = -1;
 	private Object[] planSections = new Object[0];
 	private int planSectionCount;
 	private boolean planHasCamera;
@@ -527,8 +531,13 @@ public final class ChunkRenderBatcher {
 	 * list), same camera position, fog, culling, atlas size, sprite tracking and draw mode, and
 	 * no section was still fading in when it was built.
 	 */
-	private boolean canReusePlan(SectionRenderDispatcher dispatcher, int epoch,
-								 ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections,
+	private static boolean ephemera$planDigestActive() {
+		return MixinHealth.isApplied("SectionOcclusionGraphDigestMixin")
+			&& MixinHealth.isApplied("TerrainLevelRendererChunkBatchMixin")
+			&& !MixinHealth.hasFailed("SectionOcclusionGraphDigestMixin");
+	}
+
+	private boolean canReusePlan(SectionRenderDispatcher dispatcher, int epoch,								 ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections,
 								 boolean trackSprites, boolean direct, int cullMask, boolean meshActive,
 								 boolean glSingleMdi) {
 		if (!planValid || !TerrainFeatures.planReuse()
@@ -547,6 +556,15 @@ public final class ChunkRenderBatcher {
 		int size = visibleSections.size();
 		if (size != planSectionCount) {
 			return false;
+		}
+		// O(1) fast path: the wave-3 rolling digest is order-sensitive over the same packed
+		// section nodes the plan captured, so a matching snapshot proves this frame's refilled
+		// list is the plan's list (nodes are position-unique, so identical nodes+order implies
+		// identical section references). The element walk stays as the digest-inactive fallback.
+		if (planDigestSize == size
+			&& planDigest1 == TerrainTopology.visibleSectionsDigest1
+			&& planDigest2 == TerrainTopology.visibleSectionsDigest2) {
+			return true;
 		}
 		Object[] elements = visibleSections.elements();
 		Object[] last = planSections;
@@ -1260,6 +1278,11 @@ public final class ChunkRenderBatcher {
 		planDispatcher = dispatcher;
 		planEpoch = epoch;
 		planTopology = topology;
+		// Snapshot the refill content digest: the rolling digest is order-sensitive over the same
+		// packed section nodes, so a matching snapshot proves this frame's list is the plan's list.
+		planDigest1 = TerrainTopology.visibleSectionsDigest1;
+		planDigest2 = TerrainTopology.visibleSectionsDigest2;
+		planDigestSize = ephemera$planDigestActive() ? size : -1;
 		planHasCamera = hasCamera;
 		planCamX = camX;
 		planCamY = camY;

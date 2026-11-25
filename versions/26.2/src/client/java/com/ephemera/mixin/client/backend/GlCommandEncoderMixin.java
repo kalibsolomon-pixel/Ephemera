@@ -4,6 +4,7 @@ import com.ephemera.render.backend.DispatchSettings;
 import com.ephemera.render.backend.GlStateCache;
 import com.ephemera.render.backend.GlTextureMipState;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import org.lwjgl.opengl.GL30C;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.llamalad7.mixinextras.sugar.Share;
@@ -222,6 +223,19 @@ abstract class GlCommandEncoderMixin {
 			}
 			original.call(target, handle);
 		}
+	}
+
+	// The HUD alternates pipelines per draw and vanilla re-binds the element array on every
+	// indexed draw with a raw uncached glBindBuffer. The binding is VAO-scoped state and all VAO
+	// binds are tracked, so skip when the same element buffer is already bound on this VAO.
+	@WrapOperation(method = {"executeDraws", "drawFromBuffers"}, at = @At(value = "INVOKE",
+		target = "Lcom/mojang/blaze3d/opengl/GlStateManager;_glBindBuffer(II)V"))
+	private void ephemera$skipRedundantElementArrayBind(int target, int handle, Operation<Void> original) {
+		if (target == GL30C.GL_ELEMENT_ARRAY_BUFFER && DispatchSettings.glDispatch()
+			&& GlStateCache.isElementArrayBufferBound(handle)) {
+			return;
+		}
+		original.call(target, handle);
 	}
 
 	@Inject(method = "trySetup", at = @At(value = "INVOKE",

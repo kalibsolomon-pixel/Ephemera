@@ -1,6 +1,7 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
+import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.render.terrain.SectionMeshRenderCache;
 import com.ephemera.render.terrain.SectionMeshSwapHook;
 import com.ephemera.render.terrain.TerrainTopology;
@@ -42,6 +43,19 @@ public abstract class LevelRendererTranslucentResortFastMixin {
 	@Unique private long ephemera$lastResortVisGen = Long.MIN_VALUE;
 	@Unique private int ephemera$sweptCount;
 	@Unique private boolean ephemera$resortSwept;
+	// Content fingerprint of the list at the start of the current sweep cycle: rotation-only
+	// frames refill visibleSections with identical content but bump the epoch, which would
+	// otherwise reset the round-robin sweep every frame and never let it reach steady state.
+	@Unique private long ephemera$lastSweptDigest1;
+	@Unique private long ephemera$lastSweptDigest2;
+	@Unique private int ephemera$lastSweptDigestSize = -1;
+
+	@Unique
+	private static boolean ephemera$resortDigestActive() {
+		return MixinHealth.isApplied("SectionOcclusionGraphDigestMixin")
+			&& MixinHealth.isApplied("TerrainLevelRendererChunkBatchMixin")
+			&& !MixinHealth.hasFailed("SectionOcclusionGraphDigestMixin");
+	}
 
 	@WrapMethod(method = "scheduleTranslucentSectionResort")
 	private void ephemera$fastScheduleTranslucentSectionResort(Vec3 cameraPos, Operation<Void> original) {
@@ -62,16 +76,29 @@ public abstract class LevelRendererTranslucentResortFastMixin {
 		long topo = TerrainTopology.topology();
 		long visGen = TerrainTopology.visibleSections();
 
+		// When the digest mixins are healthy, compare list CONTENT instead of the per-refill
+		// epoch: rotation-only frames refill identical content and must not reset the sweep.
+		boolean digestActive = ephemera$resortDigestActive();
+		boolean listUnchanged = digestActive
+			? TerrainTopology.visibleSectionsDigest1 == this.ephemera$lastSweptDigest1
+				&& TerrainTopology.visibleSectionsDigest2 == this.ephemera$lastSweptDigest2
+				&& TerrainTopology.visibleSectionsDigestSize == this.ephemera$lastSweptDigestSize
+				&& visSize == this.ephemera$lastSweptDigestSize
+			: visGen == this.ephemera$lastResortVisGen;
+
 		if (!changedBlockPos && this.ephemera$resortSwept
 			&& topo == this.ephemera$lastResortTopology
-			&& visGen == this.ephemera$lastResortVisGen) {
+			&& listUnchanged) {
 			return;
 		}
-		if (changedBlockPos || topo != this.ephemera$lastResortTopology || visGen != this.ephemera$lastResortVisGen) {
+		if (changedBlockPos || topo != this.ephemera$lastResortTopology || !listUnchanged) {
 			this.ephemera$resortSwept = false;
 			this.ephemera$sweptCount = 0;
 			this.ephemera$lastResortTopology = topo;
 			this.ephemera$lastResortVisGen = visGen;
+			this.ephemera$lastSweptDigest1 = TerrainTopology.visibleSectionsDigest1;
+			this.ephemera$lastSweptDigest2 = TerrainTopology.visibleSectionsDigest2;
+			this.ephemera$lastSweptDigestSize = digestActive ? visSize : -1;
 		}
 
 		TranslucencyPointOfView pov = this.ephemera$pov;

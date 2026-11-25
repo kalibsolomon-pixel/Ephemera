@@ -88,6 +88,7 @@
     "terrain.SectionCopyFastMixin",
     "terrain.SectionDirtyStateEpochMixin",
     "terrain.SectionOcclusionGraphDigestMixin",
+    "terrain.SectionOcclusionGraphRayMarchMixin",
     "terrain.SectionOcclusionGraphExecutorMixin",
     "terrain.SectionUpdateTrackerFastMixin",
     "terrain.TerrainCompilePacingMixin",

@@ -1,5 +1,6 @@
 package com.ephemera.render.terrain;
 
+import com.ephemera.core.diagnostics.MixinHealth;
 import com.ephemera.core.memory.MemoryPressurePolicy;
 import com.ephemera.core.pacing.FrameBudgetPacer;
 import com.ephemera.core.terrain.QuadBuckets;
@@ -142,6 +143,9 @@ public final class ChunkRenderBatcher {
 	private @Nullable SectionRenderDispatcher planDispatcher;
 	private int planEpoch;
 	private long planTopology;
+	private long planDigest1;
+	private long planDigest2;
+	private int planDigestSize = -1;
 	private Object[] planSections = new Object[0];
 	private int planSectionCount;
 	private boolean planHasCamera;
@@ -415,6 +419,12 @@ public final class ChunkRenderBatcher {
 		return section.getVisibility(now, frameVanillaFadeMs);
 	}
 
+	private static boolean planDigestActive() {
+		return MixinHealth.isApplied("SectionOcclusionGraphDigestMixin")
+			&& MixinHealth.isApplied("TerrainLevelRendererChunkBatchMixin")
+			&& !MixinHealth.hasFailed("SectionOcclusionGraphDigestMixin");
+	}
+
 	private boolean canReusePlan(SectionRenderDispatcher dispatcher, int epoch,
 								 ObjectArrayList<SectionRenderDispatcher.RenderSection> visibleSections,
 								 boolean trackSprites, int cullMask, boolean meshActive,
@@ -435,6 +445,14 @@ public final class ChunkRenderBatcher {
 		int size = visibleSections.size();
 		if (size != planSectionCount) {
 			return false;
+		}
+		// O(1) fast path: the wave-3 rolling digest is order-sensitive over the same packed
+		// section nodes the plan captured, so a matching snapshot proves this frame's refilled
+		// list is the plan's list. The element walk stays as the digest-inactive fallback.
+		if (planDigestSize == size
+			&& planDigest1 == TerrainTopology.visibleSectionsDigest1
+			&& planDigest2 == TerrainTopology.visibleSectionsDigest2) {
+			return true;
 		}
 		Object[] elements = visibleSections.elements();
 		Object[] last = planSections;
@@ -964,6 +982,9 @@ public final class ChunkRenderBatcher {
 		planDispatcher = dispatcher;
 		planEpoch = epoch;
 		planTopology = topology;
+		planDigest1 = TerrainTopology.visibleSectionsDigest1;
+		planDigest2 = TerrainTopology.visibleSectionsDigest2;
+		planDigestSize = planDigestActive() ? size : -1;
 		planHasCamera = hasCamera;
 		planCamX = camX;
 		planCamY = camY;

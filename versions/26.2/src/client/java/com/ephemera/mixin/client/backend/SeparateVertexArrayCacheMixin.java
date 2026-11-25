@@ -1,6 +1,7 @@
 package com.ephemera.mixin.client.backend;
 
 import com.ephemera.render.backend.DispatchSettings;
+import com.ephemera.render.backend.GlStateCache;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Share;
@@ -61,6 +62,19 @@ abstract class SeparateVertexArrayCacheMixin {
 	private Object ephemera$lookupVertexArray(Map<?, ?> cache, Object key, Operation<Object> original,
 			@Share("slot") LocalIntRef cacheSlot) {
 		return key == null && cacheSlot.get() >= 0 ? ephemera$arrays[cacheSlot.get()] : original.call(cache, key);
+	}
+
+	// The hit path re-binds vao.id on every draw — even when that exact VAO is already bound
+	// from the previous draw. GlStateCache tracks the true bound VAO (all binds route through
+	// GlStateManager._glBindVertexArray), so skip the redundant driver call. The creation path's
+	// freshly generated id never matches the tracked bound id, so it always binds.
+	@WrapOperation(method = "bindVertexArray", at = @At(value = "INVOKE",
+		target = "Lcom/mojang/blaze3d/opengl/GlStateManager;_glBindVertexArray(I)V"))
+	private void ephemera$skipRedundantVaoBind(int vaoId, Operation<Void> original) {
+		if (DispatchSettings.glDispatch() && GlStateCache.isVertexArrayBound(vaoId)) {
+			return;
+		}
+		original.call(vaoId);
 	}
 
 	@Inject(method = "bindVertexArray", at = @At("RETURN"))

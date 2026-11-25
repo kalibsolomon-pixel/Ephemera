@@ -17,6 +17,9 @@ public final class GlStateCache {
 	private static final long[] uniformLengths = new long[32];
 	private static final int[][] DRAW_BUFFERS = new int[9][];
 	private static int boundDrawIndirectBuffer;
+	private static int boundVertexArray = UNKNOWN;
+	private static int elementArrayVao = UNKNOWN;
+	private static int elementArrayBuffer = UNKNOWN;
 	private static boolean scissorKnown;
 	private static int scissorX;
 	private static int scissorY;
@@ -82,6 +85,36 @@ public final class GlStateCache {
 		if (boundDrawIndirectBuffer == handle) {
 			invalidateDrawIndirect();
 		}
+		if (elementArrayBuffer == handle) {
+			elementArrayVao = UNKNOWN;
+			elementArrayBuffer = UNKNOWN;
+		}
+	}
+
+	/** Records a raw vertex-array bind from any caller so VAO-skip decisions stay coherent. */
+	public static void recordVertexArrayBind(int vaoId) {
+		if (boundVertexArray != vaoId) {
+			boundVertexArray = vaoId;
+			// GL_ELEMENT_ARRAY_BUFFER binding is VAO state: a different VAO invalidates it.
+			elementArrayVao = UNKNOWN;
+			elementArrayBuffer = UNKNOWN;
+		}
+	}
+
+	/** True when the given VAO is already the bound one (per-draw redundant binds can be skipped). */
+	public static boolean isVertexArrayBound(int vaoId) {
+		return boundVertexArray == vaoId;
+	}
+
+	/** Records a raw element-array bind so per-draw skips stay coherent with any caller. */
+	public static void recordElementArrayBufferBind(int eabId) {
+		elementArrayVao = boundVertexArray;
+		elementArrayBuffer = eabId;
+	}
+
+	/** True when this element buffer is already bound on the currently bound VAO. */
+	public static boolean isElementArrayBufferBound(int eabId) {
+		return elementArrayVao == boundVertexArray && elementArrayBuffer == eabId;
 	}
 
 	public static void invalidateUniformBinding(int binding) {
@@ -93,8 +126,13 @@ public final class GlStateCache {
 	public static void bindDrawIndirectBuffer(int handle) {
 		if (boundDrawIndirectBuffer != handle) {
 			GlStateManager._glBindBuffer(GL_DRAW_INDIRECT_BUFFER, handle);
-			boundDrawIndirectBuffer = handle;
 		}
+		boundDrawIndirectBuffer = handle;
+	}
+
+	/** Records a raw draw-indirect bind (also fired by {@code bindDrawIndirectBuffer}'s vanilla call). */
+	public static void recordDrawIndirectBufferBind(int handle) {
+		boundDrawIndirectBuffer = handle;
 	}
 
 	public static void invalidateDrawIndirect() {
@@ -137,6 +175,9 @@ public final class GlStateCache {
 		Arrays.fill(uniformOffsets, UNKNOWN);
 		Arrays.fill(uniformLengths, UNKNOWN);
 		invalidateDrawIndirect();
+		boundVertexArray = UNKNOWN;
+		elementArrayVao = UNKNOWN;
+		elementArrayBuffer = UNKNOWN;
 		invalidateScissorBox();
 		invalidatePolygonMode();
 	}

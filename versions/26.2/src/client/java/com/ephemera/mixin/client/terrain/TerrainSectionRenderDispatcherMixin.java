@@ -2,7 +2,9 @@ package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
 import com.ephemera.core.pacing.FrameBudgetPacer;
+import com.ephemera.mixin.client.backend.StagingBufferUsageAccessor;
 import com.ephemera.render.pacing.EphemeraPacerRuntime;
+import com.ephemera.render.pacing.StagingFlushState;
 import com.ephemera.render.terrain.ChunkRenderBatcher;
 import com.ephemera.render.terrain.SectionDispatcherEpoch;
 import com.ephemera.render.terrain.SectionMeshRenderCache;
@@ -33,6 +35,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -46,12 +49,18 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 	@Shadow @Final private Map<ChunkSectionLayer, Object> chunkUberBuffers;
 	@Shadow @Final private StagingBuffer stagingBuffer;
 	@Shadow @Final @Mutable private TracingExecutor executor;
+	@Shadow @Final private ReentrantLock copyLock;
 
 	@Unique private int ephemera$epoch;
 	@Unique private ObjectOpenHashSet<Object> ephemera$deferredKeys;
 	@Unique private ExecutorService ephemera$dedicatedChunkPool;
 
 	@Unique private static final AtomicLong EPHEMERA$CHUNK_BUILD_THREAD = new AtomicLong();
+	// Reusable rotated layer order for the paced upload (<= 4 layers; render-thread confined).
+	@Unique private static final Object[] EPHEMERA$ROTATED_LAYERS = new Object[8];
+	// 65% of vanilla's 102,760,448-byte "Chunk" staging arena: past this the next paced upload
+	// bypasses per-layer caps and drains everything so the bump-pointer arena can rotate.
+	@Unique private static final int EPHEMERA$STAGING_WATERMARK_BYTES = 102_760_448 * 65 / 100;
 
 	@Inject(method = "<init>", at = @At("RETURN"))
 	private void ephemera$tagUberBuffers(TracingExecutor executor, RenderBuffers renderBuffers, SectionCompiler sectionCompiler,
@@ -130,26 +139,75 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 			return;
 		}
 
+		// Defensive: every vanilla caller holds copyLock (reentrant, so free when held), and this
+		// also protects staged-map deferral against unlocked third-party invocations.
+		boolean heldLock = this.copyLock.isHeldByCurrentThread();
+		if (!heldLock) {
+			this.copyLock.lock();
+		}
+		try {
+			this.ephemera$pacedUploadBody(ci);
+		} finally {
+			if (!heldLock) {
+				this.copyLock.unlock();
+			}
+		}
+	}
+
+	@Unique
+	private static int ephemera$headroomLadder(long remNs, int hi, int mid, int low) {
+		if (remNs >= 1_200_000L) {
+			return hi;
+		}
+		if (remNs >= 500_000L) {
+			return mid;
+		}
+		if (remNs >= 150_000L) {
+			return low;
+		}
+		return 1;
+	}
+
+	@Unique
+	private void ephemera$pacedUploadBody(CallbackInfo ci) {
 		EphemeraPacerRuntime.beginFrameStreamingBudget();
 		FrameBudgetPacer budget = EphemeraPacerRuntime.budget();
 		boolean capped = budget.effectiveTargetFps() > 0;
 		long remNs = budget.remainingStreamingHeadroomNs(System.nanoTime());
-		// On FPS-capped frames, enforce a tight cross-layer total cap so bursts never overrun targetPresent.
-		// On uncapped frames, cap per-layer (never starving CUTOUT/TRANSLUCENT behind SOLID) so newly built
-		// chunks drain cleanly and ChunkRenderBatcher immediately locks into draw-plan reuse.
+		// Budget enforcement now applies on UNCAPPED frames too: previously an uncapped frame
+		// admitted up to 24 sections x 3 layers (2-6 ms of copies) with no headroom check at all
+		// (the benchmarks run uncapped — exactly the measured chunk_flight_load /
+		// chunk_rebuild_burst 1%-low regime). Ladders are re-derived per layer from live headroom
+		// and every non-empty layer keeps a floor of 1 admission, guaranteeing vanilla's
+		// render-thread compileSync retry loop always makes progress.
 		int remainingBudget = capped
-			? (remNs >= 1_200_000L ? 12 : (remNs >= 500_000L ? 6 : (remNs >= 150_000L ? 3 : 1)))
-			: Integer.MAX_VALUE;
-		int uncappedPerLayer = remNs >= 800_000L ? 24 : 12;
+			? ephemera$headroomLadder(remNs, 12, 6, 3)
+			: ephemera$headroomLadder(remNs, 10, 5, 2);
 		int totalAdmitted = 0;
+		// Emergency / watermark drain: when a worker-side append failed (staging full) or the
+		// arena's write offset crossed its watermark, bypass per-layer caps entirely so
+		// usedBufferCount can reach zero and the bump-pointer staging arena can rotate.
+		boolean emergency = StagingFlushState.isEmergencyFlush()
+			|| ((StagingBufferUsageAccessor) (Object) this.stagingBuffer).ephemera$nextWriteOffset()
+				>= EPHEMERA$STAGING_WATERMARK_BYTES;
+		// Cross-layer fairness: a section only swaps its compiled mesh once EVERY layer with
+		// staged draws has uploaded, so rotate which layer is admitted first each frame instead
+		// of always draining SOLID first (which would pin staging handles on CUTOUT/TRANSLUCENT).
+		int layerCount = chunkUberBuffers.size();
+		int startOffset = layerCount > 0 ? (int) (budget.frameSequence() % (long) layerCount) : 0;
+		int n = 0;
+		for (Object raw : chunkUberBuffers.values()) {
+			EPHEMERA$ROTATED_LAYERS[n++] = raw;
+		}
 
 		GpuDevice device = RenderSystem.getDevice();
 		try (StagingBuffer.Uploader uploader = this.stagingBuffer.startUploading(device.createCommandEncoder())) {
-			for (Object raw : chunkUberBuffers.values()) {
-				if (capped && remainingBudget <= 0) {
+			for (int layerIdx = 0; layerIdx < n; layerIdx++) {
+				Object raw = EPHEMERA$ROTATED_LAYERS[(layerIdx + startOffset) % n];
+				if (!emergency && remainingBudget <= 0) {
 					break;
 				}
-				if (capped && totalAdmitted > 0 && budget.remainingStreamingHeadroomNs(System.nanoTime()) <= 0L) {
+				if (!emergency && totalAdmitted > 0 && budget.remainingStreamingHeadroomNs(System.nanoTime()) <= 0L) {
 					break;
 				}
 				TerrainSectionUberBuffersAccessor buffers = (TerrainSectionUberBuffersAccessor) raw;
@@ -162,7 +220,7 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 				if (vStaged == 0 && iStaged == 0) {
 					continue;
 				}
-				int layerCap = capped ? remainingBudget : uncappedPerLayer;
+				int layerCap = emergency ? Integer.MAX_VALUE : remainingBudget;
 				int admittedCount = Math.min(Math.max(vStaged, iStaged), layerCap);
 				boolean deferred = false;
 				ObjectOpenHashSet<Object> deferredKeys = this.ephemera$deferredKeys;
@@ -189,7 +247,10 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 				try {
 					long t0 = System.nanoTime();
 					createdNewHeap = vBuf.uploadStagedAllocations(device, uploader);
-					iBuf.uploadStagedAllocations(device, uploader);
+					// The index buffer can create its own (32 MiB) heap independently of the
+					// vertex buffer's result — count it so heap-creation bursts stay capped at
+					// one per frame.
+					createdNewHeap |= iBuf.uploadStagedAllocations(device, uploader);
 					budget.recordStreamingWork(System.nanoTime() - t0);
 				} finally {
 					if (deferred) {
@@ -198,12 +259,10 @@ public abstract class TerrainSectionRenderDispatcherMixin implements SectionDisp
 						deferredKeys.clear();
 					}
 				}
-				if (capped) {
-					int consumed = Math.max(1, admittedCount);
-					totalAdmitted += consumed;
-					remainingBudget -= consumed;
-				}
-				if (createdNewHeap) {
+				int consumed = Math.max(1, admittedCount);
+				totalAdmitted += consumed;
+				remainingBudget -= consumed;
+				if (createdNewHeap && !emergency) {
 					break;
 				}
 			}
