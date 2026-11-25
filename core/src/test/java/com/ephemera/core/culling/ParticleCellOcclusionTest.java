@@ -121,4 +121,19 @@ class ParticleCellOcclusionTest {
             assertFalse(p.isOccluded(cx, cy, 0, x, y, z, radius, 1, 1), "case " + i);
         }
     }
+
+    @Test void frameProbeBudgetFailsOpenWithoutPollutingCache() {
+        int[] reads = {0};
+        ParticleCellOcclusion p = new ParticleCellOcclusion((x, y, z) -> { reads[0]++; return arena(x, y, z); });
+        p.setFrameProbeBudget(1);
+        // First distinct hidden cell consumes the 1-probe budget and caches occluded
+        assertTrue(p.isOccluded(.5, 131.6, .5, .5, 130.5, 12.5, .2, 1, 1));
+        int afterFirst = reads[0];
+        // Second distinct hidden cell exceeds frame 1 budget -> fails open with zero world reads
+        assertFalse(p.isOccluded(.5, 131.6, .5, 2.5, 130.5, 12.5, .2, 1, 1));
+        assertEquals(afterFirst, reads[0]);
+        // On frame 2 (budget resets), the second cell was NOT polluted as visible and now proves occluded!
+        assertTrue(p.isOccluded(.5, 131.6, .5, 2.5, 130.5, 12.5, .2, 2, 1));
+        assertTrue(reads[0] > afterFirst);
+    }
 }

@@ -36,6 +36,28 @@ final class SectionBlockCache {
         Arrays.fill(stamps, 0L);
     }
 
+    /** Targeted invalidation of one 16x16x16 section after a block opacity change. */
+    void invalidateSection(int sx, int sy, int sz) {
+        int h = sx * 0x9E3779B1 ^ sy * 0x85EBCA77 ^ sz * 0xC2B2AE3D;
+        int slot = (h ^ (h >>> 16)) & MASK;
+        if (stamps[slot] != 0L && xs[slot] == sx && ys[slot] == sy && zs[slot] == sz) {
+            stamps[slot] = 0L;
+            sectionFrames[slot] = 0L;
+            sections[slot] = null;
+        }
+    }
+
+    /** Targeted invalidation of one chunk column after chunk load or unload. */
+    void invalidateColumn(int sx, int sz) {
+        for (int i = 0; i < SLOTS; i++) {
+            if (stamps[i] != 0L && xs[i] == sx && zs[i] == sz) {
+                stamps[i] = 0L;
+                sectionFrames[i] = 0L;
+                sections[i] = null;
+            }
+        }
+    }
+
     boolean isOpaque(ClientLevel level, int x, int y, int z, long terrainStamp, long frame) {
         if (level.isOutsideBuildHeight(y)) return false;
         int sx = x >> 4, sy = y >> 4, sz = z >> 4;

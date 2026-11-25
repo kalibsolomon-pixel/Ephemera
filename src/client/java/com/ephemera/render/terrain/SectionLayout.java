@@ -1,6 +1,7 @@
 package com.ephemera.render.terrain;
 
 import com.ephemera.core.terrain.BakedSectionMeshlets;
+import com.ephemera.core.terrain.MeshletBaker;
 import com.ephemera.core.terrain.QuadBuckets;
 import com.ephemera.core.terrain.RegionKey;
 import org.jspecify.annotations.Nullable;
@@ -51,7 +52,9 @@ public final class SectionLayout {
 			return 0L;
 		}
 		this.meshlets = null;
-		return (long) m.quadWords.length * 4L + (long) m.meshletWords.length * 4L + 96L;
+		long bytes = (long) m.quadWords.length * 4L + (long) m.meshletWords.length * 4L + 96L;
+		MeshletBaker.recycle(m);
+		return bytes;
 	}
 
 	/** Directional bucket layout of a sequentially indexed layer, or null when it was not reordered. */

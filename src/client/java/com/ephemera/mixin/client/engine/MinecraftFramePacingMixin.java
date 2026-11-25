@@ -8,7 +8,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Coordinates Ephemera's frame-head pacer and per-frame CPU work budget measurement.
+ * Coordinates Ephemera's two-stage frame pacer (Stage 1 at {@code runTick} HEAD, 20 Hz game-tick
+ * tracking at {@code tick} HEAD, and fallback/end-of-frame tracking at {@code renderFrame} RETURN).
  * Paired Aurora clients provide their FPS cap before frame hooks read it.
  */
 @Mixin(value = Minecraft.class, priority = 10500)
@@ -16,6 +17,11 @@ abstract class MinecraftFramePacingMixin {
 	@Inject(method = "runTick", at = @At("HEAD"))
 	private void ephemera$onFrameHead(boolean advanceGameTime, CallbackInfo ci) {
 		EphemeraPacerRuntime.onFrameHead((Minecraft) (Object) this);
+	}
+
+	@Inject(method = "tick", at = @At("HEAD"))
+	private void ephemera$onGameTick(CallbackInfo ci) {
+		EphemeraPacerRuntime.onGameTickRan();
 	}
 
 	@Inject(method = "renderFrame", at = @At("RETURN"))

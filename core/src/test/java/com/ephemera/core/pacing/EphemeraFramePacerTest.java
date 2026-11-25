@@ -208,4 +208,119 @@ final class EphemeraFramePacerTest {
 		assertTrue(cleanUploadNs >= 5_000_000L, "4 ms work at 60 fps should leave >5 ms upload budget, got " + cleanUploadNs);
 		assertEquals(0L, pollutedUploadNs, "Including sleep collapses capped budget to 0 ns instead of inflating to a 0.5 ms floor");
 	}
+
+	@Test
+	void twoStagePredictivePacingEliminates20HzTickSawtoothAt240Fps() {
+		FakeWaitOps ops = new FakeWaitOps(10_000_000_000L);
+		ops.parkOvershootNs = 0L;
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		int fps = 240;
+		long periodNs = Math.round(1_000_000_000.0 / fps); // 4,166,667 ns
+		List<Long> presentTimestamps = new ArrayList<>();
+
+		// Simulate 60 frames: every 12th frame is a 20 Hz game tick taking 2.3 ms instead of 0.65 ms.
+		for (int f = 0; f < 60; f++) {
+			boolean isTick = (f % 12) == 0;
+			pacer.paceTwoStageHead(fps, true, isTick, 500, false);
+			long workStart = ops.nowNs;
+			long cpuWork = isTick ? 2_300_000L : 650_000L;
+			ops.nowNs += cpuWork;
+			pacer.observeCpuWork(ops.nowNs - workStart, isTick);
+			assertTrue(pacer.paceTwoStagePrePresent(fps, 500, false));
+			presentTimestamps.add(ops.nowNs);
+			// Post-swap must cancel vanilla so we never double-wait.
+			assertTrue(pacer.pacePostSwap(fps, 500, false));
+		}
+
+		// After initial 15 frames of estimator warmup, EVERY present-to-present interval (including
+		// across 20 Hz tick frames!) must be within +/- 100 us of the exact 4.167 ms period.
+		long maxDeviationNs = 0L;
+		for (int i = 16; i < presentTimestamps.size(); i++) {
+			long dt = presentTimestamps.get(i) - presentTimestamps.get(i - 1);
+			maxDeviationNs = Math.max(maxDeviationNs, Math.abs(dt - periodNs));
+		}
+		assertTrue(maxDeviationNs <= 100_000L,
+			"Two-stage pacing should hold flat 240 FPS across 20 Hz ticks; max deviation=" + (maxDeviationNs / 1000L) + " us");
+	}
+
+	@Test
+	void highFpsCapsBoundSpinReserveSo500And1000FpsStillPark() {
+		FakeWaitOps ops = new FakeWaitOps(1_000_000_000L);
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		// Inject heavy OS wake jitter (3 ms) that would normally push reserve to 3.5 ms
+		for (int i = 0; i < 15; i++) {
+			pacer.observeParkOvershoot(1_000_000L, 4_000_000L);
+		}
+		// At 1000 FPS (1.0 ms period), reserve must clamp <= 600 us so idle time still parks
+		long res1000 = pacer.effectiveReserveNs(500_000L, false, 1_000_000L);
+		assertTrue(res1000 <= 600_000L && res1000 >= 200_000L, "1000 FPS reserve=" + res1000);
+		// At 500 FPS (2.0 ms period), reserve must clamp <= 1.2 ms
+		long res500 = pacer.effectiveReserveNs(500_000L, false, 2_000_000L);
+		assertTrue(res500 <= 1_200_000L && res500 >= 200_000L, "500 FPS reserve=" + res500);
+	}
+
+	@Test
+	void twoStageExactTickTimingAvoidsFalseEarlyWakeAndResistsGcSpike() {
+		FakeWaitOps ops = new FakeWaitOps(10_000_000_000L);
+		ops.parkOvershootNs = 0L;
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		int fps = 240; // 4.167 ms period
+		// Arm and train estimators: non-tick ~0.4 ms, tick ~2.0 ms
+		pacer.paceTwoStageHead(fps, true, Long.MAX_VALUE, 500, false);
+		pacer.paceTwoStagePrePresent(fps, 500, false);
+		for (int i = 0; i < 12; i++) {
+			pacer.observeCpuWork(400_000L, false);
+			pacer.observeCpuWork(2_000_000L, true);
+		}
+
+		// Case 1: Tick is 4.5 ms away (> normalWake + 1 ms) -> must NOT wake early!
+		long start1 = ops.nowNs;
+		pacer.paceTwoStageHead(fps, true, 4_500_000L, 500, false);
+		long waited1 = ops.nowNs - start1;
+		assertTrue(waited1 > 3_100_000L, "Should wait close to normalWake (~3.4 ms), waited=" + (waited1 / 1000L) + " us");
+		ops.nowNs += 400_000L;
+		pacer.paceTwoStagePrePresent(fps, 500, false);
+
+		// Case 2: Tick is 2.6 ms away (after tickWake ~1.8 ms, before normalWake ~3.4 ms) ->
+		// must wait until tickDue + 0.5 ms (~3.1 ms), NOT prematurely at tickWake (~1.8 ms).
+		long start2 = ops.nowNs;
+		pacer.paceTwoStageHead(fps, true, 2_600_000L, 500, false);
+		long waited2 = ops.nowNs - start2;
+		assertTrue(waited2 >= 3_000_000L && waited2 <= 3_300_000L,
+			"Should wake just after tick boundary (~3.1 ms), waited=" + (waited2 / 1000L) + " us");
+
+		// Case 3: Single 20 ms GC outlier must not blow up predictedTickWorkMs or linger for seconds.
+		double beforeGc = pacer.predictedTickWorkMs();
+		pacer.observeCpuWork(20_000_000L, true);
+		assertTrue(pacer.predictedTickWorkMs() < beforeGc + 0.5,
+			"Single GC outlier should stay damped; before=" + beforeGc + " after=" + pacer.predictedTickWorkMs());
+		for (int i = 0; i < 12; i++) {
+			pacer.observeCpuWork(1_800_000L, true);
+		}
+		assertTrue(pacer.predictedTickWorkMs() < 2.1, "Tick estimator should decay quickly within 12 ticks");
+	}
+
+	@Test
+	void prePresentStateResetsOnUncappedTransitionAndAccountsForBlockingSwap() {
+		FakeWaitOps ops = new FakeWaitOps(10_000_000_000L);
+		EphemeraFramePacer pacer = new EphemeraFramePacer(ops);
+
+		// Arm PRE_PRESENT at 240 FPS
+		pacer.paceTwoStageHead(240, true, Long.MAX_VALUE, 500, false);
+		pacer.paceTwoStagePrePresent(240, 500, false);
+		assertEquals(EphemeraFramePacer.HookPoint.PRE_PRESENT, pacer.activeOwner());
+
+		// Observe a 0.8 ms blocking swap (e.g. GL glfwSwapBuffers)
+		ops.nowNs += 800_000L;
+		pacer.observePostPresent(ops.nowNs, 240);
+		assertEquals(EphemeraFramePacer.HookPoint.PRE_PRESENT, pacer.activeOwner());
+
+		// Transition to uncapped / VSync via paceFrameHead(0, false, ...) must clear PRE_PRESENT ownership
+		pacer.paceFrameHead(0, false, 500, false);
+		assertEquals(EphemeraFramePacer.HookPoint.NONE, pacer.activeOwner());
+		assertEquals(0L, pacer.latchedTargetPresentNs());
+	}
 }

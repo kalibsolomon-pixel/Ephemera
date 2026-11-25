@@ -5,13 +5,21 @@
   "compatibilityLevel": "JAVA_25",
   "plugin": "com.ephemera.mixin.EphemeraCommonMixinPlugin",
   "mixins": [
+    "AquiferFastMixin",
     "BeardifierFastMixin",
     "BiomeManagerFastMixin",
+    "BlenderFastMixin",
+    "BlendingDataFastMixin",
+    "CubicSplineFastMixin",
+    "DensityFunctionsAp2FastMixin",
     "ImprovedNoiseFastMixin",
     "NoiseChunkFastMixin",
     "NoiseInterpolatorAccess",
+    "OreVeinifierFastMixin",
     "PerlinNoiseFastMixin",
-    "SurfaceRulesSequenceFastMixin"
+    "SurfaceRulesSequenceFastMixin",
+    "VerticalGradientFastMixin",
+    "XoroshiroPositionalFastMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -17,8 +17,10 @@ import java.util.Arrays;
  */
 public final class GuiBoundsIndex {
 	private static final int STRIDE = 4;
+	private static final int[] EMPTY = new int[0];
 
-	private int[] rects;
+	private int[] rects = EMPTY;
+	private final int initialCapacity;
 	private int size;
 	private int unionLeft;
 	private int unionTop;
@@ -30,7 +32,7 @@ public final class GuiBoundsIndex {
 	}
 
 	public GuiBoundsIndex(int initialCapacity) {
-		this.rects = new int[Math.max(1, initialCapacity) * STRIDE];
+		this.initialCapacity = Math.max(4, initialCapacity);
 	}
 
 	public int size() {
@@ -41,7 +43,30 @@ public final class GuiBoundsIndex {
 		size = 0;
 	}
 
+	/** Capacity of the internal rectangle backing array, in number of rectangles. */
+	public int backingRectCapacity() {
+		return rects.length / STRIDE;
+	}
+
 	public void add(int left, int top, int right, int bottom) {
+		if (size == 0) {
+			// Single-rect lists never read rects[] (union box IS that single rect), avoiding array allocation completely.
+			unionLeft = left;
+			unionTop = top;
+			unionRight = right;
+			unionBottom = bottom;
+			size = 1;
+			return;
+		}
+		if (size == 1) {
+			if (rects.length < 2 * STRIDE) {
+				rects = new int[initialCapacity * STRIDE];
+			}
+			rects[0] = unionLeft;
+			rects[1] = unionTop;
+			rects[2] = unionRight;
+			rects[3] = unionBottom;
+		}
 		int offset = size * STRIDE;
 		if (offset == rects.length) {
 			rects = Arrays.copyOf(rects, rects.length * 2);
@@ -50,17 +75,10 @@ public final class GuiBoundsIndex {
 		rects[offset + 1] = top;
 		rects[offset + 2] = right;
 		rects[offset + 3] = bottom;
-		if (size == 0) {
-			unionLeft = left;
-			unionTop = top;
-			unionRight = right;
-			unionBottom = bottom;
-		} else {
-			if (left < unionLeft) unionLeft = left;
-			if (top < unionTop) unionTop = top;
-			if (right > unionRight) unionRight = right;
-			if (bottom > unionBottom) unionBottom = bottom;
-		}
+		if (left < unionLeft) unionLeft = left;
+		if (top < unionTop) unionTop = top;
+		if (right > unionRight) unionRight = right;
+		if (bottom > unionBottom) unionBottom = bottom;
 		size++;
 	}
 

@@ -40,17 +40,21 @@ public final class FrameBudgetPacer {
 	// Unified per-frame chunk-streaming budget shared across section snapshots and Vulkan mesh uploads.
 	// Uncapped frames budget ACTUAL streaming work spent (so unrelated CPU work between stages never
 	// starves Vulkan mesh uploads); capped frames ALSO enforce a hard display-period wall-clock deadline.
-	private static final long UNCAPPED_STREAMING_BASE_BUDGET_NS = 3_000_000L; // 3.0 ms shared across both stages
+	private static final long UNCAPPED_STREAMING_MIN_BUDGET_NS = 1_000_000L; // 1.0 ms floor so chunk loading stays crisp
+	private static final long UNCAPPED_STREAMING_MAX_BUDGET_NS = 2_500_000L; // 2.5 ms ceiling to protect 1%/0.1% lows
 	private boolean frameStreamingDeadlineSet;
 	private long frameStreamingBudgetNs;
 	private long frameStreamingSpentNs;
 	private long frameStreamingDeadlineNs;
+	private long frameLatchedPresentTargetNs;
+	private long lastCadenceRefNs;
 	private int frameStreamingItemsDone;
 	private int frameStreamingThrottled;
 
 	public void reset() {
 		lastFrameStartNs = 0L;
 		currentFrameWorkStartNs = 0L;
+		lastCadenceRefNs = 0L;
 		ewmaFrameNs = 0.0;
 		ewmaWorkNs = 0.0;
 		ewmaJitterNs = 0.0;
@@ -64,8 +68,50 @@ public final class FrameBudgetPacer {
 		frameStreamingBudgetNs = 0L;
 		frameStreamingSpentNs = 0L;
 		frameStreamingDeadlineNs = Long.MAX_VALUE;
+		frameLatchedPresentTargetNs = 0L;
 		frameStreamingItemsDone = 0;
 		frameStreamingThrottled = 0;
+	}
+
+	/**
+	 * Latches the active frame's canonical Stage 2 present deadline so capped chunk streaming
+	 * never budgets work past {@code targetPresentNs - safetyCushionNs}.
+	 */
+	public void setLatchedPresentTargetNs(long targetPresentNs) {
+		this.frameLatchedPresentTargetNs = targetPresentNs;
+	}
+
+	/**
+	 * Records canonical present-to-present cadence timestamps so {@link #jitterMs()} reflects
+	 * actual presentation stability rather than intentional Stage 1 tick-wake shifts.
+	 */
+	public void observeCadenceTimestamp(long presentNs) {
+		if (lastCadenceRefNs != 0L) {
+			long dt = presentNs - lastCadenceRefNs;
+			if (dt > 0L && dt <= MAX_SAMPLE_NS) {
+				if (ewmaFrameNs == 0.0) {
+					ewmaFrameNs = dt;
+					ewmaJitterNs = 0.0;
+				} else {
+					double diff = Math.abs(dt - ewmaFrameNs);
+					ewmaFrameNs = ewmaFrameNs * 0.90 + dt * 0.10;
+					ewmaJitterNs = ewmaJitterNs * 0.88 + diff * 0.12;
+				}
+			}
+		}
+		lastCadenceRefNs = presentNs;
+	}
+
+	/** Remaining streaming headroom in nanoseconds for admission checks (always >= 0). */
+	public long remainingStreamingHeadroomNs(long nowNs) {
+		if (!frameStreamingDeadlineSet) {
+			return Long.MAX_VALUE;
+		}
+		long bySpent = Math.max(0L, frameStreamingBudgetNs - frameStreamingSpentNs);
+		if (frameStreamingDeadlineNs == Long.MAX_VALUE) {
+			return bySpent;
+		}
+		return Math.min(bySpent, Math.max(0L, frameStreamingDeadlineNs - nowNs));
 	}
 
 	/** Called by Aurora Client via the {@code ephemera:frame_pacer} ObjectShare bridge at frame head. */
@@ -105,7 +151,10 @@ public final class FrameBudgetPacer {
 	 * Marks the beginning of active frame work (immediately after any frame-head pacer wait).
 	 */
 	public void beginFrameWork(long nowNs) {
-		if (lastFrameStartNs != 0L) {
+		// When present-anchored cadence timestamps are being supplied (two-stage pacing), let
+		// observeCadenceTimestamp() drive ewmaFrameNs / ewmaJitterNs so intentional Stage 1 early
+		// wakeups on 20 Hz tick frames never inflate jitter estimates.
+		if (lastCadenceRefNs == 0L && lastFrameStartNs != 0L) {
 			long dt = nowNs - lastFrameStartNs;
 			if (dt > 0L && dt <= MAX_SAMPLE_NS) {
 				if (ewmaFrameNs == 0.0) {
@@ -210,11 +259,13 @@ public final class FrameBudgetPacer {
 				computed = computeUploadBudgetNs(configuredMaxMs, true, nowNs);
 			} else {
 				long configuredNs = Math.max(1, configuredMaxMs) * 1_000_000L;
-				long uncapped = ewmaWorkNs > 0.0
-					? Math.max(UNCAPPED_STREAMING_BASE_BUDGET_NS, Math.round(ewmaWorkNs * 0.50))
-					: Math.min(configuredNs, UNCAPPED_STREAMING_BASE_BUDGET_NS);
-				computed = Math.min(configuredNs, uncapped);
-				if (ewmaJitterNs > 1_500_000.0) {
+				// Scale smoothly with typical frame work instead of forcing a 3 ms floor on sub-ms frames.
+				long scaled = ewmaWorkNs > 0.0
+					? Math.max(UNCAPPED_STREAMING_MIN_BUDGET_NS,
+						Math.min(UNCAPPED_STREAMING_MAX_BUDGET_NS, Math.round(ewmaWorkNs * 0.50)))
+					: Math.min(configuredNs, UNCAPPED_STREAMING_MAX_BUDGET_NS);
+				computed = Math.min(configuredNs, scaled);
+				if (ewmaJitterNs > 1_200_000.0) {
 					computed = Math.max(MIN_UPLOAD_BUDGET_NS, (computed * 65L) / 100L);
 				}
 			}
@@ -224,9 +275,15 @@ public final class FrameBudgetPacer {
 				long periodNs = 1_000_000_000L / targetFps;
 				long safetyCushionNs = Math.min(1_500_000L, Math.max(400_000L, periodNs / 6L));
 				long byBudget = nowNs + clamped;
-				long byPeriod = currentFrameWorkStartNs != 0L
-					? Math.max(nowNs, currentFrameWorkStartNs + periodNs - safetyCushionNs)
-					: byBudget;
+				long byPeriod;
+				if (frameLatchedPresentTargetNs > 0L) {
+					// Anchor directly to Stage 2's exact present deadline so streaming never overruns present().
+					byPeriod = Math.max(nowNs, frameLatchedPresentTargetNs - safetyCushionNs);
+				} else if (currentFrameWorkStartNs != 0L) {
+					byPeriod = Math.max(nowNs, currentFrameWorkStartNs + periodNs - safetyCushionNs);
+				} else {
+					byPeriod = byBudget;
+				}
 				frameStreamingDeadlineNs = Math.min(byBudget, byPeriod);
 			} else {
 				frameStreamingDeadlineNs = Long.MAX_VALUE;
@@ -261,18 +318,24 @@ public final class FrameBudgetPacer {
 		if (!frameStreamingDeadlineSet) {
 			return true;
 		}
+		long hardDeadline = frameStreamingDeadlineNs;
+		boolean pastHardDeadline = hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline;
+		if (pastHardDeadline) {
+			// On FPS-capped frames whose deadline has already elapsed, allow at most 1 item so streaming
+			// never starves without letting priorityFloor > 1 pile extra latency onto a late frame.
+			if (frameStreamingItemsDone == 0) {
+				return true;
+			}
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
 		int minItems = Math.max(1, priorityFloor);
 		if (frameStreamingItemsDone < minItems) {
 			return true;
 		}
 		long cap = reserveGpuUploadSlice ? (frameStreamingBudgetNs * 3L) / 4L : frameStreamingBudgetNs;
 		if (frameStreamingSpentNs >= cap) {
-			throttledUploadCount++;
-			frameStreamingThrottled++;
-			return false;
-		}
-		long hardDeadline = frameStreamingDeadlineNs;
-		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
 			throttledUploadCount++;
 			frameStreamingThrottled++;
 			return false;
@@ -289,17 +352,20 @@ public final class FrameBudgetPacer {
 		if (!frameStreamingDeadlineSet) {
 			return true;
 		}
+		long hardDeadline = frameStreamingDeadlineNs;
+		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
+			if (frameStreamingItemsDone == 0) {
+				return true;
+			}
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
 		int minItems = Math.max(1, priorityFloor);
 		if (frameStreamingItemsDone < minItems) {
 			return true;
 		}
 		if (frameStreamingSpentNs >= frameStreamingBudgetNs) {
-			throttledUploadCount++;
-			frameStreamingThrottled++;
-			return false;
-		}
-		long hardDeadline = frameStreamingDeadlineNs;
-		if (hardDeadline != Long.MAX_VALUE && System.nanoTime() >= hardDeadline) {
 			throttledUploadCount++;
 			frameStreamingThrottled++;
 			return false;
@@ -314,16 +380,19 @@ public final class FrameBudgetPacer {
 		if (!frameStreamingDeadlineSet && deadlineNs == Long.MAX_VALUE) {
 			return true;
 		}
+		if (deadlineNs != Long.MAX_VALUE && nowNs >= deadlineNs) {
+			if (frameStreamingItemsDone == 0) {
+				return true;
+			}
+			throttledUploadCount++;
+			frameStreamingThrottled++;
+			return false;
+		}
 		int minItems = Math.max(1, priorityFloor);
 		if (frameStreamingItemsDone < minItems) {
 			return true;
 		}
 		if (frameStreamingDeadlineSet && frameStreamingSpentNs >= frameStreamingBudgetNs) {
-			throttledUploadCount++;
-			frameStreamingThrottled++;
-			return false;
-		}
-		if (deadlineNs != Long.MAX_VALUE && nowNs >= deadlineNs) {
 			throttledUploadCount++;
 			frameStreamingThrottled++;
 			return false;

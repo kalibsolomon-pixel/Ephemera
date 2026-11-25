@@ -46,6 +46,8 @@ public abstract class LevelExtractorBlockEntityFastMixin {
 		SectionMeshSwapHook.class.isAssignableFrom(SectionRenderDispatcher.RenderSection.class);
 
 	@Unique private final PoseStack ephemera$crumblingPoseStack = new PoseStack();
+	@Unique private long ephemera$lastKnownNowMs;
+	@Unique private long ephemera$lastSyncNanos;
 
 	@WrapMethod(method = "extractVisibleBlockEntities")
 	private void ephemera$extractVisibleBlockEntities(
@@ -82,15 +84,33 @@ public abstract class LevelExtractorBlockEntityFastMixin {
 			if (beCount == 0) {
 				continue;
 			}
-			if (now == 0L) {
-				now = Util.getMillis();
-			}
 			if (useHook) {
-				if (now < ((SectionMeshSwapHook) section).ephemera$fadeEndMs() && section.getVisibility(now) < 0.3f) {
+				long fadeEnd = ((SectionMeshSwapHook) section).ephemera$fadeEndMs();
+				if (fadeEnd > this.ephemera$lastKnownNowMs) {
+					if (now == 0L) {
+						long nanoNow = System.nanoTime();
+						if (this.ephemera$lastSyncNanos == 0L || (nanoNow - this.ephemera$lastSyncNanos) >= 1_000_000L) {
+							this.ephemera$lastKnownNowMs = Util.getMillis();
+							this.ephemera$lastSyncNanos = nanoNow;
+						}
+						now = this.ephemera$lastKnownNowMs;
+					}
+					if (now < fadeEnd && section.getVisibility(now) < 0.3f) {
+						continue;
+					}
+				}
+			} else {
+				if (now == 0L) {
+					long nanoNow = System.nanoTime();
+					if (this.ephemera$lastSyncNanos == 0L || (nanoNow - this.ephemera$lastSyncNanos) >= 1_000_000L) {
+						this.ephemera$lastKnownNowMs = Util.getMillis();
+						this.ephemera$lastSyncNanos = nanoNow;
+					}
+					now = this.ephemera$lastKnownNowMs;
+				}
+				if (section.getVisibility(now) < 0.3f) {
 					continue;
 				}
-			} else if (section.getVisibility(now) < 0.3f) {
-				continue;
 			}
 			for (int j = 0; j < beCount; j++) {
 				BlockEntity blockEntity = blockEntities.get(j);

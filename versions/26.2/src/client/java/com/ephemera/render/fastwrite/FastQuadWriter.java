@@ -79,10 +79,18 @@ public final class FastQuadWriter {
 		if (layout != FastVertexLayout.ENTITY) {
 			return false;
 		}
-		for (int i = start; i < end; i++) {
-			BakedQuad q = quads.get(i);
-			if (q.position0() == null || q.position1() == null || q.position2() == null || q.position3() == null) {
-				return false;
+		BakedQuad[] array = null;
+		boolean skipPosCheck = false;
+		if (quads instanceof CachedItemQuadList cached) {
+			array = cached.array;
+			skipPosCheck = cached.allPositionsNonNull;
+		}
+		if (!skipPosCheck) {
+			for (int i = start; i < end; i++) {
+				BakedQuad q = array != null ? array[i] : quads.get(i);
+				if (q.position0() == null || q.position1() == null || q.position2() == null || q.position3() == null) {
+					return false;
+				}
 			}
 		}
 		long address = FastVertexBuffer.reserve(builder, layout, count * 4);
@@ -113,7 +121,7 @@ public final class FastQuadWriter {
 		}
 
 		for (int i = start; i < end; i++) {
-			BakedQuad q = quads.get(i);
+			BakedQuad q = array != null ? array[i] : quads.get(i);
 			if (trackSprites) {
 				VisibleSpriteTracker.markExternal(q);
 			}
@@ -157,42 +165,42 @@ public final class FastQuadWriter {
 			Vector3fc p0 = q.position0(), p1 = q.position1(), p2 = q.position2(), p3 = q.position3();
 			if (identity) {
 				FastVertexBuffer.position(address, p0.x(), p0.y(), p0.z());
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p1.x(), p1.y(), p1.z());
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p2.x(), p2.y(), p2.z());
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p3.x(), p3.y(), p3.z());
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			} else if (translation) {
 				FastVertexBuffer.position(address, p0.x() + m30, p0.y() + m31, p0.z() + m32);
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p1.x() + m30, p1.y() + m31, p1.z() + m32);
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p2.x() + m30, p2.y() + m31, p2.z() + m32);
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 
 				FastVertexBuffer.position(address, p3.x() + m30, p3.y() + m31, p3.z() + m32);
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			} else {
@@ -201,7 +209,7 @@ public final class FastQuadWriter {
 					fma(m00, x0, fma(m10, y0, fma(m20, z0, m30))),
 					fma(m01, x0, fma(m11, y0, fma(m21, z0, m31))),
 					fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))));
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 
@@ -210,7 +218,7 @@ public final class FastQuadWriter {
 					fma(m00, x1, fma(m10, y1, fma(m20, z1, m30))),
 					fma(m01, x1, fma(m11, y1, fma(m21, z1, m31))),
 					fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))));
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 
@@ -219,7 +227,7 @@ public final class FastQuadWriter {
 					fma(m00, x2, fma(m10, y2, fma(m20, z2, m30))),
 					fma(m01, x2, fma(m11, y2, fma(m21, z2, m31))),
 					fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))));
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 
@@ -228,7 +236,7 @@ public final class FastQuadWriter {
 					fma(m00, x3, fma(m10, y3, fma(m20, z3, m30))),
 					fma(m01, x3, fma(m11, y3, fma(m21, z3, m31))),
 					fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))));
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			}
@@ -255,10 +263,18 @@ public final class FastQuadWriter {
 		if (layout != FastVertexLayout.ENTITY && layout != FastVertexLayout.POSITION_TEX) {
 			return false;
 		}
-		for (int i = start; i < end; i++) {
-			BakedQuad q = quads.get(i);
-			if (q.position0() == null || q.position1() == null || q.position2() == null || q.position3() == null) {
-				return false;
+		BakedQuad[] array = null;
+		boolean skipPosCheck = false;
+		if (quads instanceof CachedItemQuadList cached) {
+			array = cached.array;
+			skipPosCheck = cached.allPositionsNonNull;
+		}
+		if (!skipPosCheck) {
+			for (int i = start; i < end; i++) {
+				BakedQuad q = array != null ? array[i] : quads.get(i);
+				if (q.position0() == null || q.position1() == null || q.position2() == null || q.position3() == null) {
+					return false;
+				}
 			}
 		}
 		long address = FastVertexBuffer.reserve(builder, layout, count * 4);
@@ -282,35 +298,35 @@ public final class FastQuadWriter {
 		}
 		if (layout == FastVertexLayout.POSITION_TEX) {
 			for (int i = start; i < end; i++) {
-				BakedQuad q = quads.get(i);
+				BakedQuad q = array != null ? array[i] : quads.get(i);
 				Vector3fc p0 = q.position0(), p1 = q.position1(), p2 = q.position2(), p3 = q.position3();
 				if (identity) {
-					writePosTex(address, p0.x(), p0.y(), p0.z(), q.packedUV(0)); address += stride;
-					writePosTex(address, p1.x(), p1.y(), p1.z(), q.packedUV(1)); address += stride;
-					writePosTex(address, p2.x(), p2.y(), p2.z(), q.packedUV(2)); address += stride;
-					writePosTex(address, p3.x(), p3.y(), p3.z(), q.packedUV(3)); address += stride;
+					writePosTex(address, p0.x(), p0.y(), p0.z(), q.packedUV0()); address += stride;
+					writePosTex(address, p1.x(), p1.y(), p1.z(), q.packedUV1()); address += stride;
+					writePosTex(address, p2.x(), p2.y(), p2.z(), q.packedUV2()); address += stride;
+					writePosTex(address, p3.x(), p3.y(), p3.z(), q.packedUV3()); address += stride;
 				} else if (translation) {
-					writePosTex(address, p0.x() + m30, p0.y() + m31, p0.z() + m32, q.packedUV(0)); address += stride;
-					writePosTex(address, p1.x() + m30, p1.y() + m31, p1.z() + m32, q.packedUV(1)); address += stride;
-					writePosTex(address, p2.x() + m30, p2.y() + m31, p2.z() + m32, q.packedUV(2)); address += stride;
-					writePosTex(address, p3.x() + m30, p3.y() + m31, p3.z() + m32, q.packedUV(3)); address += stride;
+					writePosTex(address, p0.x() + m30, p0.y() + m31, p0.z() + m32, q.packedUV0()); address += stride;
+					writePosTex(address, p1.x() + m30, p1.y() + m31, p1.z() + m32, q.packedUV1()); address += stride;
+					writePosTex(address, p2.x() + m30, p2.y() + m31, p2.z() + m32, q.packedUV2()); address += stride;
+					writePosTex(address, p3.x() + m30, p3.y() + m31, p3.z() + m32, q.packedUV3()); address += stride;
 				} else {
 					float x0 = p0.x(), y0 = p0.y(), z0 = p0.z();
 					writePosTex(address, fma(m00, x0, fma(m10, y0, fma(m20, z0, m30))),
 						fma(m01, x0, fma(m11, y0, fma(m21, z0, m31))),
-						fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))), q.packedUV(0)); address += stride;
+						fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))), q.packedUV0()); address += stride;
 					float x1 = p1.x(), y1 = p1.y(), z1 = p1.z();
 					writePosTex(address, fma(m00, x1, fma(m10, y1, fma(m20, z1, m30))),
 						fma(m01, x1, fma(m11, y1, fma(m21, z1, m31))),
-						fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))), q.packedUV(1)); address += stride;
+						fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))), q.packedUV1()); address += stride;
 					float x2 = p2.x(), y2 = p2.y(), z2 = p2.z();
 					writePosTex(address, fma(m00, x2, fma(m10, y2, fma(m20, z2, m30))),
 						fma(m01, x2, fma(m11, y2, fma(m21, z2, m31))),
-						fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))), q.packedUV(2)); address += stride;
+						fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))), q.packedUV2()); address += stride;
 					float x3 = p3.x(), y3 = p3.y(), z3 = p3.z();
 					writePosTex(address, fma(m00, x3, fma(m10, y3, fma(m20, z3, m30))),
 						fma(m01, x3, fma(m11, y3, fma(m21, z3, m31))),
-						fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))), q.packedUV(3)); address += stride;
+						fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))), q.packedUV3()); address += stride;
 				}
 			}
 			FastVertexBuffer.finish(builder, address - stride, count * 4);
@@ -325,7 +341,7 @@ public final class FastQuadWriter {
 		int normalMask = 0;
 		int n0 = 0, n1 = 0, n2 = 0, n3 = 0, n4 = 0, n5 = 0;
 		for (int i = start; i < end; i++) {
-			BakedQuad q = quads.get(i);
+			BakedQuad q = array != null ? array[i] : quads.get(i);
 			int emission = q.materialInfo().lightEmission();
 			int packedLight = emission == 0 ? packedBaseLight
 				: FastVertexBuffer.packUv(LightCoordsUtil.lightCoordsWithEmission(baseLight, emission));
@@ -356,61 +372,61 @@ public final class FastQuadWriter {
 			Vector3fc p0 = q.position0(), p1 = q.position1(), p2 = q.position2(), p3 = q.position3();
 			if (identity) {
 				FastVertexBuffer.position(address, p0.x(), p0.y(), p0.z());
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p1.x(), p1.y(), p1.z());
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p2.x(), p2.y(), p2.z());
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p3.x(), p3.y(), p3.z());
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			} else if (translation) {
 				FastVertexBuffer.position(address, p0.x() + m30, p0.y() + m31, p0.z() + m32);
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p1.x() + m30, p1.y() + m31, p1.z() + m32);
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p2.x() + m30, p2.y() + m31, p2.z() + m32);
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 				FastVertexBuffer.position(address, p3.x() + m30, p3.y() + m31, p3.z() + m32);
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			} else {
 				float x0 = p0.x(), y0 = p0.y(), z0 = p0.z();
 				FastVertexBuffer.position(address, fma(m00, x0, fma(m10, y0, fma(m20, z0, m30))),
 					fma(m01, x0, fma(m11, y0, fma(m21, z0, m31))), fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))));
-				long uv0 = q.packedUV(0);
+				long uv0 = q.packedUV0();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv0), UVPair.unpackV(uv0), packedOverlay, packedLight, normal);
 				address += stride;
 				float x1 = p1.x(), y1 = p1.y(), z1 = p1.z();
 				FastVertexBuffer.position(address, fma(m00, x1, fma(m10, y1, fma(m20, z1, m30))),
 					fma(m01, x1, fma(m11, y1, fma(m21, z1, m31))), fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))));
-				long uv1 = q.packedUV(1);
+				long uv1 = q.packedUV1();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv1), UVPair.unpackV(uv1), packedOverlay, packedLight, normal);
 				address += stride;
 				float x2 = p2.x(), y2 = p2.y(), z2 = p2.z();
 				FastVertexBuffer.position(address, fma(m00, x2, fma(m10, y2, fma(m20, z2, m30))),
 					fma(m01, x2, fma(m11, y2, fma(m21, z2, m31))), fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))));
-				long uv2 = q.packedUV(2);
+				long uv2 = q.packedUV2();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv2), UVPair.unpackV(uv2), packedOverlay, packedLight, normal);
 				address += stride;
 				float x3 = p3.x(), y3 = p3.y(), z3 = p3.z();
 				FastVertexBuffer.position(address, fma(m00, x3, fma(m10, y3, fma(m20, z3, m30))),
 					fma(m01, x3, fma(m11, y3, fma(m21, z3, m31))), fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))));
-				long uv3 = q.packedUV(3);
+				long uv3 = q.packedUV3();
 				FastVertexBuffer.attributesEntity(address, packedColor, UVPair.unpackU(uv3), UVPair.unpackV(uv3), packedOverlay, packedLight, normal);
 				address += stride;
 			}
@@ -712,11 +728,11 @@ public final class FastQuadWriter {
 				return true;
 			}
 			if (layout == FastVertexLayout.BLOCK && matrix == null) {
-				writeBlockVert(address, p0, quad.packedUV(0), instance, 0, emission, x, y, z);
-				writeBlockVert(address + stride, p1, quad.packedUV(1), instance, 1, emission, x, y, z);
-				writeBlockVert(address + stride * 2L, p2, quad.packedUV(2), instance, 2, emission, x, y, z);
+				writeBlockVert(address, p0, quad.packedUV0(), instance, 0, emission, x, y, z);
+				writeBlockVert(address + stride, p1, quad.packedUV1(), instance, 1, emission, x, y, z);
+				writeBlockVert(address + stride * 2L, p2, quad.packedUV2(), instance, 2, emission, x, y, z);
 				long last = address + stride * 3L;
-				writeBlockVert(last, p3, quad.packedUV(3), instance, 3, emission, x, y, z);
+				writeBlockVert(last, p3, quad.packedUV3(), instance, 3, emission, x, y, z);
 				FastVertexBuffer.finish(builder, last, 4);
 				return true;
 			}
@@ -780,7 +796,7 @@ public final class FastQuadWriter {
 			fma(m00, x0, fma(m10, y0, fma(m20, z0, m30))),
 			fma(m01, x0, fma(m11, y0, fma(m21, z0, m31))),
 			fma(m02, x0, fma(m12, y0, fma(m22, z0, m32))));
-		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV0(), instance, 0, emission, packedOverlay, normal);
 		address += stride;
 
 		float x1 = p1.x(), y1 = p1.y(), z1 = p1.z();
@@ -788,7 +804,7 @@ public final class FastQuadWriter {
 			fma(m00, x1, fma(m10, y1, fma(m20, z1, m30))),
 			fma(m01, x1, fma(m11, y1, fma(m21, z1, m31))),
 			fma(m02, x1, fma(m12, y1, fma(m22, z1, m32))));
-		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV1(), instance, 1, emission, packedOverlay, normal);
 		address += stride;
 
 		float x2 = p2.x(), y2 = p2.y(), z2 = p2.z();
@@ -796,7 +812,7 @@ public final class FastQuadWriter {
 			fma(m00, x2, fma(m10, y2, fma(m20, z2, m30))),
 			fma(m01, x2, fma(m11, y2, fma(m21, z2, m31))),
 			fma(m02, x2, fma(m12, y2, fma(m22, z2, m32))));
-		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV2(), instance, 2, emission, packedOverlay, normal);
 		address += stride;
 
 		float x3 = p3.x(), y3 = p3.y(), z3 = p3.z();
@@ -804,44 +820,44 @@ public final class FastQuadWriter {
 			fma(m00, x3, fma(m10, y3, fma(m20, z3, m30))),
 			fma(m01, x3, fma(m11, y3, fma(m21, z3, m31))),
 			fma(m02, x3, fma(m12, y3, fma(m22, z3, m32))));
-		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV3(), instance, 3, emission, packedOverlay, normal);
 	}
 
 	private static void writeEntityOffset(long address, int stride, Vector3fc p0, Vector3fc p1, Vector3fc p2, Vector3fc p3,
 			BakedQuad quad, QuadInstance instance, int emission, int packedOverlay, int normal,
 			float ox, float oy, float oz) {
 		FastVertexBuffer.position(address, p0.x() + ox, p0.y() + oy, p0.z() + oz);
-		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV0(), instance, 0, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p1.x() + ox, p1.y() + oy, p1.z() + oz);
-		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV1(), instance, 1, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p2.x() + ox, p2.y() + oy, p2.z() + oz);
-		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV2(), instance, 2, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p3.x() + ox, p3.y() + oy, p3.z() + oz);
-		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV3(), instance, 3, emission, packedOverlay, normal);
 	}
 
 	private static void writeEntityIdentity(long address, int stride, Vector3fc p0, Vector3fc p1, Vector3fc p2, Vector3fc p3,
 			BakedQuad quad, QuadInstance instance, int emission, int packedOverlay, int normal) {
 		FastVertexBuffer.position(address, p0.x(), p0.y(), p0.z());
-		writeEntityAttrs(address, quad.packedUV(0), instance, 0, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV0(), instance, 0, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p1.x(), p1.y(), p1.z());
-		writeEntityAttrs(address, quad.packedUV(1), instance, 1, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV1(), instance, 1, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p2.x(), p2.y(), p2.z());
-		writeEntityAttrs(address, quad.packedUV(2), instance, 2, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV2(), instance, 2, emission, packedOverlay, normal);
 		address += stride;
 
 		FastVertexBuffer.position(address, p3.x(), p3.y(), p3.z());
-		writeEntityAttrs(address, quad.packedUV(3), instance, 3, emission, packedOverlay, normal);
+		writeEntityAttrs(address, quad.packedUV3(), instance, 3, emission, packedOverlay, normal);
 	}
 
 	private static void writeEntityAttrs(long address, long uv, QuadInstance instance, int i,

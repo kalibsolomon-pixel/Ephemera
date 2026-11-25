@@ -17,10 +17,14 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jspecify.annotations.Nullable;
 
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
@@ -49,6 +53,53 @@ public final class FastSectionCompiler {
 			return type.getName().startsWith("net.minecraft.");
 		}
 	};
+	private static volatile boolean fluidHandlersChecked;
+	private static volatile boolean waterHandlerDefault = true;
+	private static volatile boolean lavaHandlerDefault = true;
+
+	private static boolean isDefaultFluidHandler(Fluid fluid) {
+		if (!fluidHandlersChecked) {
+			checkDefaultFluidHandlers();
+		}
+		if (fluid == Fluids.WATER || fluid == Fluids.FLOWING_WATER) {
+			return waterHandlerDefault;
+		}
+		if (fluid == Fluids.LAVA || fluid == Fluids.FLOWING_LAVA) {
+			return lavaHandlerDefault;
+		}
+		return false;
+	}
+
+	private static void checkDefaultFluidHandlers() {
+		boolean waterOk = true;
+		boolean lavaOk = true;
+		try {
+			Class<?> regClass = Class.forName("net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandlerRegistry");
+			Object instance = regClass.getField("INSTANCE").get(null);
+			Method get = regClass.getMethod("get", Fluid.class);
+			waterOk = isBuiltinFluidHandler(get.invoke(instance, Fluids.WATER))
+				&& isBuiltinFluidHandler(get.invoke(instance, Fluids.FLOWING_WATER));
+			lavaOk = isBuiltinFluidHandler(get.invoke(instance, Fluids.LAVA))
+				&& isBuiltinFluidHandler(get.invoke(instance, Fluids.FLOWING_LAVA));
+		} catch (ClassNotFoundException ignored) {
+			// Fabric fluid rendering API not installed -> vanilla FluidRenderer only.
+		} catch (Throwable t) {
+			waterOk = false;
+			lavaOk = false;
+		}
+		waterHandlerDefault = waterOk;
+		lavaHandlerDefault = lavaOk;
+		fluidHandlersChecked = true;
+	}
+
+	private static boolean isBuiltinFluidHandler(@Nullable Object handler) {
+		if (handler == null) {
+			return true;
+		}
+		String name = handler.getClass().getName();
+		return name.startsWith("net.fabricmc.fabric.impl.client.rendering.fluid.FluidRenderHandlerRegistryImpl$")
+			|| name.startsWith("net.minecraft.");
+	}
 
 	private FastSectionCompiler() {}
 
@@ -120,6 +171,8 @@ public final class FastSectionCompiler {
 		private int spriteCount;
 		private int[] spriteStamp = new int[0];
 		private int stamp;
+		private final BlockState[] maskStates = new BlockState[64];
+		private final byte[] maskBits = new byte[64];
 
 		void reset(SectionPos sectionPos, RenderSectionRegion region, BlockStateModelSet blockModels, boolean skip, boolean sprites) {
 			this.region = region;
@@ -141,6 +194,45 @@ public final class FastSectionCompiler {
 				Arrays.fill(spriteStamp, 0);
 				stamp = 1;
 			}
+		}
+
+		/**
+		 * Returns true when a vanilla water/lava block is completely surrounded on all 6 cardinal
+		 * faces by the same fluid type, meaning both vanilla {@code FluidRenderer.tesselate} and
+		 * Fabric's default fluid handler emit zero quads. Skipping the call avoids 6 neighbor
+		 * {@code BlockPos} allocations plus Fabric's per-block {@code ScopedValue}/lambda churn
+		 * for ocean, river, and aquifer interiors (~400-560 MB during chunk compilation).
+		 */
+		public boolean shouldSkipBuriedFluid(FluidState fluidState, BlockPos pos) {
+			if (!skipBuried) {
+				return false;
+			}
+			Fluid type = fluidState.getType();
+			if (!isDefaultFluidHandler(type)) {
+				return false;
+			}
+			int x = pos.getX();
+			int y = pos.getY();
+			int z = pos.getZ();
+			BlockPos.MutableBlockPos p = scratchPos;
+			RenderSectionRegion r = region;
+			// Check UP first: immediately rejects open ocean/river surface blocks in 1 lookup.
+			if (!r.getBlockState(p.set(x, y + 1, z)).getFluidState().getType().isSame(type)) {
+				return false;
+			}
+			if (!r.getBlockState(p.set(x, y - 1, z)).getFluidState().getType().isSame(type)) {
+				return false;
+			}
+			if (!r.getBlockState(p.set(x, y, z - 1)).getFluidState().getType().isSame(type)) {
+				return false;
+			}
+			if (!r.getBlockState(p.set(x, y, z + 1)).getFluidState().getType().isSame(type)) {
+				return false;
+			}
+			if (!r.getBlockState(p.set(x - 1, y, z)).getFluidState().getType().isSame(type)) {
+				return false;
+			}
+			return r.getBlockState(p.set(x + 1, y, z)).getFluidState().getType().isSame(type);
 		}
 
 		/**
@@ -180,6 +272,11 @@ public final class FastSectionCompiler {
 			culler.clear();
 			VoxelShape block = Shapes.block();
 			BlockPos.MutableBlockPos p = scratchPos;
+			BlockState[] states = maskStates;
+			byte[] bits = maskBits;
+			Arrays.fill(states, null);
+			BlockState lastState = null;
+			int lastMask = 0;
 			for (int y = -1; y <= 16; y++) {
 				for (int z = -1; z <= 16; z++) {
 					for (int x = -1; x <= 16; x++) {
@@ -187,11 +284,25 @@ public final class FastSectionCompiler {
 						if (s.isAir()) {
 							continue;
 						}
-						int mask = 0;
-						for (Direction d : DIRECTIONS) {
-							if (s.getFaceOcclusionShape(d) == block) {
-								mask |= 1 << d.ordinal();
+						int mask;
+						if (s == lastState) {
+							mask = lastMask;
+						} else {
+							int slot = (System.identityHashCode(s) * 0x9E3779B9) >>> 26;
+							if (states[slot] == s) {
+								mask = bits[slot] & 0x3F;
+							} else {
+								mask = 0;
+								for (Direction d : DIRECTIONS) {
+									if (s.getFaceOcclusionShape(d) == block) {
+										mask |= 1 << d.ordinal();
+									}
+								}
+								states[slot] = s;
+								bits[slot] = (byte) mask;
 							}
+							lastState = s;
+							lastMask = mask;
 						}
 						if (mask != 0) {
 							culler.set(x, y, z, mask);
@@ -199,6 +310,7 @@ public final class FastSectionCompiler {
 					}
 				}
 			}
+			Arrays.fill(states, null);
 		}
 
 		private boolean hasOnlyCulledQuads(BlockStateModel model, BlockState state, BlockPos pos) {

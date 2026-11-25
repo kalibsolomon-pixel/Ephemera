@@ -6,6 +6,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanGpuSampler;
 import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,6 +41,32 @@ public final class VulkanDescriptorBindings {
 	private static final int POOL_CAP = 4;
 	private static final VulkanDescriptorBindings[] POOL = new VulkanDescriptorBindings[POOL_CAP];
 	private static int poolSize;
+
+	private static final int MAP_POOL_CAP = 16;
+	private static final HashMap<?, ?>[] MAP_POOL = new HashMap<?, ?>[MAP_POOL_CAP];
+	private static int mapPoolSize;
+
+	@SuppressWarnings("unchecked")
+	public static <K, V> HashMap<K, V> acquireMap() {
+		if (RenderSystem.isOnRenderThread() && mapPoolSize > 0) {
+			HashMap<K, V> map = (HashMap<K, V>) MAP_POOL[--mapPoolSize];
+			MAP_POOL[mapPoolSize] = null;
+			return map;
+		}
+		return new HashMap<>();
+	}
+
+	public static void releaseMap(HashMap<?, ?> map) {
+		if (map == null || !RenderSystem.isOnRenderThread()) {
+			return;
+		}
+		if (!map.isEmpty()) {
+			map.clear();
+		}
+		if (mapPoolSize < MAP_POOL_CAP) {
+			MAP_POOL[mapPoolSize++] = map;
+		}
+	}
 
 	private final GpuBufferSlice[] uniforms = new GpuBufferSlice[MAX_SLOTS];
 	private final VulkanGpuTextureView[] textureViews = new VulkanGpuTextureView[MAX_SLOTS];

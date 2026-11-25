@@ -31,12 +31,14 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 			"FrustumFastMixin",
 			"LevelExtractorBlockEntityFastMixin",
 			"LevelExtractorSectionUpdatesMixin",
+			"LevelRendererTranslucentResortFastMixin",
 			"RenderSectionRegionFastMixin",
 			"RotatingSectionStorageFastMixin",
 			"SectionCopyFastMixin",
 			"SectionDirtyStateEpochMixin",
 			"SectionOcclusionGraphExecutorMixin",
 			"SectionUpdateTrackerFastMixin",
+			"TerrainCompilePacingMixin",
 			"TerrainBlockModelFeatureSpriteUseMixin",
 			"TerrainChunkSectionsToRenderMixin",
 			"TerrainCompiledSectionMeshMixin",
@@ -106,6 +108,8 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 		// Culling, shadows, particles & MoreCulling block states
 		registerYield("EntityRendererCacheMixin", "badoptimizations");
+		registerYield("ModelPartFastChildrenMixin", "entity_model_features", "optifabric");
+		registerYield("RenderTypesEntityCacheMixin", "iris", "oculus");
 		registerYield("EntityRendererFrustumFastMixin", "sodium", "entityculling", "badoptimizations");
 		registerYield("LevelExtractorPlayerStateFastMixin", "badoptimizations");
 		registerYield("LevelRendererTransientBlockCullMixin", "entityculling");
@@ -123,6 +127,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("QuadParticleCullingMixin", "particle_core", "badoptimizations");
 		registerYield("SingleQuadParticleRotationMixin", "particle_core", "badoptimizations");
 		registerYield("ParticleLightmapMixin", "particle_core", "badoptimizations");
+		registerYield("ParticleMoveFastMixin", "particle_core");
 
 		// GUI, text & animated item baking
 		registerYield("GuiRenderStateMixin", "immediatelyfast", "modernui", "gnetum");
@@ -148,6 +153,9 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("QuadCollectionDedupMixin", "ferritecore", "modernfix");
 		registerYield("ClientChunkCacheFastMixin", "sodium", "lithium", "radium", "canary", "c2me");
 		registerYield("ClientChunkCacheStorageMixin", "sodium", "lithium", "radium", "canary", "c2me");
+		registerYield("ClientLevelAnimateTickFastMixin", "lithium", "radium", "canary", "badoptimizations");
+		registerYield("ClientLevelTickFastMixin", "lithium", "radium", "canary");
+		registerYield("MobClientTickFastMixin", "lithium", "radium", "canary");
 		// Note: ByteBufferBuilderShrinkMixin, MinecraftMemoryGuardMixin, ModelManagerReloadMixin,
 		// MinecraftFramePacingMixin, and FramerateLimiterPacingMixin intentionally cooperate alongside
 		// Aurora Client (never yielding to Aurora; frame pacing coordinates via ephemera:frame_pacer).
@@ -166,6 +174,7 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 		registerYield("ResolvedServerAddressFastMixin", "fast-ip-ping");
 		registerYield("ServerNameResolverFastMixin", "fast-ip-ping");
 		registerYield("ScreenEffectRendererFastMixin", "badoptimizations");
+		registerYield("CameraFluidFastMixin", "badoptimizations");
 
 		// Window
 		registerYield("WindowBorderlessMixin", "borderless-mining", "cubes-without-borders", "fullscreen-windowed");
@@ -216,19 +225,24 @@ public final class EphemeraClientMixinPlugin extends EphemeraCommonMixinPlugin {
 
 			// Client engine / memory / loading
 			case "SpriteContentsMixin", "TextureAtlasMipMixin" -> cfg.memoryFreeSpriteMipmaps;
-			case "ClientChunkCacheFastMixin", "ClientChunkCacheStorageMixin" -> cfg.engineFastChunkLookup;
+			case "ClientChunkCacheFastMixin", "ClientChunkCacheStorageMixin", "ClientLevelAnimateTickFastMixin", "ClientLevelTickFastMixin" -> cfg.engineFastChunkLookup;
+			case "ParticleMoveFastMixin" -> cfg.engineFastCollisions;
+			case "MobClientTickFastMixin" -> cfg.engineIdleShortCircuits;
 			case "QuadCollectionDedupMixin" -> cfg.memoryDeduplicateModels;
 			case "ByteBufferBuilderShrinkMixin" -> cfg.memoryTrimNativeBuffers;
 			case "MinecraftMemoryGuardMixin", "ModelManagerReloadMixin" -> cfg.memoryLeakGuard;
 			case "LightmapMixin", "LightmapShaderReloadMixin" -> cfg.engineLightmapCaching;
 			case "DebugEntryMixin" -> cfg.engineDebugHudCache;
 			case "SoundListenerMixin" -> cfg.engineSoundListenerThrottle;
-			case "ToastIdleMixin", "TutorialIdleMixin", "DebugRendererIdleMixin", "FovIdleMixin" -> cfg.engineIdleShortCircuits;
+			case "ToastIdleMixin", "TutorialIdleMixin", "DebugRendererIdleMixin", "FovIdleMixin",
+				 "SimpleGizmoCollectorFastMixin", "LevelRendererGizmoFastMixin",
+				 "RenderTypesEntityCacheMixin", "CameraFluidFastMixin" -> cfg.engineIdleShortCircuits;
 			case "LevelLoadDelayMixin" -> cfg.loadingSkipLevelLoadDelay;
 			case "TitleFadeMixin" -> cfg.loadingSkipTitleFade;
 			case "LoadingFadeMixin" -> cfg.loadingNonBlockingReload;
 			case "NumericAddressMixin", "ResolvedServerAddressFastMixin", "ServerNameResolverFastMixin" -> cfg.loadingFastIpPing;
 			case "FrustumFastMixin", "RotatingSectionStorageFastMixin", "LevelExtractorBlockEntityFastMixin",
+				 "LevelRendererTranslucentResortFastMixin",
 				 "EntityRendererFrustumFastMixin", "SectionCopyFastMixin", "RenderSectionRegionFastMixin" -> cfg.terrainFastFrustumAndGrid;
 			case "SectionOcclusionGraphExecutorMixin" -> cfg.terrainAsyncGraphUpdates;
 

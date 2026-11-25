@@ -1,5 +1,6 @@
 package com.ephemera.mixin.common.worldgen;
 
+import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -11,16 +12,18 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 
 /**
- * Caches {@link NoiseChunk}'s {@code interpolators} list as a flat array so the per-block
- * {@link #updateForZ} (98,304 calls/chunk), {@link #updateForX}, {@link #updateForY}, and
- * {@link #swapSlices} loops never allocate {@code ArrayList$Itr} objects or dispatch through
- * {@code List}/{@code Iterator} interfaces.
+ * Caches {@link NoiseChunk}'s {@code interpolators} list as a flat array and caches the
+ * {@code this::wrapNew} method reference so chunk noise fill never allocates {@code ArrayList$Itr}
+ * objects or per-call {@code NoiseChunk$$Lambda} closures (~220 MB across worldgen).
  */
 @Mixin(NoiseChunk.class)
 abstract class NoiseChunkFastMixin {
 	@Shadow @Final private List<NoiseChunk.NoiseInterpolator> interpolators;
+	@Shadow @Final private Map<DensityFunction, DensityFunction> wrapped;
 	@Shadow private int cellStartBlockX;
 	@Shadow private int cellStartBlockY;
 	@Shadow private int cellStartBlockZ;
@@ -29,7 +32,22 @@ abstract class NoiseChunkFastMixin {
 	@Shadow private int inCellZ;
 	@Shadow private long interpolationCounter;
 
+	@Shadow
+	private DensityFunction wrapNew(DensityFunction function) {
+		throw new AssertionError();
+	}
+
 	@Unique private NoiseInterpolatorAccess[] ephemera$interps;
+	@Unique private final Function<DensityFunction, DensityFunction> ephemera$wrapFn = this::wrapNew;
+
+	/**
+	 * @author Ephemera
+	 * @reason Reuses a cached method-reference field instead of allocating a capturing lambda per wrap() call.
+	 */
+	@Overwrite
+	protected DensityFunction wrap(DensityFunction function) {
+		return this.wrapped.computeIfAbsent(function, this.ephemera$wrapFn);
+	}
 
 	@Inject(method = "<init>", at = @At("TAIL"))
 	private void ephemera$snapshotInterpolators(CallbackInfo ci) {

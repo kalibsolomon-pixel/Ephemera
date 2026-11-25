@@ -13,6 +13,7 @@ import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vulkan.VulkanBindGroupLayout;
@@ -24,13 +25,17 @@ import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import com.mojang.blaze3d.vulkan.VulkanRenderPipeline;
 import java.util.HashMap;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(VulkanRenderPass.class)
@@ -43,14 +48,18 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 	@Shadow private boolean anyDescriptorDirty;
 	@Shadow @Final protected HashMap<String, GpuBufferSlice> uniforms;
 	@Shadow @Final protected HashMap<String, ?> textures;
+	@Shadow protected abstract VkCommandBuffer commandBuffer();
 
 	@Unique private static final int EPHEMERA_TRACKED_VERTEX_SLOTS = 16;
 	@Unique private boolean ephemera$cacheEnabled;
 	@Unique private boolean ephemera$descriptorCacheEnabled;
+	@Unique private boolean ephemera$pooledMaps;
 	@Unique private VulkanRenderPipeline ephemera$boundPipeline;
 	@Unique private VulkanDescriptorBindings ephemera$bindings;
 	@Unique private VulkanBindGroupLayout ephemera$descriptorLayout;
 	@Unique private VulkanDescriptorPlan ephemera$descriptorPlan;
+	@Unique private long ephemera$vb0Handle;
+	@Unique private long ephemera$vb0Offset;
 	@Unique private long[] ephemera$vertexBindings;
 	@Unique private int ephemera$knownVertexSlots;
 	@Unique private long ephemera$indexBuffer;
@@ -166,52 +175,94 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 		return ephemera$bindings;
 	}
 
-	@WrapMethod(method = "setVertexBuffer")
-	private void ephemera$bindVertexBuffer(int slot, GpuBufferSlice slice, Operation<Void> original) {
-		if (!ephemera$cacheEnabled) {
-			ephemera$knownVertexSlots = 0;
-			original.call(slot, slice);
+	/**
+	 * @author Ephemera
+	 * @reason Eliminates redundant vkCmdBindVertexBuffers calls and MixinExtras @WrapMethod Operation
+	 *         lambda allocations on every terrain/entity/UI draw.
+	 */
+	@Overwrite
+	public void setVertexBuffer(int slot, GpuBufferSlice slice) {
+		if (slice == null) {
+			if (slot >= 0 && slot < EPHEMERA_TRACKED_VERTEX_SLOTS) {
+				ephemera$knownVertexSlots &= ~(1 << slot);
+			}
 			return;
 		}
-		if (slot < 0 || slot >= EPHEMERA_TRACKED_VERTEX_SLOTS
-				|| (slice != null && !(slice.buffer() instanceof VulkanGpuBuffer))) {
-			original.call(slot, slice);
+		long handle = ((VulkanGpuBuffer) slice.buffer()).vkBuffer();
+		long offset = slice.offset();
+		if (ephemera$cacheEnabled && slot >= 0 && slot < EPHEMERA_TRACKED_VERTEX_SLOTS) {
+			if (slot == 0) {
+				if ((ephemera$knownVertexSlots & 1) != 0
+						&& ephemera$vb0Handle == handle && ephemera$vb0Offset == offset) {
+					return;
+				}
+				ephemera$knownVertexSlots &= ~1;
+				ephemera$bindVkVertexBuffer(slot, handle, offset);
+				ephemera$vb0Handle = handle;
+				ephemera$vb0Offset = offset;
+				ephemera$knownVertexSlots |= 1;
+				return;
+			}
+			int bit = 1 << slot;
+			int index = slot * 2;
+			if ((ephemera$knownVertexSlots & bit) != 0
+					&& ephemera$vertexBindings[index] == handle && ephemera$vertexBindings[index + 1] == offset) {
+				return;
+			}
+			ephemera$knownVertexSlots &= ~bit;
+			ephemera$bindVkVertexBuffer(slot, handle, offset);
+			if (ephemera$vertexBindings == null) {
+				ephemera$vertexBindings = new long[EPHEMERA_TRACKED_VERTEX_SLOTS * 2];
+			}
+			ephemera$vertexBindings[index] = handle;
+			ephemera$vertexBindings[index + 1] = offset;
+			ephemera$knownVertexSlots |= bit;
 			return;
 		}
-		long handle = slice == null ? 0 : ((VulkanGpuBuffer) slice.buffer()).vkBuffer();
-		long offset = slice == null ? 0 : slice.offset();
-		int bit = 1 << slot;
-		int index = slot * 2;
-		if ((ephemera$knownVertexSlots & bit) != 0
-				&& ephemera$vertexBindings[index] == handle && ephemera$vertexBindings[index + 1] == offset) {
-			return;
-		}
-		ephemera$knownVertexSlots &= ~bit;
-		original.call(slot, slice);
-		if (ephemera$vertexBindings == null) {
-			ephemera$vertexBindings = new long[EPHEMERA_TRACKED_VERTEX_SLOTS * 2];
-		}
-		ephemera$vertexBindings[index] = handle;
-		ephemera$vertexBindings[index + 1] = offset;
-		ephemera$knownVertexSlots |= bit;
+		ephemera$knownVertexSlots = 0;
+		ephemera$bindVkVertexBuffer(slot, handle, offset);
 	}
 
-	@WrapMethod(method = "setIndexBuffer")
-	private void ephemera$bindIndexBuffer(GpuBuffer buffer, IndexType type, Operation<Void> original) {
-		if (!ephemera$cacheEnabled
-				|| !(buffer instanceof VulkanGpuBuffer vulkanBuffer) || type == null) {
-			ephemera$indexType = null;
-			original.call(buffer, type);
-			return;
+	@Unique
+	private void ephemera$bindVkVertexBuffer(int slot, long handle, long offset) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			VK12.vkCmdBindVertexBuffers(commandBuffer(), slot, stack.longs(handle), stack.longs(offset));
 		}
-		long handle = vulkanBuffer.vkBuffer();
-		if (ephemera$indexType == type && ephemera$indexBuffer == handle) {
+	}
+
+	/**
+	 * @author Ephemera
+	 * @reason Eliminates redundant vkCmdBindIndexBuffer calls and MixinExtras @WrapMethod Operation
+	 *         lambda allocations on every indexed draw.
+	 */
+	@Overwrite
+	public void setIndexBuffer(GpuBuffer buffer, IndexType type) {
+		int vkType = switch (type) {
+			case SHORT -> VK12.VK_INDEX_TYPE_UINT16;
+			case INT -> VK12.VK_INDEX_TYPE_UINT32;
+		};
+		long handle = ((VulkanGpuBuffer) buffer).vkBuffer();
+		if (ephemera$cacheEnabled && ephemera$indexType == type && ephemera$indexBuffer == handle) {
 			return;
 		}
 		ephemera$indexType = null;
-		original.call(buffer, type);
-		ephemera$indexBuffer = handle;
-		ephemera$indexType = type;
+		VK12.vkCmdBindIndexBuffer(commandBuffer(), handle, 0L, vkType);
+		if (ephemera$cacheEnabled) {
+			ephemera$indexBuffer = handle;
+			ephemera$indexType = type;
+		}
+	}
+
+	@Redirect(method = "<init>", at = @At(value = "NEW", target = "()Ljava/util/HashMap;"))
+	private HashMap<?, ?> ephemera$acquirePassMap() {
+		if (RenderSystem.isOnRenderThread()
+			&& !VulkanRenderPass.VALIDATION
+			&& EphemeraCommon.config().backendVulkanDispatchCache
+			&& ((Object) this).getClass() == VulkanRenderPass.class) {
+			ephemera$pooledMaps = true;
+			return VulkanDescriptorBindings.acquireMap();
+		}
+		return new HashMap<>();
 	}
 
 	@Inject(method = "<init>", at = @At("RETURN"))
@@ -276,6 +327,11 @@ abstract class VulkanRenderPassMixin implements VulkanRenderPassBridge {
 		if (ephemera$bindings != null) {
 			VulkanDescriptorBindings.release(ephemera$bindings);
 			ephemera$bindings = null;
+		}
+		if (ephemera$pooledMaps) {
+			ephemera$pooledMaps = false;
+			VulkanDescriptorBindings.releaseMap(uniforms);
+			VulkanDescriptorBindings.releaseMap(textures);
 		}
 	}
 }

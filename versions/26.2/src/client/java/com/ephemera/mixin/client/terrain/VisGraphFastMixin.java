@@ -1,6 +1,8 @@
 package com.ephemera.mixin.client.terrain;
 
 import com.ephemera.EphemeraCommon;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.client.renderer.chunk.VisGraph;
 import net.minecraft.client.renderer.chunk.VisibilitySet;
 import net.minecraft.core.BlockPos;
@@ -9,16 +11,12 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Replaces {@link VisGraph}'s {@code BitSet} ({@code expandTo} bounds checks), per-component
  * {@code IntArrayFIFOQueue} and {@code EnumSet<Direction>} allocations, and switch-based neighbor
  * lookups with a flat {@code long[64]} bitset, a thread-local {@code short[4096]} BFS queue, and
- * 6-bit face masks. Produces identical {@link VisibilitySet} results.
+ * 6-bit face masks. Uses {@code @WrapMethod} so {@code setOpaque} allocates zero {@code CallbackInfo}.
  */
 @Mixin(VisGraph.class)
 abstract class VisGraphFastMixin {
@@ -37,37 +35,35 @@ abstract class VisGraphFastMixin {
 	@Unique private final long[] ephemera$bits = new long[64];
 	@Unique private boolean ephemera$usedFast;
 
-	@Inject(method = "setOpaque", at = @At("HEAD"), cancellable = true)
-	private void ephemera$fastSetOpaque(BlockPos pos, CallbackInfo ci) {
+	@WrapMethod(method = "setOpaque")
+	private void ephemera$fastSetOpaque(BlockPos pos, Operation<Void> original) {
 		if (!EphemeraCommon.config().terrainBitmaskMeshing) {
+			original.call(pos);
 			return;
 		}
 		this.ephemera$usedFast = true;
 		int idx = (pos.getX() & 15) | ((pos.getZ() & 15) << 4) | ((pos.getY() & 15) << 8);
 		this.ephemera$bits[idx >>> 6] |= 1L << idx;
 		this.empty--;
-		ci.cancel();
 	}
 
-	@Inject(method = "resolve", at = @At("HEAD"), cancellable = true)
-	private void ephemera$fastResolve(CallbackInfoReturnable<VisibilitySet> cir) {
+	@WrapMethod(method = "resolve")
+	private VisibilitySet ephemera$fastResolve(Operation<VisibilitySet> original) {
 		if (!EphemeraCommon.config().terrainBitmaskMeshing) {
-			return;
+			return original.call();
 		}
 		if (!this.ephemera$usedFast && this.empty != 4096) {
-			return;
+			return original.call();
 		}
 		VisibilitySet result = new VisibilitySet();
 		int emp = this.empty;
 		if (4096 - emp < 256) {
 			result.setAll(true);
-			cir.setReturnValue(result);
-			return;
+			return result;
 		}
 		if (emp == 0) {
 			result.setAll(false);
-			cir.setReturnValue(result);
-			return;
+			return result;
 		}
 
 		long[] bits = this.ephemera$bits;
@@ -177,6 +173,6 @@ abstract class VisGraphFastMixin {
 			}
 		}
 
-		cir.setReturnValue(result);
+		return result;
 	}
 }

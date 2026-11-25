@@ -75,6 +75,7 @@ public final class ConfigStore {
 		c.guiGlintFps = Math.max(10, Math.min(240, c.guiGlintFps));
 		c.maxParticlesPerSheet = Math.max(512, Math.min(65536, c.maxParticlesPerSheet));
 		c.framePacerSpinTailMicros = Math.max(100, Math.min(3000, c.framePacerSpinTailMicros));
+		c.extendedFpsLimit = com.ephemera.core.pacing.FrameRateLimitPolicy.sanitizeExtended(c.extendedFpsLimit);
 		c.unfocusedFpsLimit = Math.max(5, Math.min(240, c.unfocusedFpsLimit));
 		c.visualDitherStrength = Math.max(0.0f, Math.min(2.0f, c.visualDitherStrength));
 		c.visualAoStrength = Math.max(0.5f, Math.min(1.5f, c.visualAoStrength));

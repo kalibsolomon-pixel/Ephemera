@@ -17,9 +17,16 @@ import net.minecraft.client.renderer.item.TrackingItemStackRenderState;
  * glint pacing is enabled, in which case visible, moving glint advances at {@code guiGlintFps}.
  */
 public final class GuiItemBakingManager {
+	private static final int MAX_ANIMATED_REBAKES_PER_FRAME = 2;
 	private static long textureTicks;
+	private static int animatedRebakesThisFrame;
 
 	private GuiItemBakingManager() {}
+
+	/** Resets the per-frame animated/foil atlas rebake budget at frame head. */
+	public static void beginFrame() {
+		animatedRebakesThisFrame = 0;
+	}
 
 	public static void onTextureTick() {
 		textureTicks++;
@@ -63,6 +70,13 @@ public final class GuiItemBakingManager {
 		long version = contentVersion(plan == PLAN_KEEP_FOIL, GuiFeatures.get());
 		if (slotState.ephemera$contentVersion() != version) {
 			if (slot.state() == DynamicAtlasAllocator.SlotState.READY) {
+				// Spread periodic animated/foil slot refreshes across frames (2 per frame) so a
+				// full enchanted hotbar + armor set never rebakes all 8+ slots on the exact same
+				// frame. New slots (state != READY) always bake immediately.
+				if (animatedRebakesThisFrame >= MAX_ANIMATED_REBAKES_PER_FRAME) {
+					return;
+				}
+				animatedRebakesThisFrame++;
 				slotState.ephemera$markStale();
 			}
 			slotState.ephemera$setContentVersion(version);

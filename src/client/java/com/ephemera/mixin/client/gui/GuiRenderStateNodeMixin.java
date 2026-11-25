@@ -25,7 +25,7 @@ abstract class GuiRenderStateNodeMixin {
 	)
 	private ArrayList ephemera$indexedLayerList(Operation<ArrayList> original) {
 		if (GuiFeatures.get().layerIndexing) {
-			return new IndexedRectList<ScreenArea>(GuiLayerIndex.AREA_BOUNDS);
+			return GuiLayerIndex.borrowList();
 		}
 		return original.call();
 	}

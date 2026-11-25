@@ -40,6 +40,8 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 
 	private GuiRenderState activeRenderState;
 	private Matrix3x2fc activePose;
+	private int activeOffsetX;
+	private int activeOffsetY;
 	private ScreenRectangle activeScissor;
 	private RenderPipeline runPipeline;
 	private GpuTextureView runTexture;
@@ -53,11 +55,21 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 		runTexture = null;
 		runStart = glyphCount;
 		try {
-			textState.ensurePrepared().visit(this);
+			Font.PreparedText prepared = textState.ensurePrepared();
+			if (((Object) textState) instanceof OriginNormalizedText norm && norm.ephemera$isOriginNormalized()) {
+				activeOffsetX = norm.ephemera$offsetX();
+				activeOffsetY = norm.ephemera$offsetY();
+			} else {
+				activeOffsetX = 0;
+				activeOffsetY = 0;
+			}
+			prepared.visit(this);
 			flushRun();
 		} finally {
 			activeRenderState = null;
 			activePose = null;
+			activeOffsetX = 0;
+			activeOffsetY = 0;
 			activeScissor = null;
 			runPipeline = null;
 			runTexture = null;
@@ -99,7 +111,7 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 		// Match Aurora's GlyphRenderState sampler when the batch contains distance-field glyphs.
 		FilterMode filter = AURORA_SDF_FRAGMENT.equals(runPipeline.getFragmentShader()) ? FilterMode.LINEAR : FilterMode.NEAREST;
 		TextureSetup setup = TextureSetup.singleTextureWithLightmap(runTexture, RenderSystem.getSamplerCache().getClampToEdge(filter));
-		run.set(activePose, activeScissor, runPipeline, setup, runStart, glyphCount);
+		run.set(activePose, activeOffsetX, activeOffsetY, activeScissor, runPipeline, setup, runStart, glyphCount);
 		activeRenderState.addGlyphToCurrentLayer(run);
 		runStart = glyphCount;
 		runPipeline = null;
@@ -130,14 +142,18 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 	/** One contiguous same-pipeline, same-texture glyph run; reads the enclosing (possibly grown) glyph array. */
 	final class Run implements GuiElementRenderState {
 		private Matrix3x2fc pose;
+		private int offsetX;
+		private int offsetY;
 		private ScreenRectangle scissor;
 		private RenderPipeline pipeline;
 		private TextureSetup textureSetup;
 		private int start;
 		private int end;
 
-		void set(Matrix3x2fc pose, ScreenRectangle scissor, RenderPipeline pipeline, TextureSetup textureSetup, int start, int end) {
+		void set(Matrix3x2fc pose, int offsetX, int offsetY, ScreenRectangle scissor, RenderPipeline pipeline, TextureSetup textureSetup, int start, int end) {
 			this.pose = pose;
+			this.offsetX = offsetX;
+			this.offsetY = offsetY;
 			this.scissor = scissor;
 			this.pipeline = pipeline;
 			this.textureSetup = textureSetup;
@@ -147,6 +163,7 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 
 		void clear() {
 			pose = null;
+			offsetX = offsetY = 0;
 			scissor = null;
 			pipeline = null;
 			textureSetup = null;
@@ -156,6 +173,9 @@ public final class GuiTextBatcher implements Font.GlyphVisitor {
 		@Override
 		public void buildVertices(VertexConsumer consumer) {
 			Matrix4f mat = scratchMatrix.identity().mul(pose);
+			if (offsetX != 0 || offsetY != 0) {
+				mat.translate(offsetX, offsetY, 0.0f);
+			}
 			TextRenderable[] array = glyphs;
 			for (int i = start, limit = end; i < limit; i++) {
 				array[i].render(mat, consumer, FULL_BRIGHT, true);
