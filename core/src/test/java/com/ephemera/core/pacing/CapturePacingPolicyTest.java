@@ -39,9 +39,12 @@ final class CapturePacingPolicyTest {
 	}
 
 	@Test
-	void expandsSwapchainImagesOnlyWhenUncappedBorderlessOrCapture() {
+	void expandsSwapchainImagesForEveryUncappedPresentMode() {
 		// Uncapped borderless -> 4 images
 		assertEquals(4, CapturePacingPolicy.preferredVulkanSwapchainImages(2, 8, 3, true, true, false));
+		// Uncapped windowed/exclusive (FSE-disallowed) -> 4 images: the compositor/DWM holds the
+		// presented image there too, so 3 images starve vkAcquireNextImageKHR behind present.
+		assertEquals(4, CapturePacingPolicy.preferredVulkanSwapchainImages(2, 8, 3, true, false, false));
 		// Uncapped capture in windowed/exclusive -> 4 images
 		assertEquals(4, CapturePacingPolicy.preferredVulkanSwapchainImages(2, 8, 3, true, false, true));
 		// VSync (FIFO) -> stays at 3 images to avoid latency

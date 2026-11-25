@@ -88,9 +88,10 @@ public final class CapturePacingPolicy {
 	 *
 	 * <p>In uncapped modes ({@code IMMEDIATE} / {@code MAILBOX}), Ephemera's async presenter
 	 * pre-acquires the next image immediately behind {@code vkQueuePresentKHR} while 2 GPU frames
-	 * are in flight. In borderless fullscreen or under capture hooks (DWM / WGC / OBS), the
-	 * compositor/capture layer also holds the just-presented image; requesting 4 images prevents
-	 * {@code vkAcquireNextImageKHR} stalls without adding queue latency.
+	 * are in flight, and the compositor/DWM (windowed, borderless, or FSE-disallowed exclusive)
+	 * or a capture hook holds the just-presented image; requesting 4 images prevents
+	 * {@code vkAcquireNextImageKHR} stalls without adding queue latency. FIFO/VSync modes keep
+	 * vanilla's count so presentation latency is unchanged.
 	 */
 	public static int preferredVulkanSwapchainImages(
 		int surfaceMinImages,
@@ -102,7 +103,7 @@ public final class CapturePacingPolicy {
 	) {
 		int minImg = Math.max(1, surfaceMinImages);
 		int desired = Math.max(vanillaRequestedImages, minImg);
-		if (uncappedPresentMode && (borderlessFullscreen || captureActive)) {
+		if (uncappedPresentMode) {
 			desired = Math.max(desired, 4);
 		}
 		if (surfaceMaxImages > 0) {

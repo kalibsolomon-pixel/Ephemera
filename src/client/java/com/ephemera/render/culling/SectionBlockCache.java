@@ -16,6 +16,9 @@ final class SectionBlockCache {
     private final long[] stamps = new long[SLOTS];
     private final long[] sectionFrames = new long[SLOTS];
     private final long[][] known = new long[SLOTS][64], opaque = new long[SLOTS][64];
+    // Per-slot 64-bit validity mask over the known/opaque words: one store replaces the two
+    // 512-byte Arrays.fill sweeps on slot eviction (wave 6).
+    private final long[] knownWordMasks = new long[SLOTS];
     private boolean hasSectionRefs;
 
     /** Releases MC chunk-section references at frame end without discarding valid opacity bitsets. */
@@ -44,6 +47,7 @@ final class SectionBlockCache {
             stamps[slot] = 0L;
             sectionFrames[slot] = 0L;
             sections[slot] = null;
+            knownWordMasks[slot] = 0L;
         }
     }
 
@@ -54,6 +58,7 @@ final class SectionBlockCache {
                 stamps[i] = 0L;
                 sectionFrames[i] = 0L;
                 sections[i] = null;
+                knownWordMasks[i] = 0L;
             }
         }
     }
@@ -66,7 +71,8 @@ final class SectionBlockCache {
         int cell = (y & 15) << 8 | (z & 15) << 4 | x & 15;
         int word = cell >>> 6;
         long bit = 1L << cell;
-        if (stamps[slot] == terrainStamp && xs[slot] == sx && ys[slot] == sy && zs[slot] == sz) {
+        if (stamps[slot] == terrainStamp && xs[slot] == sx && ys[slot] == sy && zs[slot] == sz
+                && (knownWordMasks[slot] & (1L << word)) != 0L) {
             if ((known[slot][word] & bit) != 0L) {
                 return (opaque[slot][word] & bit) != 0L;
             }
@@ -77,7 +83,9 @@ final class SectionBlockCache {
             stamps[slot] = terrainStamp;
             sectionFrames[slot] = 0L;
             sections[slot] = null;
-            Arrays.fill(known[slot], 0L);
+            // Recycled slot: every word holds the previous section's data. Leave the stale bytes
+            // in place and mark all words invalid - the validity mask gates every read.
+            knownWordMasks[slot] = 0L;
         }
         LevelChunkSection section;
         if (sectionFrames[slot] == frame) {
@@ -90,6 +98,7 @@ final class SectionBlockCache {
             hasSectionRefs = true;
         }
         if (section == null || section.hasOnlyAir()) {
+            knownWordMasks[slot] |= 1L << word;
             known[slot][word] |= bit;
             opaque[slot][word] &= ~bit;
             return false;
@@ -97,6 +106,7 @@ final class SectionBlockCache {
         BlockState state = section.getBlockState(x & 15, y & 15, z & 15);
         boolean solid = state.isSolidRender() && state.canOcclude() && !state.getBlock().hasDynamicShape()
                 && !state.hasOffsetFunction();
+        knownWordMasks[slot] |= 1L << word;
         known[slot][word] |= bit;
         if (solid) opaque[slot][word] |= bit;
         else opaque[slot][word] &= ~bit;
