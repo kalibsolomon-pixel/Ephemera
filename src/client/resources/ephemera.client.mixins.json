@@ -61,6 +61,7 @@
     "gui.FormattedBidiReorderMixin",
     "gui.FramerateLimitTrackerMixin",
     "gui.GlyphRenderStateFastMixin",
+    "gui.ItemCooldownsEmptyGuardMixin",
     "gui.GuiGraphicsExtractorMixin",
     "gui.GuiItemAtlasMixin",
     "gui.GuiRenderStateMixin",

@@ -17,17 +17,22 @@ import java.util.Arrays;
  * everything is dropped when the tick advances. A stack that its owner is currently using is never cached,
  * so charge, pull and use animations resolve every frame.
  * <p>
- * Lookups allocate nothing and copy nothing: the table is direct-mapped by stack identity, the item of a
- * stack cannot change, and component changes are detected through {@link GuiPatchSnapshot} (a reference
- * comparison against a copy-on-write-armed patch). Reusing the same state instance also keeps its model
- * identity key (and the key's cached hash) alive across frames.
+ * Lookups allocate nothing and copy nothing: the table is 2-way set-associative by stack identity (the
+ * creative inventory's ~75 stacks produce ~5-6 birthday-paradox collision pairs per frame at 1-way
+ * 512 slots, evicting each other in a cycle), the item of a stack cannot change, and component changes are
+ * detected through {@link GuiPatchSnapshot} (a reference comparison against a copy-on-write-armed patch).
+ * Reusing the same state instance also keeps its model identity key (and the key's cached hash) alive
+ * across frames.
  */
 public final class GuiItemStateCache {
-	private static final int SLOTS = 512;
-	private static final int MASK = SLOTS - 1;
+	private static final int SETS = 512;
+	private static final int SET_MASK = SETS - 1;
+	private static final int WAYS = 2;
 
-	private static final Entry[] TABLE = new Entry[SLOTS];
+	private static final Entry[] TABLE = new Entry[SETS * WAYS];
 	private static long tableTick = Long.MIN_VALUE;
+	/** Round-robin store way per set, flipped on each overwrite of an occupied pair. */
+	private static long storeCount;
 
 	private GuiItemStateCache() {}
 
@@ -35,10 +40,13 @@ public final class GuiItemStateCache {
 		if (tableTick != GuiItemBakingManager.textureTicks()) {
 			return null;
 		}
-		Entry entry = TABLE[System.identityHashCode(stack) & MASK];
-		if (entry == null || entry.stack != stack || entry.level != level || entry.owner != owner
-			|| entry.seed != seed || entry.count != stack.getCount()) {
-			return null;
+		int set = System.identityHashCode(stack) & SET_MASK;
+		Entry entry = TABLE[set];
+		if (entry == null || !matches(entry, stack, level, owner, seed)) {
+			entry = TABLE[SETS + set];
+			if (entry == null || !matches(entry, stack, level, owner, seed)) {
+				return null;
+			}
 		}
 		if (!(stack.getComponents() instanceof GuiPatchSnapshot components)
 			|| components.ephemera$patchToken() != entry.patch
@@ -46,6 +54,11 @@ public final class GuiItemStateCache {
 			return null;
 		}
 		return entry.state;
+	}
+
+	private static boolean matches(Entry entry, ItemStack stack, Level level, LivingEntity owner, int seed) {
+		return entry.stack == stack && entry.level == level && entry.owner == owner
+			&& entry.seed == seed && entry.count == stack.getCount();
 	}
 
 	public static void store(ItemStack stack, Level level, LivingEntity owner, int seed, TrackingItemStackRenderState state) {
@@ -57,8 +70,18 @@ public final class GuiItemStateCache {
 			Arrays.fill(TABLE, null);
 			tableTick = tick;
 		}
-		TABLE[System.identityHashCode(stack) & MASK] =
-			new Entry(stack, level, owner, seed, stack.getCount(), components.ephemera$armPatchToken(), state);
+		Entry entry = new Entry(stack, level, owner, seed, stack.getCount(), components.ephemera$armPatchToken(), state);
+		int set = System.identityHashCode(stack) & SET_MASK;
+		int way;
+		if (TABLE[set] == null) {
+			way = 0;
+		} else if (TABLE[SETS + set] == null) {
+			way = 1;
+		} else {
+			// Both ways occupied: flip-flop the victim so cycling stacks each keep one way warm.
+			way = ((int) (storeCount++ & 1L)) == 0 ? 1 : 0;
+		}
+		TABLE[way * SETS + set] = entry;
 	}
 
 	public static void clear() {

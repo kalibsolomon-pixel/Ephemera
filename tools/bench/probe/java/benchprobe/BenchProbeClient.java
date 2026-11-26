@@ -105,6 +105,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 	// Per-scene telemetry baselines
 	private static long sceneStartAllocBytes = 0L;
 	private static long sceneStartGcCount = 0L;
+	private static int sceneStartLoadedChunks = 0;
 	private static long sceneStartGcTimeMs = 0L;
 	private static long sceneMeasureStartNs = 0L;
 	private static long sceneMeasureStartEpochMs = 0L;
@@ -611,6 +612,8 @@ public final class BenchProbeClient implements ClientModInitializer {
 		sceneStartAllocBytes = currentRenderAllocBytes();
 		sceneStartGcCount = totalGcCount();
 		sceneStartGcTimeMs = totalGcTimeMs();
+		Minecraft mcStart = Minecraft.getInstance();
+		sceneStartLoadedChunks = mcStart.level != null ? mcStart.level.getChunkSource().getLoadedChunksCount() : 0;
 		if (JFR_ENABLED) {
 			try {
 				activeRecording = new Recording();
@@ -710,8 +713,19 @@ public final class BenchProbeClient implements ClientModInitializer {
 			Arrays.sort(rSorted);
 			row.put("renderMedianMs", round3(rSorted[Math.min(rn - 1, (int) Math.ceil(0.50 * rn) - 1)] / 1e6));
 			row.put("renderP99Ms", round3(rSorted[Math.min(rn - 1, (int) Math.ceil(0.99 * rn) - 1)] / 1e6));
+			row.put("renderMaxMs", round3(rSorted[rn - 1] / 1e6));
 		}
 		row.put("allocMbPerSec", round2(allocMbPerSec));
+		// World-completeness sentinels: a frozen server (missed teleport, choked worldgen) shows
+		// up as unchanged loaded-chunk counts and a player position away from the scene target.
+		Minecraft mcNow = Minecraft.getInstance();
+		row.put("loadedChunksStart", sceneStartLoadedChunks);
+		row.put("loadedChunksEnd", mcNow.level != null ? mcNow.level.getChunkSource().getLoadedChunksCount() : 0);
+		if (mcNow.player != null) {
+			row.put("playerX", round2(mcNow.player.getX()));
+			row.put("playerY", round2(mcNow.player.getY()));
+			row.put("playerZ", round2(mcNow.player.getZ()));
+		}
 		row.put("gcCount", gcCount);
 		row.put("gcTimeMs", gcTimeMs);
 		row.put("usedHeapMb", round2(usedHeapMb));
