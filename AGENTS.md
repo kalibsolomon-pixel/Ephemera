@@ -6,9 +6,9 @@ Whenever presenting performance benchmarks, multi-config comparisons, or before/
 
 ### 1. Standard Benchmark Protocol
 - Run uninstrumented (`--no-jfr`) on a quiet CPU/GPU using the 10-workload suite:
-  - **RD 20 (`--suite all --render-distance 20 --duration 4 --no-jfr`)**: `terrain_vista_rd20`, `dense_world_crowd`, `chunk_rebuild_burst`, `gui_pvp_hud`, `mouse_whip_flick`, `block_fluid_storm`, `chunk_flight_load`, `worldgen_frontier`.
-  - **RD 32 (`--suite default --render-distance 32 --duration 3 --no-jfr`)**: `terrain_vista_rd32` and `chunk_rebuild_burst_rd32` (mapped from `chunk_rebuild_burst` at RD 32).
-- Summarize each configuration with **10-scene geometric means** for `Avg FPS`, `1% Low FPS`, `p99 (ms)`, and `Alloc (MB/s)`.
+  - **RD 20 (`--suite all --render-distance 20 --duration 30 --no-jfr`)**: `terrain_vista_rd20`, `dense_world_crowd`, `chunk_rebuild_burst`, `gui_pvp_hud`, `mouse_whip_flick`, `block_fluid_storm`, `chunk_flight_load`, `worldgen_frontier`.
+  - **RD 32 (`--suite default --render-distance 32 --duration 30 --no-jfr`)**: `terrain_vista_rd32` and `chunk_rebuild_burst_rd32` (mapped from `chunk_rebuild_burst` at RD 32).
+- Sample each workload for 30 seconds (uncapped, uninstrumented); summarize each configuration with **10-scene geometric means** for `Avg FPS`, `1% Low FPS`, `p99 (ms)`, and `Alloc (MB/s)`.
 - Report deltas with correct directionality: **higher is better** for `Avg FPS` and `1% Low FPS`; **lower is better** for `p99 (ms)` and `Alloc (MB/s)`.
 
 ### 2. Shareable Standalone HTML Report Format

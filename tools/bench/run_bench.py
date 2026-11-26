@@ -283,7 +283,7 @@ def run_one(target: str, backend: str, out_dir: Path, duration_sec: int, jfr: bo
         started = time.time()
         moved = False
         latest_log = run_dir / "logs" / "latest.log"
-        max_wait = 360 if suite == "all" else 240
+        max_wait = 1200 if suite == "all" else 600
         while time.time() - started < max_wait:
             if proc.poll() is not None:
                 break
