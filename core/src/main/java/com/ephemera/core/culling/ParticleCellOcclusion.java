@@ -94,6 +94,17 @@ public final class ParticleCellOcclusion {
     private static boolean valid(double value) { return Double.isFinite(value) && Math.abs(value) < 30_000_064; }
 
     private boolean probe(int axis, double c, double ca, double cb, int target, int a, int b) {
+        // Three monomorphic probes: the axis dispatch is resolved once here and each probe keeps
+        // the solidity-coordinate placement fixed, with no per-cell switch inside the loops.
+        return switch (axis) {
+            case 0 -> probeDominant(c, ca, cb, target, a, b);
+            case 1 -> probeDominantY(c, ca, cb, target, a, b);
+            default -> probeDominantZ(c, ca, cb, target, a, b);
+        };
+    }
+
+    /** X-dominant probe: {@code layer} scans X and {@code (ia, ib)} address (y, z). */
+    private boolean probeDominant(double c, double ca, double cb, int target, int a, int b) {
         double t0 = target - .75, t1 = target + 1.75;
         if (!(c < t0 || c > t1)) return false;
         int step = c < t0 ? -1 : 1;
@@ -110,12 +121,55 @@ public final class ParticleCellOcclusion {
             if (a1 - a0 > 3 || b1 - b0 > 3) continue; // <= 16 cells/step, <= 256 total.
             boolean full = true;
             outer: for (int ia = a0; ia <= a1; ia++) for (int ib = b0; ib <= b1; ib++) {
-                boolean opaque = switch (axis) {
-                    case 0 -> solidity.isOpaque(layer, ia, ib);
-                    case 1 -> solidity.isOpaque(ia, layer, ib);
-                    default -> solidity.isOpaque(ia, ib, layer);
-                };
-                if (!opaque) { full = false; break outer; }
+                if (!solidity.isOpaque(layer, ia, ib)) { full = false; break outer; }
+            }
+            if (full) return true;
+        }
+        return false;
+    }
+
+    /** Y-dominant probe: {@code layer} scans Y and {@code (ia, ib)} address (x, z). */
+    private boolean probeDominantY(double c, double ca, double cb, int target, int a, int b) {
+        double t0 = target - .75, t1 = target + 1.75;
+        if (!(c < t0 || c > t1)) return false;
+        int step = c < t0 ? -1 : 1;
+        int layer = step < 0 ? (int) Math.ceil(t0) - 2 : (int) Math.floor(t1) + 1;
+        for (int n = 0; n < 16; n++, layer += step) {
+            if (!(c < layer && layer + 1 < t0 || t1 < layer && layer + 1 < c)) break;
+            double p = layer + .5;
+            double u = (p - c) / (t0 - c), v = (p - c) / (t1 - c);
+            int a0 = fastFloor(Math.min(ca + (a - .75 - ca) * u, ca + (a - .75 - ca) * v) - EPSILON);
+            int a1 = fastFloor(Math.max(ca + (a + 1.75 - ca) * u, ca + (a + 1.75 - ca) * v) + EPSILON);
+            int b0 = fastFloor(Math.min(cb + (b - .75 - cb) * u, cb + (b - .75 - cb) * v) - EPSILON);
+            int b1 = fastFloor(Math.max(cb + (b + 1.75 - cb) * u, cb + (b + 1.75 - cb) * v) + EPSILON);
+            if (a1 - a0 > 3 || b1 - b0 > 3) continue;
+            boolean full = true;
+            outer: for (int ia = a0; ia <= a1; ia++) for (int ib = b0; ib <= b1; ib++) {
+                if (!solidity.isOpaque(ia, layer, ib)) { full = false; break outer; }
+            }
+            if (full) return true;
+        }
+        return false;
+    }
+
+    /** Z-dominant probe: {@code layer} scans Z and {@code (ia, ib)} address (x, y). */
+    private boolean probeDominantZ(double c, double ca, double cb, int target, int a, int b) {
+        double t0 = target - .75, t1 = target + 1.75;
+        if (!(c < t0 || c > t1)) return false;
+        int step = c < t0 ? -1 : 1;
+        int layer = step < 0 ? (int) Math.ceil(t0) - 2 : (int) Math.floor(t1) + 1;
+        for (int n = 0; n < 16; n++, layer += step) {
+            if (!(c < layer && layer + 1 < t0 || t1 < layer && layer + 1 < c)) break;
+            double p = layer + .5;
+            double u = (p - c) / (t0 - c), v = (p - c) / (t1 - c);
+            int a0 = fastFloor(Math.min(ca + (a - .75 - ca) * u, ca + (a - .75 - ca) * v) - EPSILON);
+            int a1 = fastFloor(Math.max(ca + (a + 1.75 - ca) * u, ca + (a + 1.75 - ca) * v) + EPSILON);
+            int b0 = fastFloor(Math.min(cb + (b - .75 - cb) * u, cb + (b - .75 - cb) * v) - EPSILON);
+            int b1 = fastFloor(Math.max(cb + (b + 1.75 - cb) * u, cb + (b + 1.75 - cb) * v) + EPSILON);
+            if (a1 - a0 > 3 || b1 - b0 > 3) continue;
+            boolean full = true;
+            outer: for (int ia = a0; ia <= a1; ia++) for (int ib = b0; ib <= b1; ib++) {
+                if (!solidity.isOpaque(ia, ib, layer)) { full = false; break outer; }
             }
             if (full) return true;
         }

@@ -7,6 +7,7 @@ gradle.projectsEvaluated {
 	def benchWorld = p.findProperty('ephemera.benchWorld') ?: 'New World'
 	def benchDisableEphemera = (p.findProperty('ephemera.benchDisableEphemera') ?: 'false').toString().toBoolean()
 	def benchJfr = (p.findProperty('ephemera.benchJfr') ?: 'true').toString().toBoolean()
+	def benchJfrAlloc = (p.findProperty('ephemera.benchJfrAlloc') ?: 'false').toString().toBoolean()
 	def benchSpark = (p.findProperty('ephemera.benchSpark') ?: 'false').toString().toBoolean()
 	def benchDurationSec = (p.findProperty('ephemera.benchDurationSec') ?: '6').toString()
 	def benchRd = (p.findProperty('ephemera.benchRd') ?: '20').toString()
@@ -41,6 +42,7 @@ gradle.projectsEvaluated {
 		"-Dephemera.bench.label=${benchLabel}",
 		"-Dephemera.bench.backend=${benchBackend}",
 		"-Dephemera.bench.jfr=${benchJfr}",
+		"-Dephemera.bench.jfrAlloc=${benchJfrAlloc}",
 		"-Dephemera.bench.spark=${benchSpark}",
 		"-Dephemera.bench.durationSec=${benchDurationSec}",
 		"-Dephemera.bench.rd=${benchRd}",

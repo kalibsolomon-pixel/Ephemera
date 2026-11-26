@@ -39,6 +39,7 @@ public final class BenchProbeClient implements ClientModInitializer {
 	private static final String LABEL = System.getProperty("ephemera.bench.label", "unknown");
 	private static final String BACKEND = System.getProperty("ephemera.bench.backend", "OPENGL").toLowerCase();
 	private static final boolean JFR_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.jfr", "true"));
+	private static final boolean JFR_ALLOC_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.jfrAlloc", "false"));
 	private static final boolean SPARK_ENABLED = Boolean.parseBoolean(System.getProperty("ephemera.bench.spark", "false"));
 	private static final int DURATION_SEC = Integer.parseInt(System.getProperty("ephemera.bench.durationSec", "6"));
 	private static final int VISTA_RD = Integer.parseInt(System.getProperty("ephemera.bench.rd", "20"));
@@ -616,6 +617,10 @@ public final class BenchProbeClient implements ClientModInitializer {
 				activeRecording.setName("bench-" + sceneName);
 				activeRecording.enable("jdk.ExecutionSample").withPeriod(Duration.ofMillis(1));
 				activeRecording.enable("jdk.GarbageCollection");
+				if (JFR_ALLOC_ENABLED) {
+					// Diagnostic only: per-TLAB allocation attribution adds real overhead.
+					activeRecording.enable("jdk.ObjectAllocationInNewTLAB").withStackTrace();
+				}
 				activeRecording.start();
 			} catch (Throwable t) {
 				LOGGER.warn("Could not start JFR for {}: {}", sceneName, t.getMessage());

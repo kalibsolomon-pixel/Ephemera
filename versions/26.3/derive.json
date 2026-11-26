@@ -36,12 +36,10 @@
     "client/java/com/ephemera/render/terrain/TerrainFeatures.java",
     "client/java/com/ephemera/render/terrain/gl/GlSingleMdiTerrain.java",
     "client/java/com/ephemera/render/terrain/vulkan/VulkanMeshTerrainEngine.java",
+    "main/java/com/ephemera/engine/worldgen/DensityGraphReconstruction.java",
     "main/java/com/ephemera/engine/worldgen/DensityScratchStack.java",
     "main/java/com/ephemera/mixin/common/worldgen/BeardifierFastMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/BiomeManagerFastMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/CompileTaskSpinParkMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/DensityAp2IdentityMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/DensityClampIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityFindTopSurfaceIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityFunctionsAp2FastMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityHolderHolderIdentityMixin.java",
@@ -49,7 +47,6 @@
     "main/java/com/ephemera/mixin/common/worldgen/DensityMappedIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityMulOrAddIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityNoiseIdentityMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/DensityRangeChoiceIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityShiftAIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityShiftBIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityShiftIdentityMixin.java",
@@ -62,10 +59,7 @@
     "main/java/com/ephemera/mixin/common/worldgen/OreVeinifierFastMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/PerlinNoiseFastMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/PlacementFilterShouldPlaceAccessor.java",
-    "main/java/com/ephemera/mixin/common/worldgen/RenderSectionEmergencyFlushMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/ResortTaskSpinParkMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/SplineCoordinateIdentityMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/SurfaceRulesSequenceFastMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/UberGpuBufferHeapHysteresisMixin.java"
+    "main/java/com/ephemera/mixin/common/worldgen/SurfaceRulesSequenceFastMixin.java"
   ]
 }

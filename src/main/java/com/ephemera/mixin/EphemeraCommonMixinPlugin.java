@@ -73,7 +73,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 				 "VerticalGradientFastMixin", "XoroshiroPositionalFastMixin",
 				 "DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
 				 "DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin",
-				 "DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
+				 "DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin",
 				 "DensityShiftedNoiseIdentityMixin",
 				 "DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",
 				 "DensitySplineIdentityMixin", "SplineCoordinateIdentityMixin",
@@ -120,7 +120,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		for (String m : new String[] {
 			"DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
 			"DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin",
-			"DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
+			"DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin",
 			"DensityShiftedNoiseIdentityMixin",
 			"DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",
 			"DensitySplineIdentityMixin", "SplineCoordinateIdentityMixin",
