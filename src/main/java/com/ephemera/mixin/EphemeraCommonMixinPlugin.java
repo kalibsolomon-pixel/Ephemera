@@ -72,7 +72,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 				 "MaterialSystemFastMixin", "OreVeinifierFastMixin", "PerlinNoiseFastMixin", "RandomStatePoolMixin", "SmearedPerlinNoiseFastMixin",
 				 "VerticalGradientFastMixin", "XoroshiroPositionalFastMixin",
 				 "DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
-				 "DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin", "DensityMarkerOrMarkedIdentityMixin",
+				 "DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin",
 				 "DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
 				 "DensityShiftedNoiseIdentityMixin",
 				 "DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",
@@ -119,7 +119,7 @@ public class EphemeraCommonMixinPlugin implements IMixinConfigPlugin {
 		registerYield("SurfaceRulesSequenceFastMixin", "c2me", "noisium", "lithium", "radium", "canary", "vmp");
 		for (String m : new String[] {
 			"DensityShiftAIdentityMixin", "DensityShiftBIdentityMixin", "DensityShiftIdentityMixin",
-			"DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin", "DensityMarkerOrMarkedIdentityMixin",
+			"DensityHolderHolderIdentityMixin", "DensityMappedIdentityMixin",
 			"DensityMulOrAddIdentityMixin", "DensityNoiseIdentityMixin", "DensityAp2IdentityMixin",
 			"DensityShiftedNoiseIdentityMixin",
 			"DensityFindTopSurfaceIdentityMixin", "DensityIntervalSelectIdentityMixin",

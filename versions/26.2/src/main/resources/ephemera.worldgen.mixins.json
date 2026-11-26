@@ -16,7 +16,6 @@
     "DensityHolderHolderIdentityMixin",
     "DensityIntervalSelectIdentityMixin",
     "DensityMappedIdentityMixin",
-    "DensityMarkerOrMarkedIdentityMixin",
     "DensityMulOrAddIdentityMixin",
     "DensityNoiseIdentityMixin",
     "DensityShiftAIdentityMixin",

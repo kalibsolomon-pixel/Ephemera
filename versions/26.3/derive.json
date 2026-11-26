@@ -47,7 +47,6 @@
     "main/java/com/ephemera/mixin/common/worldgen/DensityHolderHolderIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityIntervalSelectIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityMappedIdentityMixin.java",
-    "main/java/com/ephemera/mixin/common/worldgen/DensityMarkerOrMarkedIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityMulOrAddIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityNoiseIdentityMixin.java",
     "main/java/com/ephemera/mixin/common/worldgen/DensityRangeChoiceIdentityMixin.java",
