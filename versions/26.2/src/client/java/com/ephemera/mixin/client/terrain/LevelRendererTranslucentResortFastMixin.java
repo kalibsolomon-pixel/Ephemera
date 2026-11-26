@@ -29,7 +29,10 @@ import org.spongepowered.asm.mixin.Unique;
  */
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererTranslucentResortFastMixin {
-	@Unique private static final int EPHEMERA$TRANSLUCENT_ORD = ChunkSectionLayer.TRANSLUCENT.ordinal();
+	// NOTE: Do NOT reference ChunkSectionLayer in a static field initializer on LevelRenderer!
+	// On MC 26.3, RenderPipelines.<clinit> loads LevelRenderer before SOLID_TERRAIN /
+	// CUTOUT_TERRAIN / TRANSLUCENT_TERRAIN are assigned; touching ChunkSectionLayer here would
+	// trigger ChunkSectionLayer.<clinit> prematurely and leave its RenderPipeline fields null.
 	@Unique private static final boolean EPHEMERA$SWAP_HOOK =
 		SectionMeshSwapHook.class.isAssignableFrom(SectionRenderDispatcher.RenderSection.class);
 
@@ -147,7 +150,7 @@ public abstract class LevelRendererTranslucentResortFastMixin {
 	) {
 		if (useHook) {
 			SectionMeshRenderCache cache = ((SectionMeshSwapHook) section).ephemera$compiledCache();
-			if (cache == null || cache.ephemera$draw(EPHEMERA$TRANSLUCENT_ORD) == null) {
+			if (cache == null || cache.ephemera$draw(ChunkSectionLayer.TRANSLUCENT.ordinal()) == null) {
 				return;
 			}
 		} else if (!section.hasTranslucentGeometry()) {

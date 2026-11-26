@@ -120,6 +120,14 @@ public final class BenchProbeClient implements ClientModInitializer {
 	// Particle spawn toggle for Scene 2
 	private static boolean spawnStressParticles = false;
 
+	// GC-frame attribution: separates the worst frame into "a GC pause landed inside it" vs
+	// "the render phase itself did the work" — the pacing-vs-GC discriminator.
+	private static long frameLastGcCount = 0L;
+	private static long gcFrameMaxNs = 0L;
+	private static long noGcFrameMaxNs = 0L;
+	private static long gcFrameRenderMaxNs = 0L;
+	private static long noGcFrameRenderMaxNs = 0L;
+
 	private static Recording activeRecording = null;
 	private static final Map<String, Map<String, Object>> SCENE_RESULTS = new LinkedHashMap<>();
 
@@ -141,10 +149,18 @@ public final class BenchProbeClient implements ClientModInitializer {
 			return;
 		}
 		long now = System.nanoTime();
+		boolean gcDuringFrame = totalGcCount() != frameLastGcCount;
+		frameLastGcCount = totalGcCount();
 		if (currentRenderStartNs != 0L && renderCount < RENDER_DURATIONS.length) {
 			long renderDt = now - currentRenderStartNs;
 			if (renderDt > 0L) {
 				RENDER_DURATIONS[renderCount++] = renderDt;
+				if (gcDuringFrame && renderDt > gcFrameRenderMaxNs) {
+					gcFrameRenderMaxNs = renderDt;
+				}
+				if (!gcDuringFrame && renderDt > noGcFrameRenderMaxNs) {
+					noGcFrameRenderMaxNs = renderDt;
+				}
 			}
 		}
 		currentRenderStartNs = 0L;
@@ -152,6 +168,12 @@ public final class BenchProbeClient implements ClientModInitializer {
 			long dt = now - lastFrameNs;
 			if (dt > 0L) {
 				FRAME_DELTAS[frameCount++] = dt;
+				if (gcDuringFrame && dt > gcFrameMaxNs) {
+					gcFrameMaxNs = dt;
+				}
+				if (!gcDuringFrame && dt > noGcFrameMaxNs) {
+					noGcFrameMaxNs = dt;
+				}
 			}
 		}
 		lastFrameNs = now;
@@ -614,6 +636,11 @@ public final class BenchProbeClient implements ClientModInitializer {
 		sceneStartGcTimeMs = totalGcTimeMs();
 		Minecraft mcStart = Minecraft.getInstance();
 		sceneStartLoadedChunks = mcStart.level != null ? mcStart.level.getChunkSource().getLoadedChunksCount() : 0;
+		frameLastGcCount = totalGcCount();
+		gcFrameMaxNs = 0L;
+		noGcFrameMaxNs = 0L;
+		gcFrameRenderMaxNs = 0L;
+		noGcFrameRenderMaxNs = 0L;
 		if (JFR_ENABLED) {
 			try {
 				activeRecording = new Recording();
@@ -726,6 +753,10 @@ public final class BenchProbeClient implements ClientModInitializer {
 			row.put("playerY", round2(mcNow.player.getY()));
 			row.put("playerZ", round2(mcNow.player.getZ()));
 		}
+		row.put("gcFrameMaxMs", round3(gcFrameMaxNs / 1e6));
+		row.put("noGcFrameMaxMs", round3(noGcFrameMaxNs / 1e6));
+		row.put("gcFrameRenderMaxMs", round3(gcFrameRenderMaxNs / 1e6));
+		row.put("noGcFrameRenderMaxMs", round3(noGcFrameRenderMaxNs / 1e6));
 		row.put("gcCount", gcCount);
 		row.put("gcTimeMs", gcTimeMs);
 		row.put("usedHeapMb", round2(usedHeapMb));

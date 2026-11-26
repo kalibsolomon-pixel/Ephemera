@@ -26,9 +26,9 @@
 | Advantage | What It Delivers |
 |---|---|
 | **One Mod, Full Stack** | Combines terrain rendering, GPU dispatch caching, native vertex fast-write, entity/block-entity/particle/block-state culling, GUI &amp; text batching, memory deduplication, fast lighting, worldgen noise/biome math, Netty flush consolidation, and frame pacing in one ~880 KB JAR (`environment: "*"` for both client and dedicated servers). |
-| **Native Vulkan Faster Than OpenGL** | On modern AMD (RDNA 2/3/4) and NVIDIA (RTX 20–50) GPUs, Ephemera's cross-vendor `VK_EXT_mesh_shader` single-pass **Task + Mesh** pipeline with ReBAR ring buffers and asynchronous queue presentation delivers **2.73&times; Vanilla** and **2.20&times; Sodium** geomean FPS — turning Vulkan into the fastest backend (+12% avg / +24% 1% lows over OpenGL). |
-| **First-Class OpenGL 3.3 Core** | Single `glMultiDrawElementsIndirect` per vertex heap via `gl_BaseInstanceARB` (with automatic fallback to direct `glMultiDrawElementsBaseVertex` on macOS GL 4.1 / older drivers), pass-scoped GL state/VAO/FBO/UBO caches, and scoped `KHR_no_error` contexts deliver **1.66&times; Vanilla** and **1.34&times; Sodium** geomean FPS. |
-| **Smooth Frame Pacing &amp; 1% Lows** | A unified per-frame chunk-streaming budget, anti-sawtooth adaptive frame pacer, exact-flip borderless fullscreen, and Win32 HighQoS P-core scheduling boost **1% Low FPS by +51% to +90%** over Vanilla and **+42% to +67%** over Sodium while cutting heap allocations in half (**&minus;48% to &minus;53%**). |
+| **Native Vulkan Faster Than OpenGL** | On modern AMD (RDNA 2/3/4) and NVIDIA (RTX 20–50) GPUs, Ephemera's cross-vendor `VK_EXT_mesh_shader` single-pass **Task + Mesh** pipeline with ReBAR ring buffers, strict 4-image swapchain widening, and asynchronous queue presentation delivers **3.31&times; Vanilla** and **2.49&times; Adrenaline (Sodium modpack)** geomean FPS — turning Vulkan into the fastest backend (+9.6% avg / +37.6% 1% lows over OpenGL). |
+| **First-Class OpenGL 3.3 Core** | Single `glMultiDrawElementsIndirect` per vertex heap via `gl_BaseInstanceARB` (with automatic fallback to direct `glMultiDrawElementsBaseVertex` on macOS GL 4.1 / older drivers), pass-scoped GL state/VAO/EAB/FBO/UBO caches, and scoped `KHR_no_error` contexts deliver **1.95&times; Vanilla** and **1.59&times; Adrenaline** geomean FPS. |
+| **Smooth Frame Pacing &amp; 1% Lows** | A unified per-frame chunk-streaming budget, staging-arena watermark drain, GPU-heap retention hysteresis, worker park backoff, anti-sawtooth adaptive frame pacer, exact-flip borderless fullscreen, and Win32 HighQoS P-core scheduling boost **1% Low FPS by +100% to +179%** over Vanilla and **+45% to +144%** over Adrenaline while cutting heap allocations by **&minus;56% to &minus;59%**. |
 | **Zero-Overhead Visual Polish &amp; Modern UI** | Built-in smooth fog, interleaved gradient dithering, enhanced AO, anisotropic mipmaps, smooth chunk fade, zero-rebuild dynamic lights, and optional Held World Light — all automatically standing down when an Iris/Oculus shader pack is active — paired with a full-page Video Settings screen and live diagnostics. |
 | **Fail-Soft &amp; Clean-Room MIT** | Per-mixin automatic stand-downs let Ephemera coexist cleanly with specialized mods (`Sodium`, `Iris`, `Lithium`, `C2ME`, `ImmediatelyFast`, `EntityCulling`, `MoreCulling`, `FerriteCore`, `ScalableLux`, `Krypton`, etc.). Pure Java 25 algorithms live in `:core` with zero Minecraft/Fabric/LWJGL dependencies. |
 
@@ -36,84 +36,58 @@
 
 ## Performance Benchmarks
 
-All benchmarks below were measured **uninstrumented (`--no-jfr`)** on a quiet system across Ephemera's standardized **10-workload suite** (8 workloads at Render Distance 20 + 2 workloads at Render Distance 32):
+All benchmarks below were measured **uninstrumented (`--no-jfr`)** on a quiet system across Ephemera's standardized **10-workload suite** sampled over **30 seconds per workload** (8 workloads at Render Distance 20 + 2 workloads at Render Distance 32):
 
 - **Test System**: AMD Radeon RX 9070 XT (driver 26.11.2) &middot; Intel Core i7-14700F &middot; 1080&times;720 &middot; Minecraft 26.2 &middot; Fabric Loader 0.20.1 &middot; Java 25
-- **Configs Tested**: Vanilla 26.2 &middot; Sodium `0.9.2+mc26.2` &middot; **Ephemera `1.3.0`**
+- **Configs Tested**: Vanilla 26.2 &middot; Adrenaline `26.5.1` (27-mod Sodium 0.9.2 performance modpack) &middot; Vulkan Optimization `26.2-6.2` (25-mod native Vulkan pack) &middot; **Ephemera `1.4.0`**
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-overview-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/bench-overview-light.svg" />
-    <img src="docs/assets/bench-overview-dark.svg" alt="Ephemera 1.3.0 10-Workload Geomean Performance Comparison" width="100%" />
-  </picture>
-</p>
+### 10-Workload Geometric Mean Summary (30 s / workload)
 
-### 10-Workload Geometric Mean Summary
-
-| Backend | Metric | Vanilla 26.2 | Sodium 0.9.2 | **Ephemera 1.3.0** | vs. Vanilla | vs. Sodium |
-|---|---|---:|---:|---:|---:|---:|
-| **Vulkan** | **Avg FPS** *(higher is better)* | 777.7 | 966.1 | **2,121.6** | **+172.8% (2.73&times;)** | **+119.6% (2.20&times;)** |
-| **Vulkan** | **1% Low FPS** *(higher is better)* | 171.1 | 195.3 | **325.5** | **+90.2% (1.90&times;)** | **+66.7% (1.67&times;)** |
-| **Vulkan** | **p99 Frame Time** *(lower is better)* | 3.24 ms | 2.63 ms | **1.69 ms** | **&minus;47.8%** | **&minus;35.8%** |
-| **Vulkan** | **Heap Allocation** *(lower is better)* | 392.6 MB/s | 250.4 MB/s | **205.6 MB/s** | **&minus;47.6%** | **&minus;17.9%** |
-| **OpenGL** | **Avg FPS** *(higher is better)* | 1,142.9 | 1,414.4 | **1,900.2** | **+66.3% (1.66&times;)** | **+34.3% (1.34&times;)** |
-| **OpenGL** | **1% Low FPS** *(higher is better)* | 174.0 | 185.7 | **263.0** | **+51.1% (1.51&times;)** | **+41.6% (1.42&times;)** |
-| **OpenGL** | **p99 Frame Time** *(lower is better)* | 3.08 ms | 2.51 ms | **2.04 ms** | **&minus;33.7%** | **&minus;18.6%** |
-| **OpenGL** | **Heap Allocation** *(lower is better)* | 449.6 MB/s | 363.8 MB/s | **210.5 MB/s** | **&minus;53.2%** | **&minus;42.1%** |
-
-### Per-Workload Breakdown
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-workloads-vulkan-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/bench-workloads-vulkan-light.svg" />
-    <img src="docs/assets/bench-workloads-vulkan-dark.svg" alt="Native Vulkan 10-Workload Breakdown" width="100%" />
-  </picture>
-</p>
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bench-workloads-opengl-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/bench-workloads-opengl-light.svg" />
-    <img src="docs/assets/bench-workloads-opengl-dark.svg" alt="OpenGL 3.3 Core 10-Workload Breakdown" width="100%" />
-  </picture>
-</p>
+| Backend | Metric | Vanilla 26.2 | Adrenaline (Sodium) | Vulkan Opt | **Ephemera 1.4.0** | vs. Vanilla | vs. Adrenaline |
+|---|---|---:|---:|---:|---:|---:|---:|
+| **Vulkan** | **Avg FPS** *(higher is better)* | 862.4 | 1,146.6 | 1,142.8 | **2,855.3** | **+231.1% (3.31&times;)** | **+149.0% (2.49&times;)** |
+| **Vulkan** | **1% Low FPS** *(higher is better)* | 255.0 | 292.1 | 275.6 | **712.3** | **+179.3% (2.79&times;)** | **+143.9% (2.44&times;)** |
+| **Vulkan** | **p99 Frame Time** *(lower is better)* | 2.44 ms | 2.08 ms | 2.18 ms | **0.89 ms** | **&minus;63.5%** | **&minus;57.2%** |
+| **Vulkan** | **Heap Allocation** *(lower is better)* | 433.2 MB/s | 288.3 MB/s | 269.1 MB/s | **191.1 MB/s** | **&minus;55.9%** | **&minus;33.7%** |
+| **OpenGL** | **Avg FPS** *(higher is better)* | 1,334.3 | 1,642.9 | 1,653.2 | **2,605.9** | **+95.3% (1.95&times;)** | **+58.6% (1.59&times;)** |
+| **OpenGL** | **1% Low FPS** *(higher is better)* | 259.0 | 357.2 | 326.6 | **517.6** | **+99.8% (2.00&times;)** | **+44.9% (1.45&times;)** |
+| **OpenGL** | **p99 Frame Time** *(lower is better)* | 2.18 ms | 1.69 ms | 1.73 ms | **1.08 ms** | **&minus;50.5%** | **&minus;36.1%** |
+| **OpenGL** | **Heap Allocation** *(lower is better)* | 537.4 MB/s | 417.7 MB/s | 402.2 MB/s | **220.1 MB/s** | **&minus;59.0%** | **&minus;47.3%** |
 
 <details>
-<summary><strong>Full 10-Workload Raw Data &amp; Congested Multiplayer Hub Results</strong></summary>
+<summary><strong>Full 10-Workload Raw Data (30 s / workload) &amp; Congested Multiplayer Hub Results</strong></summary>
 
-#### Native Vulkan (MC 26.2, No JFR)
+#### Native Vulkan (MC 26.2, 30 s/workload, No JFR)
 
-| Workload | Vanilla FPS / 1%L | Sodium 0.9.2 FPS / 1%L | **Ephemera 1.3.0 FPS / 1%L** | p99 (Van / Sod / **Eph**) | Alloc MB/s (Van / Sod / **Eph**) |
+| Workload | Vanilla FPS / 1%L | Adrenaline FPS / 1%L | **Ephemera 1.4.0 FPS / 1%L** | p99 (Van / Adr / **Eph**) | Alloc MB/s (Van / Adr / **Eph**) |
 |---|---:|---:|---:|---:|---:|
-| `terrain_vista_rd20` | 594.5 / 142.0 | 819.9 / 173.5 | **1,706.6 / 256.9** | 4.64 / 3.02 / **2.08 ms** | 373.9 / 167.4 / **133.2** |
-| `terrain_vista_rd32` | 560.4 / 124.4 | 729.5 / 118.8 | **1,564.0 / 254.4** | 5.07 / 3.87 / **2.20 ms** | 338.3 / 164.1 / **125.7** |
-| `dense_world_crowd` | 496.6 / 184.6 | 697.7 / 216.5 | **1,872.6 / 422.6** | 3.99 / 2.99 / **1.67 ms** | 573.9 / 446.3 / **343.3** |
-| `chunk_rebuild_burst` | 1,038.8 / 157.6 | 1,086.7 / 170.4 | **2,346.1 / 296.0** | 2.65 / 2.50 / **1.60 ms** | 335.9 / 256.8 / **173.8** |
-| `chunk_rebuild_burst_rd32` | 1,012.8 / 137.0 | 995.2 / 111.1 | **2,244.6 / 247.8** | 2.60 / 2.79 / **1.56 ms** | 248.1 / 242.6 / **174.1** |
-| `gui_pvp_hud` | 897.0 / 245.3 | 1,022.2 / 262.4 | **2,447.8 / 433.5** | 2.37 / 2.15 / **1.47 ms** | 352.3 / 246.2 / **338.6** |
-| `mouse_whip_flick` | 667.8 / 116.3 | 880.4 / 138.4 | **1,761.0 / 189.4** | 4.35 / 3.99 / **2.60 ms** | 400.4 / 233.8 / **235.0** |
-| `block_fluid_storm` | 734.4 / 238.9 | 1,304.5 / 382.1 | **2,894.9 / 613.9** | 2.70 / 1.84 / **1.00 ms** | 633.8 / 286.3 / **254.6** |
-| `chunk_flight_load` | 725.2 / 152.6 | 943.1 / 195.6 | **1,793.2 / 244.7** | 4.63 / 2.88 / **2.40 ms** | 510.6 / 304.4 / **211.7** |
-| `worldgen_frontier` | 1,457.5 / 294.1 | 1,417.0 / 352.4 | **3,136.9 / 534.6** | 1.53 / 1.45 / **1.08 ms** | 314.9 / 252.5 / **181.3** |
-| **Geomean (10 scenes)** | **777.7 / 171.1** | **966.1 / 195.3** | **2,121.6 / 325.5** | **3.24 / 2.63 / 1.69 ms** | **392.6 / 250.4 / 205.6** |
+| `terrain_vista_rd20` | 790.5 / 246.1 | 1,234.4 / 348.5 | **2,670.3 / 677.6** | 2.68 / 1.88 / **0.97 ms** | 457.3 / 219.1 / **158.2** |
+| `terrain_vista_rd32` | 682.5 / 163.3 | 1,071.6 / 219.7 | **2,439.8 / 543.6** | 3.32 / 2.74 / **1.08 ms** | 383.5 / 269.9 / **141.8** |
+| `dense_world_crowd` | 563.7 / 262.6 | 1,245.8 / 465.0 | **2,444.9 / 771.8** | 2.90 / 1.35 / **0.84 ms** | 576.3 / 404.1 / **305.8** |
+| `chunk_rebuild_burst` | 943.7 / 238.7 | 1,187.4 / 212.7 | **2,978.6 / 656.3** | 2.24 / 2.71 / **0.88 ms** | 372.9 / 242.5 / **161.3** |
+| `chunk_rebuild_burst_rd32` | 854.7 / 220.3 | 1,175.4 / 189.0 | **2,846.2 / 623.5** | 2.31 / 2.68 / **0.95 ms** | 394.3 / 264.5 / **172.7** |
+| `gui_pvp_hud` | 944.1 / 384.3 | 1,286.8 / 498.8 | **3,387.2 / 980.1** | 1.87 / 1.30 / **0.69 ms** | 464.9 / 336.5 / **296.6** |
+| `mouse_whip_flick` | 835.7 / 223.6 | 1,317.5 / 395.6 | **2,869.1 / 733.9** | 2.79 / 1.45 / **0.87 ms** | 422.5 / 241.9 / **235.2** |
+| `block_fluid_storm` | 755.6 / 310.3 | 1,525.5 / 636.4 | **2,921.9 / 956.8** | 2.35 / 1.15 / **0.78 ms** | 646.4 / 336.4 / **164.4** |
+| `chunk_flight_load` | 1,245.2 / 235.5 | 574.1 / 95.2 | **2,992.9 / 552.7** | 2.59 / 6.27 / **1.02 ms** | 354.9 / 299.2 / **166.4** |
+| `worldgen_frontier` | 1,248.8 / 334.2 | 1,150.3 / 264.8 | **3,139.1 / 760.3** | 1.79 / 2.21 / **0.84 ms** | 347.9 / 316.2 / **178.2** |
+| **Geomean (10 scenes)** | **862.4 / 255.0** | **1,146.6 / 292.1** | **2,855.3 / 712.3** | **2.44 / 2.08 / 0.89 ms** | **433.2 / 288.3 / 191.1** |
 
-#### OpenGL 3.3 Core (MC 26.2, No JFR)
+#### OpenGL 3.3 Core (MC 26.2, 30 s/workload, No JFR)
 
-| Workload | Vanilla FPS / 1%L | Sodium 0.9.2 FPS / 1%L | **Ephemera 1.3.0 FPS / 1%L** | p99 (Van / Sod / **Eph**) | Alloc MB/s (Van / Sod / **Eph**) |
+| Workload | Vanilla FPS / 1%L | Adrenaline FPS / 1%L | **Ephemera 1.4.0 FPS / 1%L** | p99 (Van / Adr / **Eph**) | Alloc MB/s (Van / Adr / **Eph**) |
 |---|---:|---:|---:|---:|---:|
-| `terrain_vista_rd20` | 863.7 / 148.8 | 1,105.6 / 136.3 | **1,444.4 / 210.6** | 4.26 / 3.15 / **2.72 ms** | 370.7 / 240.9 / **127.8** |
-| `terrain_vista_rd32` | 855.5 / 119.4 | 1,063.0 / 145.2 | **1,212.7 / 176.4** | 4.42 / 3.27 / **3.27 ms** | 397.5 / 239.1 / **116.2** |
-| `dense_world_crowd` | 733.5 / 245.6 | 1,031.0 / 247.8 | **1,915.4 / 420.5** | 3.06 / 2.57 / **1.65 ms** | 652.2 / 625.1 / **400.8** |
-| `chunk_rebuild_burst` | 1,496.1 / 150.1 | 1,703.9 / 134.9 | **2,129.1 / 218.4** | 2.68 / 2.32 / **1.96 ms** | 349.0 / 396.6 / **182.3** |
-| `chunk_rebuild_burst_rd32` | 1,494.7 / 140.6 | 1,538.0 / 116.4 | **2,073.1 / 184.4** | 3.36 / 2.98 / **2.12 ms** | 355.6 / 372.5 / **184.4** |
-| `gui_pvp_hud` | 1,331.6 / 210.3 | 1,521.2 / 193.9 | **2,032.6 / 338.8** | 2.39 / 2.12 / **1.75 ms** | 441.2 / 375.0 / **325.1** |
-| `mouse_whip_flick` | 930.9 / 112.0 | 1,265.3 / 155.1 | **1,514.8 / 181.3** | 4.58 / 3.64 / **2.73 ms** | 418.0 / 296.2 / **230.7** |
-| `block_fluid_storm` | 1,288.5 / 365.4 | 1,829.1 / 437.1 | **2,742.5 / 570.8** | 2.01 / 1.53 / **1.05 ms** | 729.1 / 426.5 / **262.4** |
-| `chunk_flight_load` | 986.1 / 141.0 | 1,263.7 / 206.4 | **1,601.1 / 178.0** | 4.54 / 3.03 / **3.49 ms** | 476.5 / 389.9 / **215.7** |
-| `worldgen_frontier` | 1,992.1 / 227.8 | 2,268.0 / 233.8 | **3,065.3 / 402.9** | 1.50 / 1.51 / **1.18 ms** | 441.9 / 413.3 / **201.1** |
-| **Geomean (10 scenes)** | **1,142.9 / 174.0** | **1,414.4 / 185.7** | **1,900.2 / 263.0** | **3.08 / 2.51 / 2.04 ms** | **449.6 / 363.8 / 210.5** |
+| `terrain_vista_rd20` | 1,248.8 / 273.0 | 1,686.1 / 451.7 | **2,648.4 / 593.8** | 2.22 / 1.49 / **1.08 ms** | 495.4 / 327.8 / **201.0** |
+| `terrain_vista_rd32` | 997.3 / 130.3 | 1,507.6 / 269.4 | **2,028.2 / 320.5** | 3.90 / 2.18 / **1.39 ms** | 495.3 / 281.4 / **156.0** |
+| `dense_world_crowd` | 868.4 / 324.2 | 1,818.9 / 547.9 | **2,325.2 / 728.4** | 2.23 / 1.15 / **0.99 ms** | 705.3 / 630.9 / **337.0** |
+| `chunk_rebuild_burst` | 1,427.8 / 208.7 | 1,832.6 / 298.4 | **2,600.2 / 409.0** | 2.08 / 1.84 / **1.15 ms** | 443.8 / 404.0 / **194.9** |
+| `chunk_rebuild_burst_rd32` | 1,272.7 / 170.0 | 1,820.7 / 260.4 | **2,481.7 / 340.0** | 2.51 / 1.94 / **1.17 ms** | 564.2 / 394.9 / **179.5** |
+| `gui_pvp_hud` | 1,559.1 / 507.3 | 1,996.6 / 624.1 | **2,947.1 / 862.2** | 1.49 / 1.08 / **0.82 ms** | 604.3 / 569.7 / **346.1** |
+| `mouse_whip_flick` | 1,406.1 / 289.6 | 1,999.1 / 505.7 | **2,509.2 / 611.7** | 2.07 / 1.18 / **1.00 ms** | 506.1 / 396.5 / **250.0** |
+| `block_fluid_storm` | 1,288.5 / 433.0 | 1,959.4 / 629.0 | **3,088.8 / 920.1** | 1.76 / 1.08 / **0.83 ms** | 725.8 / 487.3 / **222.1** |
+| `chunk_flight_load` | 1,801.2 / 205.6 | 758.1 / 107.6 | **2,689.4 / 337.5** | 2.44 / 5.56 / **1.37 ms** | 475.1 / 361.0 / **187.5** |
+| `worldgen_frontier` | 1,788.6 / 253.6 | 1,565.8 / 305.0 | **2,917.0 / 437.5** | 1.78 / 1.85 / **1.11 ms** | 439.9 / 438.4 / **200.1** |
+| **Geomean (10 scenes)** | **1,334.3 / 259.0** | **1,642.9 / 357.2** | **2,605.9 / 517.6** | **2.18 / 1.69 / 1.08 ms** | **537.4 / 417.7 / 220.1** |
 
 #### Congested Multiplayer Hub (Dedicated Server TCP, 2560&times;1440, Borderless)
 
